@@ -1,7 +1,7 @@
 # DevHarmonics User Manual
 
-Manual version: **0.6.1**<br>
-Product release: **v0.6.1**
+Latest tagged release: **v0.6.1**<br>
+Manual target: **unreleased `main` after v0.6.1**
 
 DevHarmonics is a local-first, provider-neutral software factory for product owners managing AI agents as development teams. It turns one software-development objective into a planned, parallel, validated run across Codex, Claude Code, and the Google Antigravity model catalog. It runs locally and uses the subscription sessions cached by the providers' official command-line tools.
 
@@ -9,6 +9,7 @@ DevHarmonics is a local-first, provider-neutral software factory for product own
 
 You need:
 
+- Windows, macOS, or Linux; continuously verified on Windows and Ubuntu; macOS verification is currently manual.
 - Node.js 24 or newer
 - Git
 - A Git repository for the project you want to change
@@ -21,11 +22,24 @@ DevHarmonics does not accept API keys or provider passwords. If a prompt asks yo
 
 ## 2. Install and launch
 
-From PowerShell:
+For the exact latest tagged release:
 
 ```powershell
 git clone https://github.com/scottconverse/DevHarmonics.git
 Set-Location DevHarmonics
+git checkout v0.6.1
+```
+
+To use the unreleased development line instead:
+
+```powershell
+git clone https://github.com/scottconverse/DevHarmonics.git
+Set-Location DevHarmonics
+```
+
+Then, from either checkout:
+
+```powershell
 npm.cmd ci
 npm.cmd run build
 node dist/src/cli.js doctor
@@ -41,7 +55,7 @@ npm.cmd link
 devharmonics --version
 ```
 
-Expected version output is `DevHarmonics 0.6.1`.
+Expected version output is `DevHarmonics 0.6.1`. An unreleased `main` checkout currently reports that same package version, so include `git rev-parse HEAD` in every issue report from the development line.
 
 ## 3. Sign in to providers
 

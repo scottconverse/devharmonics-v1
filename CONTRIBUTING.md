@@ -1,6 +1,6 @@
 # Contributing to DevHarmonics
 
-DevHarmonics v0.6.1 is an early public project. Start with a GitHub Discussion for design proposals and use an issue for a bounded, reproducible defect.
+The latest tagged DevHarmonics release is **v0.6.1**. Contributions target **unreleased `main` after v0.6.1**. Start with a GitHub Discussion for design proposals and use an issue for a bounded, reproducible defect; reports from `main` must include the output of `git rev-parse HEAD`.
 
 ## Local checks
 

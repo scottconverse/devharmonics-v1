@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { countDeclaredNodeTests } from "../dist/src/ci-harness.js";
+import {
+  countDeclaredNodeTests,
+  validateReadmeReleaseScope,
+  validateRollbackGuide,
+  validateWorkflowPolicy,
+} from "../dist/src/ci-harness.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
@@ -12,9 +17,9 @@ const version = packageJson.version;
 
 const expectations = [
   ["src/product.ts", `VERSION = "${version}"`],
-  ["README.md", `Current release: **v${version}**`],
-  ["docs/USER_MANUAL.md", `Manual version: **${version}**`],
-  ["docs/USER_MANUAL.md", `Product release: **v${version}**`],
+  ["README.md", `Latest tagged release: **v${version}**`],
+  ["docs/USER_MANUAL.md", `Latest tagged release: **v${version}**`],
+  ["docs/USER_MANUAL.md", `Manual target: **unreleased \`main\` after v${version}**`],
   ["docs/index.html", `data-product-version="${version}"`],
   ["docs/index.html", `href="USER_MANUAL.html">Manual`],
   ["docs/index.html", `href="USER_MANUAL.html">Read the user manual`],
@@ -23,10 +28,11 @@ const expectations = [
   ["src/ui/index.html", `/app.css?v=${version}`],
   ["src/ui/index.html", `/app.js?v=${version}`],
   ["CHANGELOG.md", `## [${version}]`],
-  ["docs/ARCHITECTURE.md", `Architecture version: **${version}**`],
-  ["docs/PRODUCT_SPEC.md", `Current implementation baseline: **DevHarmonics v${version}**`],
-  ["docs/IMPLEMENTATION_PLAN.md", `Current implementation baseline: **DevHarmonics v${version}**`],
-  ["CONTRIBUTING.md", `DevHarmonics v${version} is an early public project.`],
+  ["docs/ARCHITECTURE.md", `Latest tagged release: **v${version}**`],
+  ["docs/ARCHITECTURE.md", `Architecture snapshot: **unreleased \`main\` after v${version}**`],
+  ["docs/PRODUCT_SPEC.md", `Latest tagged implementation baseline: **DevHarmonics v${version}**`],
+  ["docs/IMPLEMENTATION_PLAN.md", `Latest tagged implementation baseline: **DevHarmonics v${version}**`],
+  ["CONTRIBUTING.md", `The latest tagged DevHarmonics release is **v${version}**.`],
   ["SECURITY.md", `latest tagged release, **v${version}**`],
   ["README.md", `[Contributing](CONTRIBUTING.md)`],
   // Release-truth guards added at the v0.6.0 gate: the rollback recipe's
@@ -142,6 +148,18 @@ if (process.argv.includes("--release")) {
     failures.push(`README.md: claims ${claimed[1]} declared cross-platform test cases, but the syntax-aware test/*.test.ts census is ${declared}`);
   }
   checks += 1;
+}
+
+{
+  const [workflow, readme, rollback] = await Promise.all([
+    readFile(path.join(root, ".github/workflows/ci.yml"), "utf8"),
+    readFile(path.join(root, "README.md"), "utf8"),
+    readFile(path.join(root, "docs/ROLLBACK.md"), "utf8"),
+  ]);
+  failures.push(...validateWorkflowPolicy(workflow).map((failure) => `.github/workflows/ci.yml: ${failure}`));
+  failures.push(...validateReadmeReleaseScope(readme, version).map((failure) => `README.md: ${failure}`));
+  failures.push(...validateRollbackGuide(rollback).map((failure) => `docs/ROLLBACK.md: ${failure}`));
+  checks += 3;
 }
 
 if (failures.length) {

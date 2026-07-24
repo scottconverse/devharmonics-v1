@@ -17,7 +17,7 @@
     "devharmonics": "dist/src/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "node dist/src/cli.js",
     "launch": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-devharmonics.ps1",
     "dev": "tsx src/cli.ts",

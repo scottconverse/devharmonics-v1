@@ -1,12 +1,13 @@
 import { readdir } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { seededShuffle } from "../dist/src/ci-harness.js";
+import { assertCiChildResult, seededShuffle } from "../dist/src/ci-harness.js";
+import { runProcess } from "../dist/src/process.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testDirectory = path.join(root, "dist", "test");
+const timeoutMs = 5 * 60 * 1_000;
 const seedIndex = process.argv.findIndex((argument) => argument === "--seed");
 const inlineSeed = process.argv.find((argument) => argument.startsWith("--seed="))?.slice("--seed=".length);
 const seed = inlineSeed ?? (seedIndex >= 0 ? process.argv[seedIndex + 1] : undefined) ?? crypto.randomUUID();
@@ -27,12 +28,16 @@ console.log("Randomized test-file order:");
 ordered.forEach((file, index) => console.log(`${index + 1}. ${path.relative(root, file)}`));
 
 for (const file of ordered) {
-  const result = spawnSync(process.execPath, ["--test", file], {
+  const relativeFile = path.relative(root, file);
+  const result = await runProcess({
+    command: process.execPath,
+    args: ["--test", file],
     cwd: root,
-    stdio: "inherit",
+    timeoutMs,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  assertCiChildResult(result, { operation: "randomized test file", file: relativeFile, seed, timeoutMs }, { exit: "zero" });
 }
 
 console.log(`Randomized test-file run passed: ${ordered.length}/${files.length} files executed exactly once.`);
