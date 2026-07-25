@@ -54,7 +54,7 @@ import { DeliveryService } from "../src/delivery.js";
 import { INBOX_RELEVANT_RUN_STATUSES, projectInbox, type InboxItem } from "../src/inbox.js";
 import { projectProgramStatus, PROGRAM_QUIET_THRESHOLD_MS, type ProgramBucket } from "../src/program-status.js";
 import type { ProductRecord } from "../src/ledger.js";
-import { createValidatorDiscoverySnapshot, discoverRepositoryValidators, effectiveValidatorAllowlist } from "../src/validator-discovery.js";
+import { createValidatorDiscoverySnapshot, discoverRepositoryValidators, effectiveValidatorAllowlist, validatorStateFingerprint } from "../src/validator-discovery.js";
 
 test("provider output parsers extract each CLI's final response", () => {
   const codex = [
@@ -6722,7 +6722,7 @@ test("repository registry migrates remote observations and persists local govern
     assert.equal(migrated.role, "other");
     assert.equal(migrated.inspection, null);
 
-    const configured = ledger.upsertRepository({
+    let configured = ledger.upsertRepository({
       ...migrated,
       productId: "github:civicsuite",
       localPath: path.join(root, "civiccore"),
@@ -6736,6 +6736,16 @@ test("repository registry migrates remote observations and persists local govern
       governanceSources: ["AGENTS.md", "docs/ARCHITECTURE.md"],
       governanceRules: ["No direct pushes to main"],
     });
+    configured = ledger.updateRepositoryValidatorState(configured.id, {
+      validators: {
+        test: { command: "npm.cmd", args: ["test"], timeoutMs: 120_000 },
+      },
+    }, validatorStateFingerprint(
+      configured.validatorDiscovery,
+      configured.validatorLocalConfig,
+      configured.validators,
+      configured.validatorSuppressions,
+    ));
     assert.equal(configured.localPath, path.join(root, "civiccore"));
     assert.equal(configured.validators.test?.command, "npm.cmd");
 
@@ -9375,6 +9385,8 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
       allowlist: Record<string, any>,
       preview?: Record<string, any>,
       editor?: Record<string, any>,
+      localError?: string,
+      disclosureOpen?: boolean,
     ) => string;
   };
   const html = renderValidatorAllowlistHtml("<product>", "<repo>", {
@@ -9427,6 +9439,8 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   });
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /manual override/i);
+  assert.match(html, /Edit manual validator manual/i);
+  assert.match(html, /Remove manual override manual/i);
   assert.match(html, /local config/i);
   assert.match(html, /suppressed|removed/i);
   assert.match(html, /pyproject/i);
@@ -9446,6 +9460,13 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   });
   assert.match(empty, /Zero validators detected/i);
   assert.doesNotMatch(empty, /diff-check/i);
+  const ownerOpenedEmpty = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, undefined, undefined, undefined, true);
+  assert.match(ownerOpenedEmpty, /<details[^>]*open/);
   const degraded = renderValidatorAllowlistHtml("product", "repo", {
     effectiveValidators: {},
     entries: [],
@@ -9486,6 +9507,213 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   });
   assert.match(noDelta, /already up to date/i);
   assert.doesNotMatch(noDelta, /Apply these validator changes/i);
+  assert.match(appSource, /Couldn’t update validators/);
+  assert.doesNotMatch(appSource, /Couldnâ|CouldnÃ/);
+  const appCss = readFileSync(path.join(process.cwd(), "src", "ui", "app.css"), "utf8");
+  assert.match(appCss, /\.validator-local-error button[^}]*min-height:\s*44px/s);
+});
+
+test("validator state persistence rejects a missing owner precondition", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-missing-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    ledger.upsertProduct({
+      id: "fixture",
+      name: "Fixture",
+      organizationUrl: "https://example.invalid/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    ledger.upsertRepository({
+      id: "repo:missing",
+      productId: "fixture",
+      name: "missing",
+      fullName: "fixture/missing",
+      url: "https://example.invalid/fixture/missing",
+      cloneUrl: "https://example.invalid/fixture/missing.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: {},
+      governanceSources: [],
+      governanceRules: [],
+    });
+    assert.throws(
+      () => (ledger.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:missing",
+        { validators: { test: { command: "node", args: ["test.js"], timeoutMs: 1_000 } } },
+      ),
+      /precondition|required|fingerprint/i,
+    );
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents two ledgers from losing an override to another override", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-overrides-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({
+      id: "fixture",
+      name: "Fixture",
+      organizationUrl: "https://example.invalid/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    first.upsertRepository({
+      id: "repo:overrides",
+      productId: "fixture",
+      name: "overrides",
+      fullName: "fixture/overrides",
+      url: "https://example.invalid/fixture/overrides",
+      cloneUrl: "https://example.invalid/fixture/overrides.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: {},
+      governanceSources: [],
+      governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:overrides")!;
+    const expected = validatorStateFingerprint(
+      snapshot.validatorDiscovery,
+      snapshot.validatorLocalConfig,
+      snapshot.validators,
+      snapshot.validatorSuppressions,
+    );
+    const update = (ledger: Ledger, validators: Record<string, any>) =>
+      (ledger.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:overrides",
+        { validators },
+        expected,
+      );
+    update(first, { alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 } });
+    assert.throws(
+      () => update(second!, { beta: { command: "node", args: ["beta.js"], timeoutMs: 1_000 } }),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:overrides")!.validators, {
+      alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 },
+    });
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents an override from losing a concurrent suppression", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-mixed-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({ id: "fixture", name: "Fixture", organizationUrl: "https://example.invalid/fixture", description: "Fixture", repositories: [] });
+    first.upsertRepository({
+      id: "repo:mixed", productId: "fixture", name: "mixed", fullName: "fixture/mixed",
+      url: "https://example.invalid/fixture/mixed", cloneUrl: "https://example.invalid/fixture/mixed.git",
+      defaultBranch: "main", visibility: "private", archived: false, sizeKb: 1, language: null,
+      description: null, intelligence: {}, localPath: root, role: "other", expectedBranch: null,
+      owners: [], dependencyRepositoryIds: [],
+      validators: { test: { command: "node", args: ["test.js"], timeoutMs: 1_000 } },
+      governanceSources: [], governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:mixed")!;
+    const expected = validatorStateFingerprint(snapshot.validatorDiscovery, snapshot.validatorLocalConfig, snapshot.validators, snapshot.validatorSuppressions);
+    (first.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+      "repo:mixed",
+      { validators: { ...snapshot.validators, alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 } } },
+      expected,
+    );
+    assert.throws(
+      () => (second!.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:mixed",
+        { validatorSuppressions: ["test"] },
+        expected,
+      ),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:mixed")!.validatorSuppressions, []);
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents a rescan from overwriting a concurrent owner mutation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-rescan-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({ id: "fixture", name: "Fixture", organizationUrl: "https://example.invalid/fixture", description: "Fixture", repositories: [] });
+    first.upsertRepository({
+      id: "repo:rescan", productId: "fixture", name: "rescan", fullName: "fixture/rescan",
+      url: "https://example.invalid/fixture/rescan", cloneUrl: "https://example.invalid/fixture/rescan.git",
+      defaultBranch: "main", visibility: "private", archived: false, sizeKb: 1, language: null,
+      description: null, intelligence: {}, localPath: root, role: "other", expectedBranch: null,
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:rescan")!;
+    const expected = validatorStateFingerprint(snapshot.validatorDiscovery, snapshot.validatorLocalConfig, snapshot.validators, snapshot.validatorSuppressions);
+    (first.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+      "repo:rescan",
+      { validators: { owner: { command: "node", args: ["owner.js"], timeoutMs: 1_000 } } },
+      expected,
+    );
+    const candidate = createValidatorDiscoverySnapshot({
+      validators: [{
+        name: "test",
+        recipe: { id: "npm-script", script: "test" },
+        config: { command: "npm", args: ["run", "test"], timeoutMs: 600_000 },
+        sources: [{ kind: "package_json_script", path: "package.json", evidence: "scripts.test" }],
+      }],
+      signals: [],
+      diagnostics: [],
+      fingerprint: "b".repeat(64),
+    }, "a".repeat(40));
+    assert.throws(
+      () => (second!.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:rescan",
+        { validatorDiscovery: candidate },
+        expected,
+      ),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:rescan")!.validators, {
+      owner: { command: "node", args: ["owner.js"], timeoutMs: 1_000 },
+    });
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("physical schema 37 to 38 migration preserves owner validators and its pre-migration backup", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import { syncOllamaRuntimes } from "../src/ollama.js";
 import { runProcess } from "../src/process.js";
 import { startDashboard } from "../src/server.js";
 import { ModelCatalogCoordinator } from "../src/catalog.js";
+import { validatorStateFingerprint } from "../src/validator-discovery.js";
 
 async function git(cwd: string, args: string[]) {
   const result = await runProcess({
@@ -28,8 +29,8 @@ async function git(cwd: string, args: string[]) {
   return result;
 }
 
-async function createRepository(root: string): Promise<string> {
-  const project = path.join(root, "project");
+async function createRepository(root: string, repositoryName = "project"): Promise<string> {
+  const project = path.join(root, repositoryName);
   await import("node:fs/promises").then(({ mkdir }) => mkdir(project, { recursive: true }));
   await git(project, ["init", "-b", "main"]);
   await writeFile(path.join(project, "README.md"), "# Fixture\n", "utf8");
@@ -2442,9 +2443,15 @@ test("objective planning context injects prior decisions scoped to the objective
         intelligence: {},
       }],
     });
+    const decisionRepository = seedLedger.getRepository("repo:decisions")!;
     seedLedger.updateRepositoryValidatorState("repo:decisions", {
       validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
-    });
+    }, validatorStateFingerprint(
+      decisionRepository.validatorDiscovery,
+      decisionRepository.validatorLocalConfig,
+      decisionRepository.validators,
+      decisionRepository.validatorSuppressions,
+    ));
 
     const objectiveBody = {
       outcome: "Decision context fixture: standardize the container runtime and editor choice for local development",
@@ -3608,9 +3615,15 @@ test("cross-repository objective planning maps impact without starting an unsupp
     const fixtureLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
     try {
       for (const repositoryId of ["repo:core", "repo:docs"]) {
+        const repository = fixtureLedger.getRepository(repositoryId)!;
         fixtureLedger.updateRepositoryValidatorState(repositoryId, {
           validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
-        });
+        }, validatorStateFingerprint(
+          repository.validatorDiscovery,
+          repository.validatorLocalConfig,
+          repository.validators,
+          repository.validatorSuppressions,
+        ));
       }
     } finally {
       fixtureLedger.close();
@@ -4029,6 +4042,84 @@ test("validator rescan previews expire under the server-owned TTL", async () => 
   }
 });
 
+test("two dashboard owners cannot lose validator mutations across a shared ledger", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-two-server-cas-"));
+  const project = await createRepository(root);
+  const first = await startDashboard({ projectPath: project, port: 0, open: false });
+  const second = await startDashboard({ projectPath: project, port: 0, open: false });
+  try {
+    assert.equal((await fetch(`${first.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "shared", name: "Shared", organizationUrl: "https://example.invalid/shared", repositories: [] }),
+    })).status, 201);
+    const attached = await fetch(`${first.url}/api/products/shared/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "other", validators: {} }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repositoryId = ((await attached.json()) as { repository: { id: string } }).repository.id;
+    const pathSuffix = `/api/products/shared/repositories/${encodeURIComponent(repositoryId)}/validators`;
+    const state = async () => fetch(`${first.url}${pathSuffix}`).then((response) => response.json()) as Promise<{
+      stateFingerprint: string;
+      effectiveValidators: Record<string, unknown>;
+      validatorSuppressions: string[];
+    }>;
+    const ownerRequest = (
+      dashboardUrl: string,
+      suffix: string,
+      method: "PUT" | "DELETE" | "POST",
+      body: Record<string, unknown>,
+    ) => fetch(`${dashboardUrl}${pathSuffix}/${suffix}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const overrideBase = (await state()).stateFingerprint;
+    const overrideResults = await Promise.all([
+      ownerRequest(first.url, "alpha/override", "PUT", {
+        baseStateFingerprint: overrideBase,
+        validator: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 },
+      }),
+      ownerRequest(second.url, "beta/override", "PUT", {
+        baseStateFingerprint: overrideBase,
+        validator: { command: "node", args: ["beta.js"], timeoutMs: 1_000 },
+      }),
+    ]);
+    assert.deepEqual(overrideResults.map((response) => response.status).sort(), [200, 409]);
+    const afterOverrides = await state();
+    assert.equal(Number("alpha" in afterOverrides.effectiveValidators) + Number("beta" in afterOverrides.effectiveValidators), 1);
+
+    const mixedBase = afterOverrides.stateFingerprint;
+    const mixedResults = await Promise.all([
+      ownerRequest(first.url, "gamma/override", "PUT", {
+        baseStateFingerprint: mixedBase,
+        validator: { command: "node", args: ["gamma.js"], timeoutMs: 1_000 },
+      }),
+      ownerRequest(second.url, "test/suppression", "PUT", { baseStateFingerprint: mixedBase }),
+    ]);
+    assert.deepEqual(mixedResults.map((response) => response.status).sort(), [200, 409]);
+
+    const previewResponse = await ownerRequest(first.url, "rescan-preview", "POST", {});
+    assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
+    const preview = await previewResponse.json() as Record<string, unknown> & { baseStateFingerprint: string };
+    const rescanRace = await Promise.all([
+      ownerRequest(first.url, "rescan-apply", "POST", preview),
+      ownerRequest(second.url, "delta/override", "PUT", {
+        baseStateFingerprint: preview.baseStateFingerprint,
+        validator: { command: "node", args: ["delta.js"], timeoutMs: 1_000 },
+      }),
+    ]);
+    assert.deepEqual(rescanRace.map((response) => response.status).sort(), [200, 409]);
+  } finally {
+    await second.close();
+    await first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("product registry inspects and retains a local repository without changing or running it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-registry-api-"));
   const project = await createRepository(root);
@@ -4096,6 +4187,25 @@ test("product registry inspects and retains a local repository without changing 
       allowlist.entries.find((entry) => entry.name === "verify-release")?.discovered?.sources.map((source) => source.path),
       ["scripts/verify-release.sh"],
     );
+    const otherProject = path.join(root, "other-project");
+    await git(root, ["clone", "--no-local", project, otherProject]);
+    await mkdir(path.join(otherProject, "scripts"), { recursive: true });
+    await copyFile(path.join(project, "pyproject.toml"), path.join(otherProject, "pyproject.toml"));
+    await copyFile(path.join(project, "scripts", "verify-release.sh"), path.join(otherProject, "scripts", "verify-release.sh"));
+    await initializeProject(otherProject);
+    await writeFile(
+      path.join(devHarmonicsDirectory(otherProject), "config.json"),
+      `${JSON.stringify(projectConfig, null, 2)}\n`,
+      "utf8",
+    );
+    const otherAttachment = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: otherProject, role: "module", validators: { test: "npm test" } }),
+    });
+    assert.equal(otherAttachment.status, 201, await otherAttachment.clone().text());
+    const otherRepositoryId = ((await otherAttachment.json()) as { repository: { id: string } }).repository.id;
+    assert.notEqual(otherRepositoryId, registered.repository.id);
     const validatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`;
     const unsupported = await fetch(validatorBase, {
       method: "POST",
@@ -4119,6 +4229,25 @@ test("product registry inspects and retains a local repository without changing 
       stateFingerprint: string;
     };
     assert.match(observedState.stateFingerprint, /^[a-f0-9]{64}$/);
+    const missingPrecondition = await fetch(`${validatorBase}/missing/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ validator: { command: "node", args: ["missing.js"], timeoutMs: 1_000 } }),
+    });
+    assert.equal(missingPrecondition.status, 428);
+    assert.match(await missingPrecondition.text(), /fingerprint precondition is required/i);
+    const mutateValidator = async (
+      suffix: string,
+      method: "PUT" | "DELETE",
+      body: Record<string, unknown> = {},
+    ) => {
+      const current = await fetch(validatorBase).then((response) => response.json()) as { stateFingerprint: string };
+      return fetch(`${validatorBase}/${suffix}`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, baseStateFingerprint: current.stateFingerprint }),
+      });
+    };
     const guardedOverride = (name: string, baseStateFingerprint: string) => fetch(`${validatorBase}/${name}/override`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -4128,6 +4257,33 @@ test("product registry inspects and retains a local repository without changing 
       }),
     });
     assert.equal((await guardedOverride("alpha", observedState.stateFingerprint)).status, 200);
+    const bypassAttempt = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "umbrella", validators: {} }),
+    });
+    assert.equal(bypassAttempt.status, 428, "reattachment cannot mutate validators without a state precondition");
+    assert.ok(
+      ((await fetch(validatorBase).then((response) => response.json())) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.alpha,
+      "a rejected reattachment cannot erase an accepted override",
+    );
+    const metadataOnlyReattachment = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        localPath: project,
+        role: "umbrella",
+        expectedBranch: "main",
+        owners: ["product-platform"],
+        dependencyRepositoryIds: [],
+        governanceSources: ["README.md"],
+      }),
+    });
+    assert.equal(metadataOnlyReattachment.status, 201, await metadataOnlyReattachment.clone().text());
+    assert.ok(
+      ((await fetch(validatorBase).then((response) => response.json())) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.alpha,
+      "metadata-only reattachment preserves validator state",
+    );
     const stale = await guardedOverride("beta", observedState.stateFingerprint);
     assert.equal(stale.status, 409);
     assert.match(await stale.text(), /validator allowlist changed/i);
@@ -4139,63 +4295,40 @@ test("product registry inspects and retains a local repository without changing 
     assert.equal(afterGuard.effectiveValidators.beta, undefined, "the stale request cannot overwrite current state");
     assert.equal((await guardedOverride("beta", afterGuard.stateFingerprint)).status, 200);
     for (const name of ["alpha", "beta"]) {
-      assert.equal((await fetch(`${validatorBase}/${name}/override`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      })).status, 200);
+      assert.equal((await mutateValidator(`${name}/override`, "DELETE")).status, 200);
     }
     for (const name of ["local-config-check", "pytest", "verify-release"]) {
-      const removed = await fetch(`${validatorBase}/${encodeURIComponent(name)}/suppression`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      });
+      const removed = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "PUT");
       assert.equal(removed.status, 200, await removed.clone().text());
     }
-    const removeManual = await fetch(`${validatorBase}/test/override`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
+    const removeManual = await mutateValidator("test/override", "DELETE");
     assert.equal(removeManual.status, 200, await removeManual.clone().text());
     const zeroAllowlist = await fetch(validatorBase).then((response) => response.json()) as {
       effectiveValidators: Record<string, unknown>;
     };
     assert.deepEqual(zeroAllowlist.effectiveValidators, {});
-    const zeroRepository = (await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
-      products: Array<{ repositories: Array<Parameters<typeof buildRepositoryContext>[1]> }>;
-    }).products[0]!.repositories[0]!;
+    const zeroRepositories = (await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
+      products: Array<{ repositories: Array<Parameters<typeof buildRepositoryContext>[1] & { id: string }> }>;
+    }).products[0]!.repositories;
+    const zeroRepository = zeroRepositories.find((repository) => repository.id === registered.repository.id)!;
     const zeroRuntimeContext = await buildRepositoryContext(await loadConfig(project), zeroRepository);
     assert.deepEqual(zeroRuntimeContext.config.repository.validators, {}, "ZERO in the API must mean execution has zero validators");
 
     for (const name of ["local-config-check", "pytest", "verify-release"]) {
-      const restored = await fetch(`${validatorBase}/${encodeURIComponent(name)}/suppression`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      });
+      const restored = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "DELETE");
       assert.equal(restored.status, 200, await restored.clone().text());
     }
-    const restoreManual = await fetch(`${validatorBase}/test/override`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "npm", args: ["test"], timeoutMs: 120_000 }),
+    const restoreManual = await mutateValidator("test/override", "PUT", {
+      validator: { command: "npm", args: ["test"], timeoutMs: 120_000 },
     });
     assert.equal(restoreManual.status, 200, await restoreManual.clone().text());
 
-    const suppress = await fetch(`${validatorBase}/pytest/suppression`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
+    const suppress = await mutateValidator("pytest/suppression", "PUT");
     assert.equal(suppress.status, 200, await suppress.clone().text());
     assert.equal(((await suppress.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
 
-    const override = await fetch(`${validatorBase}/pytest/override`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "python", args: ["-m", "pytest", "-q"], timeoutMs: 30_000 }),
+    const override = await mutateValidator("pytest/override", "PUT", {
+      validator: { command: "python", args: ["-m", "pytest", "-q"], timeoutMs: 30_000 },
     });
     assert.equal(override.status, 200, await override.clone().text());
     assert.deepEqual(
@@ -4203,19 +4336,11 @@ test("product registry inspects and retains a local repository without changing 
       ["-m", "pytest", "-q"],
     );
 
-    const removeOverride = await fetch(`${validatorBase}/pytest/override`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
+    const removeOverride = await mutateValidator("pytest/override", "DELETE");
     assert.equal(removeOverride.status, 200, await removeOverride.clone().text());
     assert.equal(((await removeOverride.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
 
-    const restore = await fetch(`${validatorBase}/pytest/suppression`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
+    const restore = await mutateValidator("pytest/suppression", "DELETE");
     assert.equal(restore.status, 200, await restore.clone().text());
     assert.ok(((await restore.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest);
 
@@ -4236,6 +4361,30 @@ test("product registry inspects and retains a local repository without changing 
       "utf8",
     );
     await writeFile(path.join(project, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await writeFile(
+      path.join(devHarmonicsDirectory(otherProject), "config.json"),
+      `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(path.join(otherProject, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    const alignmentLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    try {
+      const sourceState = alignmentLedger.getRepository(registered.repository.id)!;
+      const targetState = alignmentLedger.getRepository(otherRepositoryId)!;
+      alignmentLedger.updateRepositoryValidatorState(otherRepositoryId, {
+        validators: sourceState.validators,
+        validatorDiscovery: sourceState.validatorDiscovery,
+        validatorLocalConfig: sourceState.validatorLocalConfig,
+        validatorSuppressions: sourceState.validatorSuppressions,
+      }, validatorStateFingerprint(
+        targetState.validatorDiscovery,
+        targetState.validatorLocalConfig,
+        targetState.validators,
+        targetState.validatorSuppressions,
+      ));
+    } finally {
+      alignmentLedger.close();
+    }
     const preview = await fetch(`${validatorBase}/rescan-preview`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4265,6 +4414,49 @@ test("product registry inspects and retains a local repository without changing 
       body: JSON.stringify({ ...previewBody, previewToken: "not-the-issued-token" }),
     });
     assert.equal(wrongTokenApply.status, 409, "a wrong preview token is independently stale");
+    for (const [field, value] of [
+      ["expectedHeadSha", "f".repeat(40)],
+      ["baseStateFingerprint", "e".repeat(64)],
+      ["candidateFingerprint", "d".repeat(64)],
+    ] as const) {
+      const alteredEcho = await fetch(`${validatorBase}/rescan-apply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...previewBody, [field]: value }),
+      });
+      assert.equal(alteredEcho.status, 409, `a valid token cannot authorize an altered ${field}`);
+    }
+    const otherValidatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(otherRepositoryId)}/validators`;
+    const otherPreview = await fetch(`${otherValidatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    assert.deepEqual(
+      {
+        expectedHeadSha: otherPreview.expectedHeadSha,
+        baseStateFingerprint: otherPreview.baseStateFingerprint,
+        candidateFingerprint: otherPreview.candidateFingerprint,
+      },
+      {
+        expectedHeadSha: previewBody.expectedHeadSha,
+        baseStateFingerprint: previewBody.baseStateFingerprint,
+        candidateFingerprint: previewBody.candidateFingerprint,
+      },
+      "repo B is deliberately aligned so only preview-token repository binding can reject repo A's token",
+    );
+    const crossRepositoryApply = await fetch(
+      `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(otherRepositoryId)}/validators/rescan-apply`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(previewBody),
+      },
+    );
+    assert.equal(crossRepositoryApply.status, 409, "a valid repo-A preview token cannot authorize repo B");
 
     await writeFile(path.join(project, "README.md"), "# Fixture\n\nHEAD-only change\n", "utf8");
     await git(project, ["add", "README.md"]);
@@ -4284,10 +4476,8 @@ test("product registry inspects and retains a local repository without changing 
       assert.equal(response.status, 200, await response.clone().text());
       return response.json() as Promise<typeof previewBody>;
     });
-    assert.equal((await fetch(`${validatorBase}/state-race/override`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command: "node", args: ["state-race.js"], timeoutMs: 1_000 }),
+    assert.equal((await mutateValidator("state-race/override", "PUT", {
+      validator: { command: "node", args: ["state-race.js"], timeoutMs: 1_000 },
     })).status, 200);
     const stateOnlyStale = await fetch(`${validatorBase}/rescan-apply`, {
       method: "POST",
@@ -4295,11 +4485,7 @@ test("product registry inspects and retains a local repository without changing 
       body: JSON.stringify(statePreview),
     });
     assert.equal(stateOnlyStale.status, 409, "an allowlist-state-only change is independently stale");
-    assert.equal((await fetch(`${validatorBase}/state-race/override`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    })).status, 200);
+    assert.equal((await mutateValidator("state-race/override", "DELETE")).status, 200);
 
     const candidatePreview = await fetch(`${validatorBase}/rescan-preview`, {
       method: "POST",
@@ -4334,9 +4520,10 @@ test("product registry inspects and retains a local repository without changing 
     const appliedBody = await applied.json() as { effectiveValidators: Record<string, unknown> };
     assert.deepEqual(Object.keys(appliedBody.effectiveValidators), ["build", "local-config-check", "local-config-new", "ruff", "test", "verify-release"]);
 
-    const portfolio = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as { products: Array<{ repositories: Array<{ owners: string[]; validators: Record<string, { command: string }> }> }> };
-    assert.deepEqual(portfolio.products[0]?.repositories[0]?.owners, ["product-platform"]);
-    assert.equal(portfolio.products[0]?.repositories[0]?.validators.test?.command, "npm");
+    const portfolio = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as { products: Array<{ repositories: Array<{ id: string; owners: string[]; validators: Record<string, { command: string }> }> }> };
+    const registeredPortfolioRepository = portfolio.products[0]?.repositories.find((repository) => repository.id === registered.repository.id);
+    assert.deepEqual(registeredPortfolioRepository?.owners, ["product-platform"]);
+    assert.equal(registeredPortfolioRepository?.validators.test?.command, "npm");
     const runs = await fetch(`${dashboard.url}/api/runs`).then((response) => response.json()) as { runs: unknown[] };
     assert.equal(runs.runs.length, 0);
   } finally {

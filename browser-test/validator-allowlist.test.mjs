@@ -98,6 +98,22 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await assert.doesNotReject(() => page.getByRole("button", { name: "Products", exact: true }).waitFor());
   await page.getByRole("button", { name: "Products", exact: true }).click();
   const allowlist = page.locator(".validator-allowlist");
+  const productList = page.locator("#product-list");
+  const renderVersion = async () => Number(await productList.getAttribute("data-render-version") || 0);
+  const waitForCompletedRender = async (before, action, name = null) => {
+    await page.waitForFunction(
+      ({ before, repositoryId, action, name }) => {
+        const list = document.querySelector("#product-list");
+        const disclosure = document.querySelector(`[data-validator-disclosure][data-repository-id="${CSS.escape(repositoryId)}"]`);
+        const selector = `[data-validator-action="${CSS.escape(action)}"][data-repository-id="${CSS.escape(repositoryId)}"]${name ? `[data-validator-name="${CSS.escape(name)}"]` : ""}`;
+        const successor = document.querySelector(selector);
+        return Number(list?.dataset.renderVersion || 0) > before
+          && disclosure?.open === true
+          && successor === document.activeElement;
+      },
+      { before, repositoryId, action, name },
+    );
+  };
   const openAllowlist = async () => {
     await allowlist.evaluate((details) => {
       details.open = true;
@@ -107,6 +123,59 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await openAllowlist();
   await assert.doesNotReject(() => page.getByText("test", { exact: true }).waitFor());
   await assert.doesNotReject(() => page.getByText("Detected from package.json").waitFor());
+
+  let beforeRender = await renderVersion();
+  await page.getByRole("button", { name: "Add manual validator" }).click();
+  await waitForCompletedRender(beforeRender, "save-editor");
+  let manualEditor = page.locator("[data-validator-editor]");
+  await manualEditor.locator("[data-validator-editor-name]").fill("manual-check");
+  await manualEditor.locator("[data-validator-editor-command]").fill("node");
+  await manualEditor.locator("[data-validator-argument]").nth(0).fill("manual.js");
+  await manualEditor.locator("[data-validator-editor-timeout]").fill("30");
+  await manualEditor.locator("[data-validator-editor-cwd]").fill("tools");
+  beforeRender = await renderVersion();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/manual-check/override") && response.request().method() === "PUT"),
+    manualEditor.getByRole("button", { name: "Save manual validator" }).click(),
+  ]);
+  await waitForCompletedRender(beforeRender, "edit-override", "manual-check");
+
+  beforeRender = await renderVersion();
+  await page.getByRole("button", { name: "Edit manual validator manual-check" }).click();
+  await waitForCompletedRender(beforeRender, "save-editor");
+  manualEditor = page.locator("[data-validator-editor]");
+  assert.equal(await manualEditor.locator("[data-validator-editor-name]").inputValue(), "manual-check");
+  assert.equal(await manualEditor.locator("[data-validator-editor-command]").inputValue(), "node");
+  assert.equal(await manualEditor.locator("[data-validator-argument]").nth(0).inputValue(), "manual.js");
+  assert.equal(await manualEditor.locator("[data-validator-editor-timeout]").inputValue(), "30");
+  assert.equal(await manualEditor.locator("[data-validator-editor-cwd]").inputValue(), "tools");
+  await manualEditor.locator("[data-validator-editor-command]").fill("node-cancelled");
+  beforeRender = await renderVersion();
+  await manualEditor.getByRole("button", { name: "Cancel" }).click();
+  await waitForCompletedRender(beforeRender, "edit-override", "manual-check");
+  const afterCancel = await (await context.request.get(validatorUrl)).json();
+  assert.equal(afterCancel.effectiveValidators["manual-check"].command, "node", "Cancel is non-destructive");
+
+  beforeRender = await renderVersion();
+  await page.getByRole("button", { name: "Edit manual validator manual-check" }).click();
+  await waitForCompletedRender(beforeRender, "save-editor");
+  manualEditor = page.locator("[data-validator-editor]");
+  await manualEditor.locator("[data-validator-editor-command]").fill("node");
+  await manualEditor.locator("[data-validator-argument]").nth(0).fill("manual-updated.js");
+  await manualEditor.locator("[data-validator-editor-timeout]").fill("45");
+  beforeRender = await renderVersion();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/manual-check/override") && response.request().method() === "PUT"),
+    manualEditor.getByRole("button", { name: "Save manual validator" }).click(),
+  ]);
+  await waitForCompletedRender(beforeRender, "edit-override", "manual-check");
+  const afterEdit = await (await context.request.get(validatorUrl)).json();
+  assert.deepEqual(afterEdit.effectiveValidators["manual-check"], {
+    command: "node",
+    args: ["manual-updated.js"],
+    timeoutMs: 45_000,
+    cwd: "tools",
+  });
 
   await page.getByRole("button", { name: "Override validator test" }).click();
   const editor = page.locator("[data-validator-editor]");
@@ -120,8 +189,9 @@ test("validator allowlist works through the real dashboard at mobile and desktop
     editor.getByRole("button", { name: "Save manual validator" }).click(),
   ]);
   await editor.waitFor({ state: "detached" });
-  await openAllowlist();
-  await assert.doesNotReject(() => page.getByText("manual override", { exact: true }).waitFor());
+  assert.equal(await allowlist.getAttribute("open"), "");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-validator-action")), "edit-override");
+  await assert.doesNotReject(() => page.getByText("manual override", { exact: true }).first().waitFor());
   const overridePut = validatorRequests.find((request) => request.method === "PUT" && request.url.endsWith("/test/override"));
   assert.match(overridePut?.body?.baseStateFingerprint ?? "", /^[a-f0-9]{64}$/);
   assert.deepEqual(
@@ -141,7 +211,8 @@ test("validator allowlist works through the real dashboard at mobile and desktop
     removeTestOverride.click(),
   ]);
   await removeTestOverride.waitFor({ state: "detached" });
-  await openAllowlist();
+  assert.equal(await allowlist.getAttribute("open"), "");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-validator-action")), "override");
   await assert.doesNotReject(() => page.getByText("discovered", { exact: true }).waitFor());
   assert.ok(validatorRequests.some((request) => request.method === "DELETE" && request.url.endsWith("/test/override")));
 
@@ -158,18 +229,29 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await assert.doesNotReject(() => apply.waitFor({ state: "visible" }));
   assert.equal(await page.locator(".validator-allowlist").getAttribute("open"), "");
   assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Apply these validator changes");
+  beforeRender = await renderVersion();
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/rescan-apply") && response.request().method() === "POST"),
     apply.click(),
   ]);
-  await apply.waitFor({ state: "detached" });
+  await waitForCompletedRender(beforeRender, "preview-rescan");
   await page.getByText("build", { exact: true }).waitFor({ state: "attached" });
-  await openAllowlist();
   await assert.doesNotReject(() => page.getByText("build", { exact: true }).waitFor());
   const rescanApply = validatorRequests.find((request) => request.method === "POST" && request.url.endsWith("/rescan-apply"));
   assert.match(rescanApply?.body?.previewToken ?? "", /^[a-f0-9-]{36}$/);
   assert.match(rescanApply?.body?.baseStateFingerprint ?? "", /^[a-f0-9]{64}$/);
 
+  await writeFile(
+    path.join(repository, "package.json"),
+    `${JSON.stringify({ name: "validator-browser-fixture", private: true, scripts: { build: "tsc", lint: "eslint .", test: "node --test" } }, null, 2)}\n`,
+    "utf8",
+  );
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/rescan-preview") && response.request().method() === "POST"),
+    page.getByRole("button", { name: "Preview validator rescan" }).click(),
+  ]);
+  const staleApply = page.getByRole("button", { name: "Apply these validator changes" });
+  await staleApply.waitFor({ state: "visible" });
   const staleFingerprint = (await (await context.request.get(validatorUrl)).json()).stateFingerprint;
   const externalMutation = await context.request.put(`${validatorUrl}/external/override`, {
     data: {
@@ -179,33 +261,58 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   });
   assert.equal(externalMutation.status(), 200, await externalMutation.text());
   await Promise.all([
-    page.waitForResponse((response) => response.url().endsWith("/build/suppression") && response.status() === 409),
-    page.getByRole("button", { name: "Remove validator build" }).click(),
+    page.waitForResponse((response) => response.url().endsWith("/rescan-apply") && response.status() === 409),
+    staleApply.click(),
   ]);
   const localAlert = page.locator(`[data-validator-error-for="${repositoryId}"]`);
   await assert.doesNotReject(() => localAlert.waitFor({ state: "attached" }));
-  await assert.doesNotReject(() => localAlert.getByText(/validator allowlist changed/i).waitFor());
+  await assert.doesNotReject(() => localAlert.getByText(/preview is stale/i).waitFor());
   assert.equal(await page.evaluate((id) => document.activeElement?.getAttribute("data-validator-error-for") === id, repositoryId), true);
-  assert.ok(validatorRequests.some((request) => request.method === "PUT" && request.url.endsWith("/build/suppression")));
+  const previewAgain = localAlert.getByRole("button", { name: "Preview again" });
+  assert.equal(await previewAgain.isVisible(), true);
+  assert.ok(await previewAgain.evaluate((button) => button.getBoundingClientRect().height >= 44), "rendered stale Preview again control is at least 44px tall");
+  assert.equal(await allowlist.getAttribute("open"), "");
+  assert.ok(validatorRequests.some((request) => request.method === "POST" && request.url.endsWith("/rescan-apply")));
 
   await page.getByRole("button", { name: "Products", exact: true }).click();
   await openAllowlist();
   for (const name of ["build", "test"]) {
     const remove = page.getByRole("button", { name: `Remove validator ${name}` });
+    beforeRender = await renderVersion();
     await Promise.all([
       page.waitForResponse((response) => response.url().endsWith(`/${name}/suppression`) && response.status() === 200),
       remove.click(),
     ]);
-    await remove.waitFor({ state: "detached" });
-    await openAllowlist();
+    await waitForCompletedRender(beforeRender, "restore", name);
   }
+  const restoreBuild = page.getByRole("button", { name: "Restore validator build to the executable allowlist" });
+  beforeRender = await renderVersion();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/build/suppression") && response.request().method() === "DELETE"),
+    restoreBuild.click(),
+  ]);
+  await waitForCompletedRender(beforeRender, "suppress", "build");
+  const suppressBuildAgain = page.getByRole("button", { name: "Remove validator build" });
+  beforeRender = await renderVersion();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/build/suppression") && response.request().method() === "PUT" && response.status() === 200),
+    suppressBuildAgain.click(),
+  ]);
+  await waitForCompletedRender(beforeRender, "restore", "build");
+  const removeManualCheck = page.getByRole("button", { name: "Remove manual override manual-check" });
+  beforeRender = await renderVersion();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/manual-check/override") && response.request().method() === "DELETE"),
+    removeManualCheck.click(),
+  ]);
+  await waitForCompletedRender(beforeRender, "add-override");
   const removeExternal = page.getByRole("button", { name: "Remove manual override external" });
+  beforeRender = await renderVersion();
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/external/override") && response.request().method() === "DELETE"),
     removeExternal.click(),
   ]);
-  await removeExternal.waitFor({ state: "detached" });
-  await openAllowlist();
+  await waitForCompletedRender(beforeRender, "add-override");
   await assert.doesNotReject(() => allowlist.locator("summary").getByText("0 executable", { exact: true }).waitFor());
   const zeroState = await (await context.request.get(validatorUrl)).json();
   assert.deepEqual(zeroState.effectiveValidators, {});
@@ -228,7 +335,7 @@ test("validator allowlist works through the real dashboard at mobile and desktop
 
   const unexpectedResponses = errorResponses.filter(({ status, url }) => !(
     (status === 404 && url === `${dashboard.url}/api/products/browser-fixture/intelligence`)
-    || (status === 409 && url === `${validatorUrl}/build/suppression`)
+    || (status === 409 && url === `${validatorUrl}/rescan-apply`)
   ));
   const resourceConsoleStatuses = consoleErrors.map((message) => {
     const match = /^Failed to load resource: the server responded with a status of (404|409) \((?:Not Found|Conflict)\)$/.exec(message);

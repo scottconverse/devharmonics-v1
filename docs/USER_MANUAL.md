@@ -367,7 +367,7 @@ Key settings in `config.json`:
 - `retry.maxAttempts`: maximum attempts per task
 - `runPolicy.autonomy`: default run mode used by the dashboard and CLI
 - `providers.*.timeoutMs`: provider-process timeout
-- `validators`: owner-authored commands the architect may select by name
+- `validators`: effective configured commands the architect may select by name; initialization-generated entries are identified by an exact match in `generatedValidators`, while entries added or changed by the owner are owner-authored
 
 For a new project or a repository's first product attachment, DevHarmonics also performs read-only validator discovery. Repository evidence can select only a DevHarmonics-owned fixed recipe (`npm run` for supported literal script names, `python -m pytest`, `python -m ruff check .`, or `bash scripts/verify-release.sh`). Fixed-recipe discovery never copies package-script bodies, workflow shell text, or release-script bodies into a command. Commands explicitly authored by the repository owner in `.devharmonics/config.json` are separate: DevHarmonics snapshots them during first attachment or an owner-applied rescan. Compose may appear as setup-dependent evidence, but it is not made executable automatically. No detectable gate means exactly zero validators; `git diff --check` is never inserted as a substitute for behavioral verification.
 

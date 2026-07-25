@@ -5,10 +5,13 @@ import path from "node:path";
 import test from "node:test";
 import {
   createValidatorDiscoverySnapshot,
+  diffValidatorMaps,
   diffValidatorDiscoveries,
   discoverRepositoryValidators,
   discoveredValidatorMap,
   effectiveValidatorAllowlist,
+  validatorCandidateFingerprint,
+  validatorStateFingerprint,
 } from "../src/validator-discovery.js";
 
 async function fixture(): Promise<string> {
@@ -236,6 +239,43 @@ test("workflow discovery discards the whole workflow source after the aggregate 
   }
 });
 
+test("workflow aggregate byte limit accepts exactly 4 MiB and rejects 4 MiB plus one", async () => {
+  const exact = await fixture();
+  const oversized = await fixture();
+  try {
+    const workflowBytes = 512 * 1024;
+    const workflowPrefix = "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n#";
+    const exactWorkflow = `${workflowPrefix}${"x".repeat(workflowBytes - workflowPrefix.length)}`;
+    for (const root of [exact, oversized]) {
+      const workflows = path.join(root, ".github", "workflows");
+      await mkdir(workflows, { recursive: true });
+      await Promise.all(Array.from({ length: 8 }, (_, index) => writeFile(
+        path.join(workflows, `boundary-${index}.yml`),
+        exactWorkflow,
+      )));
+    }
+    await writeFile(path.join(oversized, ".github", "workflows", "boundary-plus-one.yml"), "x");
+
+    const exactResult = await discoverRepositoryValidators(exact);
+    assert.deepEqual(Object.keys(discoveredValidatorMap(exactResult)), ["pytest"]);
+    assert.equal(
+      exactResult.diagnostics.some((item) => item.source === ".github/workflows" && item.code === "limit_reached"),
+      false,
+    );
+
+    const oversizedResult = await discoverRepositoryValidators(oversized);
+    assert.deepEqual(discoveredValidatorMap(oversizedResult), {});
+    assert.ok(
+      oversizedResult.diagnostics.some(
+        (item) => item.source === ".github/workflows" && item.code === "limit_reached",
+      ),
+    );
+  } finally {
+    await rm(exact, { recursive: true, force: true });
+    await rm(oversized, { recursive: true, force: true });
+  }
+});
+
 test("source byte limits accept exact boundaries and reject the first oversized byte", async () => {
   const exact = await fixture();
   const oversized = await fixture();
@@ -379,4 +419,81 @@ test("rescan diff includes detection-source changes as changed", async () => {
     await rm(first, { recursive: true, force: true });
     await rm(second, { recursive: true, force: true });
   }
+});
+
+test("validator fingerprints are deterministic under map and suppression reordering and sensitive to every input", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), "[tool.pytest.ini_options]\n");
+    const discovery = createValidatorDiscoverySnapshot(
+      await discoverRepositoryValidators(root),
+      "a".repeat(40),
+      "2026-07-25T00:00:00.000Z",
+    );
+    const localA = {
+      zeta: { command: "node", args: ["zeta.js"], timeoutMs: 1_000 },
+      alpha: { command: "node", args: ["alpha.js"], timeoutMs: 2_000 },
+    };
+    const localB = {
+      alpha: localA.alpha,
+      zeta: localA.zeta,
+    };
+    const overridesA = {
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 3_000 },
+      test: { command: "npm", args: ["run", "test"], timeoutMs: 4_000 },
+    };
+    const overridesB = {
+      test: overridesA.test,
+      ruff: overridesA.ruff,
+    };
+    const state = validatorStateFingerprint(discovery, localA, overridesA, ["zeta", "alpha", "zeta"]);
+    assert.equal(
+      validatorStateFingerprint(discovery, localB, overridesB, ["alpha", "zeta"]),
+      state,
+      "equivalent maps, suppression order, and suppression duplicates must canonicalize",
+    );
+    assert.notEqual(validatorStateFingerprint(null, localA, overridesA, ["zeta", "alpha"]), state);
+    assert.notEqual(
+      validatorStateFingerprint(discovery, { ...localA, alpha: { ...localA.alpha, timeoutMs: 2_001 } }, overridesA, ["zeta", "alpha"]),
+      state,
+    );
+    assert.notEqual(
+      validatorStateFingerprint(discovery, localA, { ...overridesA, test: { ...overridesA.test, timeoutMs: 4_001 } }, ["zeta", "alpha"]),
+      state,
+    );
+    assert.notEqual(validatorStateFingerprint(discovery, localA, overridesA, ["zeta"]), state);
+
+    const candidate = validatorCandidateFingerprint(discovery, localA);
+    assert.equal(validatorCandidateFingerprint(discovery, localB), candidate);
+    assert.notEqual(
+      validatorCandidateFingerprint({ ...discovery, fingerprint: "b".repeat(64) }, localA),
+      candidate,
+    );
+    assert.notEqual(
+      validatorCandidateFingerprint(discovery, { ...localA, alpha: { ...localA.alpha, args: ["changed.js"] } }),
+      candidate,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator map diff classifies added, changed, removed, and unchanged names independently", () => {
+  const stable = { command: "node", args: ["stable.js"], timeoutMs: 1_000 };
+  const before = {
+    changed: { command: "node", args: ["before.js"], timeoutMs: 2_000 },
+    removed: { command: "node", args: ["removed.js"], timeoutMs: 3_000 },
+    unchanged: stable,
+  };
+  const after = {
+    added: { command: "node", args: ["added.js"], timeoutMs: 4_000 },
+    changed: { command: "node", args: ["after.js"], timeoutMs: 2_000 },
+    unchanged: { ...stable },
+  };
+  assert.deepEqual(diffValidatorMaps(before, after), {
+    added: ["added"],
+    changed: ["changed"],
+    removed: ["removed"],
+    unchanged: ["unchanged"],
+  });
 });

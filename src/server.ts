@@ -9,7 +9,14 @@ import { inspectProviders } from "./doctor.js";
 import { catalogPricesPerMTokens } from "./routing.js";
 import { runCostCounterfactual } from "./model-performance.js";
 import { instantiateWorkflow, parseWorkflowDocument } from "./workflows.js";
-import { Ledger, STEERABLE_RUN_STATUSES, STEERABLE_TASK_STATUSES, type RepositoryRecord } from "./ledger.js";
+import {
+  Ledger,
+  STEERABLE_RUN_STATUSES,
+  STEERABLE_TASK_STATUSES,
+  ValidatorStateConflictError,
+  ValidatorStatePreconditionError,
+  type RepositoryRecord,
+} from "./ledger.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ModelCatalogCoordinator } from "./catalog.js";
 import { modelQualificationFingerprint } from "./model-fingerprint.js";
@@ -137,7 +144,14 @@ export async function startDashboard(options: {
       await route(request, response, { defaultProject, ledger, orchestrator, catalog, openRouter, delivery, reconciliationRunner, reconciliationTimeoutMs, validatorPreviewTtlMs, eventStreams, validatorRescanPreviews });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(response, error instanceof ValidatorConfigSnapshotError ? 422 : error instanceof ClientRequestError ? 400 : 500, { error: redactText(message) });
+      const status = error instanceof ValidatorConfigSnapshotError
+        ? 422
+        : error instanceof ValidatorStatePreconditionError
+          ? 428
+          : error instanceof ValidatorStateConflictError
+            ? 409
+            : error instanceof ClientRequestError ? 400 : 500;
+      sendJson(response, status, { error: redactText(message) });
     }
   });
 
@@ -702,6 +716,7 @@ async function route(
       governanceSources?: unknown;
       governanceRules?: unknown;
       validators?: unknown;
+      baseStateFingerprint?: unknown;
     };
     if (!body.localPath?.trim()) {
       sendJson(response, 400, { error: "Local repository path is required" });
@@ -726,6 +741,7 @@ async function route(
     let initialValidatorState: {
       validatorDiscovery: ReturnType<typeof createValidatorDiscoverySnapshot>;
       validatorLocalConfig: Awaited<ReturnType<typeof loadConfiguredValidatorSnapshot>>;
+      validators: ReturnType<typeof validatorMap>;
     } | null = null;
     if (!existing?.localPath) {
       if (!inspection.headSha) throw new ClientRequestError("Validator discovery requires a readable repository HEAD");
@@ -736,7 +752,20 @@ async function route(
       initialValidatorState = {
         validatorDiscovery: createValidatorDiscoverySnapshot(discovery, inspection.headSha),
         validatorLocalConfig: localConfig,
+        validators: validatorMap(body.validators),
       };
+    }
+    let ownerValidators = existing?.validators ?? validatorMap(body.validators);
+    if (existing?.localPath && body.validators !== undefined) {
+      if (typeof body.baseStateFingerprint !== "string") {
+        sendJson(response, 428, { error: "A current validator state fingerprint precondition is required" });
+        return;
+      }
+      ownerValidators = context.ledger.updateRepositoryValidatorState(
+        existing.id,
+        { validators: validatorMap(body.validators) },
+        body.baseStateFingerprint,
+      ).validators;
     }
     const repository = context.ledger.upsertRepository({
       id: repositoryId,
@@ -757,7 +786,7 @@ async function route(
       expectedBranch: expectedBranch ?? null,
       owners: stringArray(body.owners),
       dependencyRepositoryIds,
-      validators: validatorMap(body.validators),
+      validators: ownerValidators,
       governanceSources: stringArray(body.governanceSources),
       governanceRules: stringArray(body.governanceRules),
     });
@@ -769,7 +798,17 @@ async function route(
       compatibilityIssues: [...inspection.issues.map((issue) => issue.message), ...unknownDependencies.map((id) => `Dependency repository '${id}' is not registered in ${product.name}.`)],
     });
     if (initialValidatorState) {
-      context.ledger.updateRepositoryValidatorState(repository.id, initialValidatorState);
+      const current = context.ledger.getRepository(repository.id)!;
+      context.ledger.updateRepositoryValidatorState(
+        repository.id,
+        initialValidatorState,
+        validatorStateFingerprint(
+          current.validatorDiscovery,
+          current.validatorLocalConfig,
+          current.validators,
+          current.validatorSuppressions,
+        ),
+      );
     }
     sendJson(response, 201, { repository: context.ledger.getRepository(repository.id), inspection });
     return;
@@ -820,7 +859,11 @@ async function route(
       repository.validators,
       repository.validatorSuppressions,
     );
-    if (baseStateFingerprint !== null && baseStateFingerprint !== currentStateFingerprint) {
+    if (baseStateFingerprint === null) {
+      sendJson(response, 428, { error: "A current validator state fingerprint precondition is required" });
+      return;
+    }
+    if (baseStateFingerprint !== currentStateFingerprint) {
       sendJson(response, 409, { error: "The validator allowlist changed after it was loaded; review the latest state and retry" });
       return;
     }
@@ -836,7 +879,7 @@ async function route(
       } else {
         delete validators[name];
       }
-      const updated = context.ledger.updateRepositoryValidatorState(repositoryId, { validators });
+      const updated = context.ledger.updateRepositoryValidatorState(repositoryId, { validators }, baseStateFingerprint);
       sendJson(response, 200, validatorAllowlistResponse(updated));
       return;
     }
@@ -845,7 +888,7 @@ async function route(
     else suppressions.delete(name);
     const updated = context.ledger.updateRepositoryValidatorState(repositoryId, {
       validatorSuppressions: [...suppressions],
-    });
+    }, baseStateFingerprint);
     sendJson(response, 200, validatorAllowlistResponse(updated));
     return;
   }
@@ -950,7 +993,7 @@ async function route(
     const updated = context.ledger.updateRepositoryValidatorState(repositoryId, {
       validatorDiscovery: candidate,
       validatorLocalConfig: candidateLocalConfig,
-    });
+    }, preview.baseStateFingerprint);
     sendJson(response, 200, validatorAllowlistResponse(updated));
     return;
   }

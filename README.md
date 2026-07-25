@@ -450,7 +450,7 @@ If you want a managed cloud product, an agent that merges to `main` on your beha
 
 ## A codebase you can navigate
 
-About 17,500 lines of TypeScript with Zod schemas at every input boundary, exactly one production dependency (`zod`), and a 2,700-line dashboard written in plain HTML, CSS, and JavaScript with no build step.
+About 17,500 lines of TypeScript with Zod schemas at every input boundary, two production dependencies (`zod` for input validation and `yaml` for bounded workflow parsing), and a 2,700-line dashboard written in plain HTML, CSS, and JavaScript with no build step.
 
 The integration suite runs **fake provider commands against temporary Git repositories**, so the full orchestration path — planning, worktrees, validators, merges, review — is exercised without a single real credential. Contributions must keep it that way.
 

@@ -158,7 +158,7 @@ button { cursor: pointer; }
 .validator-entry code { overflow-wrap: anywhere; }
 .validator-entry.suppressed { opacity: .75; }
 .validator-entry-actions, .validator-management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.validator-entry-actions button, .validator-management-actions button, .validator-preview button { min-height: 44px; }
+.validator-entry-actions button, .validator-management-actions button, .validator-preview button, .validator-local-error button { min-height: 44px; }
 .validator-preview { display: grid; gap: 7px; margin: 8px 0; padding: 9px; border: 1px solid var(--blue); border-radius: 7px; background: rgba(117, 167, 255, .06); }
 .validator-preview::before { content: "Review required"; color: var(--blue); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .validator-diff-table { display: grid; gap: 7px; }

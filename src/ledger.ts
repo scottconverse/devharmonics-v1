@@ -73,7 +73,7 @@ import type {
   WorkbenchSessionRecord,
 } from "./types.js";
 import { modelQuotaGroup, quotaResetAt } from "./antigravity.js";
-import type { PersistedValidatorDiscovery } from "./validator-discovery.js";
+import { validatorStateFingerprint, type PersistedValidatorDiscovery } from "./validator-discovery.js";
 
 interface RunRow {
   id: string;
@@ -1703,6 +1703,20 @@ export interface ModelPerformancePolicyRecord {
   updatedAt: string;
 }
 
+export class ValidatorStatePreconditionError extends Error {
+  constructor() {
+    super("A current validator state fingerprint precondition is required");
+    this.name = "ValidatorStatePreconditionError";
+  }
+}
+
+export class ValidatorStateConflictError extends Error {
+  constructor() {
+    super("The validator allowlist changed after it was loaded");
+    this.name = "ValidatorStateConflictError";
+  }
+}
+
 export class Ledger {
   private readonly database: DatabaseSync;
   private readonly filename: string;
@@ -3158,7 +3172,7 @@ export class Ledger {
         local_path = excluded.local_path, repository_role = excluded.repository_role,
         expected_branch = excluded.expected_branch, owners_json = excluded.owners_json,
         dependency_repository_ids_json = excluded.dependency_repository_ids_json,
-        validators_json = excluded.validators_json, governance_sources_json = excluded.governance_sources_json,
+        governance_sources_json = excluded.governance_sources_json,
         governance_rules_json = excluded.governance_rules_json
     `).run(
       repository.id,
@@ -3207,26 +3221,47 @@ export class Ledger {
       validatorLocalConfig?: Record<string, ValidatorConfig>;
       validatorSuppressions?: string[];
     },
+    expectedStateFingerprint: string,
   ): RepositoryRecord {
-    const existing = this.getRepository(repositoryId);
-    if (!existing) throw new Error(`Repository '${repositoryId}' was not found`);
-    const validators = input.validators ?? existing.validators;
-    const discovery = input.validatorDiscovery === undefined
-      ? existing.validatorDiscovery
-      : input.validatorDiscovery;
-    const localConfig = input.validatorLocalConfig ?? existing.validatorLocalConfig;
-    const suppressions = input.validatorSuppressions ?? existing.validatorSuppressions;
-    this.database.prepare(`
-      UPDATE repositories
-      SET validators_json = ?, validator_discovery_json = ?, validator_local_config_json = ?, validator_suppressions_json = ?
-      WHERE id = ?
-    `).run(
-      JSON.stringify(redactValue(validators)),
-      discovery === null ? null : JSON.stringify(discovery),
-      JSON.stringify(redactValue(localConfig)),
-      JSON.stringify([...new Set(suppressions)].sort()),
-      repositoryId,
-    );
+    if (!/^[a-f0-9]{64}$/.test(expectedStateFingerprint ?? "")) {
+      throw new ValidatorStatePreconditionError();
+    }
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database.prepare("SELECT * FROM repositories WHERE id = ?").get(repositoryId) as Record<string, unknown> | undefined;
+      if (!row) throw new Error(`Repository '${repositoryId}' was not found`);
+      const existing = repositoryRecordFromRow(row);
+      const currentStateFingerprint = validatorStateFingerprint(
+        existing.validatorDiscovery,
+        existing.validatorLocalConfig,
+        existing.validators,
+        existing.validatorSuppressions,
+      );
+      if (currentStateFingerprint !== expectedStateFingerprint) {
+        throw new ValidatorStateConflictError();
+      }
+      const validators = input.validators ?? existing.validators;
+      const discovery = input.validatorDiscovery === undefined
+        ? existing.validatorDiscovery
+        : input.validatorDiscovery;
+      const localConfig = input.validatorLocalConfig ?? existing.validatorLocalConfig;
+      const suppressions = input.validatorSuppressions ?? existing.validatorSuppressions;
+      this.database.prepare(`
+        UPDATE repositories
+        SET validators_json = ?, validator_discovery_json = ?, validator_local_config_json = ?, validator_suppressions_json = ?
+        WHERE id = ?
+      `).run(
+        JSON.stringify(redactValue(validators)),
+        discovery === null ? null : JSON.stringify(discovery),
+        JSON.stringify(redactValue(localConfig)),
+        JSON.stringify([...new Set(suppressions)].sort()),
+        repositoryId,
+      );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
     return this.getRepository(repositoryId)!;
   }
 
