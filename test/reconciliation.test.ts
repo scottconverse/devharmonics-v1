@@ -995,7 +995,7 @@ if (process.platform === "win32") {
       const result = await runProcess({
         command: wrapper,
         args: [],
-        cwd: root,
+        cwd: process.cwd(),
         timeoutMs: 2_000,
         killGraceMs: 300,
       });

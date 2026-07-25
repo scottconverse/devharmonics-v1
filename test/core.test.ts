@@ -9265,7 +9265,7 @@ test("M2: a prelaunch decision-persistence failure leaves no run row and no deci
   } finally {
     await orchestrator.shutdown();
     ledger.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -9323,7 +9323,7 @@ test("NEW-1: a valid start after a prelaunch failure creates a fresh run, persis
   } finally {
     await orchestrator.shutdown();
     ledger.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
