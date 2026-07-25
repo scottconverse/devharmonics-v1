@@ -12,6 +12,7 @@ import {
   seededShuffle,
   validateReadmeReleaseScope,
   validateRollbackGuide,
+  validateSupportingDocumentReleaseScope,
   validateWorkflowPolicy,
 } from "../src/ci-harness.js";
 import { analyzeVerificationIntegrity } from "../src/verification-integrity.js";
@@ -152,9 +153,25 @@ jobs:
       - ? uses
         : third-party/action@v1
 `;
+  const flowStyleJob = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  safe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo safe
+  bypass: { runs-on: ubuntu-latest, permissions: write-all, steps: [{ run: sleep-forever }] }
+`;
   assert.notDeepEqual(validateWorkflowPolicy(ambiguous), []);
   assert.notDeepEqual(validateWorkflowPolicy(malformed), []);
   assert.notDeepEqual(validateWorkflowPolicy(multilineKey), []);
+  assert.match(
+    validateWorkflowPolicy(flowStyleJob).join("\n"),
+    /bypass.*unrecognized job declaration|unrecognized job declaration.*bypass/i,
+  );
 });
 
 test("workflow policy allows local actions and pinned remote actions in canonical step forms", () => {
@@ -535,7 +552,7 @@ test("README distinguishes the latest tag from unreleased main and qualifies con
   assert.deepEqual(validateReadmeReleaseScope(readme, version), []);
 });
 
-test("README release-scope validation is mode-aware and rejects development copy on a tag", () => {
+test("release-scope validation is mode-aware across README and supporting documents", () => {
   const validateByMode = validateReadmeReleaseScope as unknown as (
     readme: string,
     version: string,
@@ -557,6 +574,22 @@ This checkout: **tagged release v1.2.3**`;
   assert.deepEqual(validateByMode(release, "1.2.3", "release"), []);
   assert.match(validateByMode(development, "1.2.3", "release").join("\n"), /must not claim.*unreleased main/i);
   assert.match(validateByMode(release, "1.2.3", "development").join("\n"), /unreleased main after/i);
+
+  for (const label of ["Manual target", "Architecture snapshot"] as const) {
+    const supportingDevelopment = `${label}: **unreleased \`main\` after v1.2.3**`;
+    const supportingRelease = `${label}: **tagged release v1.2.3**`;
+
+    assert.deepEqual(validateSupportingDocumentReleaseScope(supportingDevelopment, "1.2.3", label, "development"), []);
+    assert.deepEqual(validateSupportingDocumentReleaseScope(supportingRelease, "1.2.3", label, "release"), []);
+    assert.match(
+      validateSupportingDocumentReleaseScope(supportingDevelopment, "1.2.3", label, "release").join("\n"),
+      /tagged release/i,
+    );
+    assert.match(
+      validateSupportingDocumentReleaseScope(supportingRelease, "1.2.3", label, "development").join("\n"),
+      /unreleased main/i,
+    );
+  }
 });
 
 test("rollback guide uses count-independent staged exact-path restore instructions with pre-restore verification", async () => {

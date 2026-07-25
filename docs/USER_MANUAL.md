@@ -502,12 +502,11 @@ an interrupted swap.
 
 The recovery procedure requires **PowerShell 7** and must be run with `pwsh` on
 Windows, Linux, or macOS. The product suite is continuously verified on Windows
-and Ubuntu, while macOS product verification is manual. The rollback
-filesystem procedure itself is not continuously exercised on any operating
-system; its happy path has been manually exercised on Windows, and its complete
-failure-recovery matrix has not yet been runtime-qualified on Windows, Ubuntu,
-or macOS. Rehearse it against disposable copies before relying on it for an
-incident.
+and Ubuntu, while macOS product verification is manual. The automated suite
+runs the real state-machine script and verifier against disposable ledgers,
+injects interruption after every primary and compensating filesystem mutation,
+and proves safe resumption. Rehearse it against disposable copies before
+relying on it for an incident.
 
 ## 15. Security and privacy
 

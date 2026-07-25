@@ -124,32 +124,59 @@ export function countDeclaredNodeTests(source: string, fileName: string): number
 export function validateWorkflowPolicy(workflow: string): string[] {
   const failures: string[] = [];
   if (workflow.includes("\t")) failures.push("workflow must not contain ambiguous tab indentation");
-  const jobsStart = workflow.indexOf("\njobs:");
-  const jobsText = jobsStart >= 0 ? workflow.slice(jobsStart) : "";
-  const jobMatches = [...jobsText.matchAll(/^  (?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+)):\s*(?:#.*)?$/gm)];
-  if (jobMatches.length === 0) {
+  const lines = workflow.split(/\r?\n/);
+  const jobsHeaders = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^jobs:\s*(?:#.*)?$/.test(line));
+  const jobs: Array<{ name: string; lineIndex: number }> = [];
+  if (jobsHeaders.length !== 1) {
     failures.push("workflow must expose at least one top-level job");
   } else {
-    for (const [index, match] of jobMatches.entries()) {
-      const jobName = (match[1] ?? match[2] ?? match[3])!;
-      const start = match.index!;
-      const end = index + 1 < jobMatches.length ? jobMatches[index + 1]!.index! : jobsText.length;
-      const block = jobsText.slice(start, end);
+    const start = jobsHeaders[0]!.index + 1;
+    let end = lines.length;
+    for (let index = start; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (line.trim() && !line.trim().startsWith("#") && !/^\s/.test(line)) {
+        end = index;
+        break;
+      }
+    }
+    const seenJobs = new Set<string>();
+    for (let index = start; index < end; index += 1) {
+      const line = lines[index]!;
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const indent = line.match(/^\s*/)?.[0].length ?? 0;
+      if (indent !== 2) continue;
+      const match = line.match(/^  (?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+)):\s*(?:#.*)?$/);
+      if (!match) {
+        failures.push(`line ${index + 1}: unrecognized job declaration must not bypass policy: ${trimmed}`);
+        continue;
+      }
+      const name = (match[1] ?? match[2] ?? match[3])!;
+      if (seenJobs.has(name)) failures.push(`line ${index + 1}: duplicate job declaration is not allowed: ${name}`);
+      seenJobs.add(name);
+      jobs.push({ name, lineIndex: index });
+    }
+    if (jobs.length === 0) failures.push("workflow must expose at least one top-level job");
+
+    for (const [index, job] of jobs.entries()) {
+      const blockEnd = index + 1 < jobs.length ? jobs[index + 1]!.lineIndex : end;
+      const block = lines.slice(job.lineIndex, blockEnd).join("\n");
       const timeouts = [...block.matchAll(/^\s{4}(?:"timeout-minutes"|'timeout-minutes'|timeout-minutes)\s*:\s*(\d+)\s*$/gm)];
       if (
         timeouts.length !== 1 ||
         Number(timeouts[0]?.[1]) < 1 ||
         Number(timeouts[0]?.[1]) > 30
       ) {
-        failures.push(`${jobName}: expected exactly one timeout-minutes value in the range 1..30`);
+        failures.push(`${job.name}: expected exactly one timeout-minutes value in the range 1..30`);
       }
       if (/^\s{4}(?:"permissions"|'permissions'|permissions)\s*:/m.test(block)) {
-        failures.push(`${jobName}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
+        failures.push(`${job.name}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
       }
     }
   }
 
-  const lines = workflow.split(/\r?\n/);
   const permissionHeaders = lines
     .map((line, index) => ({ line, index }))
     .filter(({ line }) => /^(?:"permissions"|'permissions'|permissions)\s*:/.test(line));
@@ -285,6 +312,33 @@ export function validateReadmeReleaseScope(
   }
   if (!/continuously verified on Windows and Ubuntu; macOS verification is currently manual/i.test(readme)) {
     failures.push("continuous verification is limited to Windows and Ubuntu, with macOS identified as manual");
+  }
+  return failures;
+}
+
+export function validateSupportingDocumentReleaseScope(
+  document: string,
+  version: string,
+  label: "Manual target" | "Architecture snapshot",
+  mode: "development" | "release",
+): string[] {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const developmentMarker = new RegExp(
+    `${escapedLabel}:\\s*\\*\\*unreleased\\s+\`?main\`?\\s+after\\s+v${escapedVersion}\\*\\*`,
+    "i",
+  );
+  const releaseMarker = new RegExp(
+    `${escapedLabel}:\\s*\\*\\*tagged\\s+release\\s+v${escapedVersion}\\*\\*`,
+    "i",
+  );
+  const failures: string[] = [];
+  if (mode === "development") {
+    if (!developmentMarker.test(document)) failures.push(`${label}: **unreleased main after v${version}**`);
+    if (releaseMarker.test(document)) failures.push(`${label} on development main must not claim to be a tagged release`);
+  } else {
+    if (!releaseMarker.test(document)) failures.push(`${label}: **tagged release v${version}**`);
+    if (developmentMarker.test(document)) failures.push(`${label} in a tagged release must not claim to be unreleased main`);
   }
   return failures;
 }

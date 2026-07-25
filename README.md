@@ -416,7 +416,7 @@ This project-status section describes `main`. What the current unreleased `main`
 
 | Signal | Reading |
 |---|---|
-| Automated suite | 391 declared cross-platform test cases across configuration, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts and ledger-backup verification, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
+| Automated suite | 398 declared cross-platform test cases across configuration, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
 | Schema handling | Ordered transactional migrations to ledger schema 37, automatic pre-upgrade backups, integrity + foreign-key validation, rollback on failure, and refusal to open a newer schema |
 | Continuous integration | GitHub Actions runs the release-truth check and full suite on Node 24 for Ubuntu and Windows. Separate Ubuntu jobs run every compiled test file once in a logged, seeded shuffled order and mutation-prove that the verification-integrity sentinel goes RED before restoration returns it to GREEN |
 | Distribution | Source checkout only. No installer, no published package |
@@ -472,7 +472,7 @@ Read [Contributing](CONTRIBUTING.md) first. Design proposals start as a GitHub D
 | | |
 |---|---|
 | [User manual](docs/USER_MANUAL.md) | Install, provider sign-in, the dashboard, troubleshooting, uninstall |
-| [Rollback and ledger recovery](docs/ROLLBACK.md) | Safely restore a pre-upgrade ledger while preserving both source ledgers |
+| [Rollback and ledger recovery](docs/ROLLBACK.md) | Run the restart-safe PowerShell 7 state machine to restore a verified pre-upgrade ledger while preserving backup, kept, and rejected sources |
 | [Architecture](docs/ARCHITECTURE.md) | Components, trust boundaries, persistence, deliberate non-features |
 | [Product specification](docs/PRODUCT_SPEC.md) | Canonical product definition |
 | [Implementation plan](docs/IMPLEMENTATION_PLAN.md) | Increment-by-increment delivery plan |
