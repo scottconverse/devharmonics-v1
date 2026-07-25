@@ -1,13 +1,15 @@
 # DevHarmonics Canonical Product Specification
 
 Document status: **Canonical product direction**
-Specification version: **1.12**
+Specification version: **1.13**
 Written: **2026-07-13**
-Revised: **2026-07-16**
+Revised: **2026-07-25**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Canonical Product Specification](https://docs.google.com/document/d/1rd-_gqHHPZHhTkrULJR9tHcbAVUOGONsbuEFCV-8pRQ/edit?usp=drivesdk)
 
-Revision history: **v1.12 (2026-07-16)** — Recorded the owner's licensing decision: DevHarmonics is released under the Apache License 2.0. The licensing open question is resolved and removed; the repository carries the canonical LICENSE file, and the version-consistency check enforces the license file plus matching package and lockfile metadata.
+Revision history: **v1.13 (2026-07-25)** — Recorded the owner-locked beta contract: Option A ("one product airtight"), Block 0a plus Slice D, and three qualifying real deliveries performed only after Block 0a passes. Distinguished the Block 0a beta audit from the later full Phase 0 comprehension gate, and kept beta readiness separate from publication or tagging.
+
+Prior revision: **v1.12 (2026-07-16)** — Recorded the owner's licensing decision: DevHarmonics is released under the Apache License 2.0. The licensing open question is resolved and removed; the repository carries the canonical LICENSE file, and the version-consistency check enforces the license file plus matching package and lockfile metadata.
 
 Prior revision: **v1.11 (2026-07-15)** — Made visible working-state feedback a required product capability rather than deferred polish. Every DevHarmonics-owned operation must acknowledge immediately, expose truthful lifecycle and elapsed activity, distinguish active/waiting/retrying/stalled states, persist across navigation and refresh, and end visibly. Progress indicators must be evidence-based rather than fabricated. Each remaining workflow must ship its own complete feedback states so UI/UX debt is not deferred into a later retrofit.
 
@@ -1059,7 +1061,7 @@ The moat is not access to any one model. It is the accumulated operational intel
 
 ## 14. Current baseline and delivery roadmap
 
-### 14.1 Current implementation baseline: v0.5.1
+### 14.1 Current implementation baseline: v0.6.1
 
 The current release already provides:
 
@@ -1093,9 +1095,48 @@ The current release already provides:
 - configured independent review quorums with repository-scoped fixer tasks, revalidation, invalidation, and re-review; and
 - review receipts cryptographically bound to the exact plan, check evidence, task reports, diff, and repository base/HEAD set.
 
-It does not yet provide the complete product defined here. Approved branch/draft-PR delivery, a completed real CivicSuite implementation, live run steering, proven in-run provider/local fallback, restart reconstruction for interrupted multi-repository integration sets, reusable development workflows, campaign orchestration/recovery, and ACP runtimes remain active roadmap work.
+It does not yet provide the complete product defined here. The tagged v0.6.1
+release and subsequent unreleased work have advanced several capabilities beyond
+this baseline summary; `README.md` is the authority for what the current
+checkout ships. The beta-readiness contract below is a separate advancement
+gate and must not be inferred from a feature list.
 
-### 14.2 Milestone A: Personal production cockpit
+### 14.2 Beta-readiness contract: one product airtight
+
+The owner-selected beta scope is **Option A: one product airtight**. The
+full-organization destination remains unchanged, but it is reached by widening
+from a proven product-sized unit rather than by holding the first beta for every
+CivicSuite repository.
+
+Beta readiness requires all of the following:
+
+1. **Block 0a complete and audited.** Block 0a is the four wrong-answer
+   criticals:
+   - **P0-1:** authoritative release-version comprehension — complete;
+   - **P0-2:** nested-manifest and subproject comprehension — pending;
+   - **P0-3:** structured dependency parsing and provenance — pending; and
+   - **P0-4:** real validator discovery without no-op coverage — complete.
+2. **Slice D complete.** Restart hardening must reconstruct interrupted
+   integration sets, reconcile retained work safely, continue according to the
+   recorded phase, and clean up worktrees automatically. This remains pending.
+3. **Three qualifying real deliveries after Block 0a passes.** Earlier
+   deliveries cannot prove the repaired comprehension substrate. The required
+   sequence is:
+   - one single-repository delivery;
+   - one coordinated module + CivicCore delivery; and
+   - one delivery in which divergence is detected honestly and contained.
+
+The Block 0a beta audit proves the four critical comprehension foundations
+needed for this deliberately narrow beta. It is not the full Phase 0 exit gate.
+The later Phase 0 gate covers Blocks 0a, 0b, and 0c across the full local
+repository census and requires at least 95% correct comprehension with zero
+silent wrong answers for version, validator, and dependency facts.
+
+Meeting this contract establishes **beta readiness**, not publication. Creating
+a beta tag, publishing a release, or announcing availability requires a
+separate explicit owner authorization.
+
+### 14.3 Milestone A: Personal production cockpit
 
 Goal: make DevHarmonics reliable enough for Scott’s recurring daily development work.
 
@@ -1116,7 +1157,7 @@ Priorities:
 13. friendlier Windows launcher/installer and provider onboarding; and
 14. one successful bounded CivicSuite single-repository pilot.
 
-### 14.3 Milestone B: CivicSuite multi-repository pilot
+### 14.4 Milestone B: CivicSuite multi-repository pilot
 
 Goal: safely coordinate real work across the CivicSuite program.
 
@@ -1134,7 +1175,7 @@ Priorities:
 10. repository Workbench and objective refinement; and
 11. one successful bounded cross-repository CivicSuite objective.
 
-### 14.4 Milestone C: Adaptive AI workforce
+### 14.5 Milestone C: Adaptive AI workforce
 
 Goal: make model coordination and scheduling the product’s standout capability.
 
@@ -1154,7 +1195,7 @@ Priorities:
 12. configurable adversarial review/fix/re-review topologies; and
 13. diagnostic partitioning, test-integrity controls, differential evidence, and regression accounting.
 
-### 14.5 Milestone D: Optional API and ecosystem breadth
+### 14.6 Milestone D: Optional API and ecosystem breadth
 
 Goal: expand the locally operated factory's available models, tools, and integrations without creating a DevHarmonics cloud platform.
 
