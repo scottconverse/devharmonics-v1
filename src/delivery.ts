@@ -86,7 +86,7 @@ export class VersionAuthorityRefusal extends DeliveryRefusal {
   }
 }
 
-function invalidAuthority(source: "package.json" | "pyproject.toml", detail: string): VersionAuthority {
+function invalidAuthority(source: "package.json" | "pyproject.toml", detail: string): Extract<VersionAuthority, { state: "invalid" }> {
   return { state: "invalid", source, detail: detail.replace(/\s+/g, " ").trim().slice(0, 240) };
 }
 
@@ -170,6 +170,7 @@ function unavailableAuthority(source: "package.json" | "pyproject.toml", detail:
 type ManifestRead =
   | { state: "present"; text: string }
   | { state: "absent" }
+  | Extract<VersionAuthority, { state: "invalid" }>
   | Extract<VersionAuthority, { state: "unavailable" }>;
 
 function parseTreeRecord(stdout: string, exactPath: string): { objectId: string } | null {
@@ -224,6 +225,7 @@ async function readManifestAtCommit(
     return unavailableAuthority(source, "git blob read could not be started");
   }
   if (processReadUnavailable(blob)) return unavailableAuthority(source, readFailureDetail(blob, "git blob read"));
+  if (blob.stdoutUtf8Valid === false) return invalidAuthority(source, `${source} is not valid UTF-8`);
   return { state: "present", text: blob.stdout };
 }
 
@@ -250,13 +252,13 @@ export class DeliveryService {
 
   async versionAuthorityAtCommit(localPath: string, commitish: string): Promise<VersionAuthority> {
     const packageRead = await readManifestAtCommit(this.runner, localPath, commitish, "package.json");
-    if (packageRead.state === "unavailable") return packageRead;
+    if (packageRead.state === "invalid" || packageRead.state === "unavailable") return packageRead;
     if (packageRead.state === "present") {
       const authority = packageAuthority(packageRead.text);
       if (authority.state !== "absent") return authority;
     }
     const pyprojectRead = await readManifestAtCommit(this.runner, localPath, commitish, "pyproject.toml");
-    if (pyprojectRead.state === "unavailable") return pyprojectRead;
+    if (pyprojectRead.state === "invalid" || pyprojectRead.state === "unavailable") return pyprojectRead;
     return parseVersionAuthority(
       packageRead.state === "present" ? packageRead.text : null,
       pyprojectRead.state === "present" ? pyprojectRead.text : null,

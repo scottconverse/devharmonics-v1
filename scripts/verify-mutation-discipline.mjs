@@ -107,6 +107,14 @@ await proveAdditionalMutation({
 });
 
 await proveAdditionalMutation({
+  compiledPath: path.join(root, "dist", "src", "delivery.js"),
+  testPath: path.join(root, "dist", "test", "core.test.js"),
+  mutationTarget: "if (blob.stdoutUtf8Valid === false)",
+  mutationReplacement: "if (false && blob.stdoutUtf8Valid === false)",
+  sentinelName: "immutable package and pyproject blobs reject malformed UTF-8 before parsing",
+});
+
+await proveAdditionalMutation({
   compiledPath: path.join(root, "dist", "src", "validator-discovery.js"),
   testPath: path.join(root, "dist", "test", "validator-discovery.test.js"),
   mutationTarget: 'const document = parseTomlRecord("pyproject.toml", text);',
@@ -114,4 +122,4 @@ await proveAdditionalMutation({
   sentinelName: "malformed TOML reports malformed and yields no pyproject validator candidate",
 });
 
-console.log("Additional release-authority and validator-malformed mutation sentinels passed.");
+console.log("Additional release-authority, UTF-8, and validator-malformed mutation sentinels passed.");

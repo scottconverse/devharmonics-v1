@@ -30,7 +30,7 @@ import {
 } from "../src/runtime.js";
 import type { DecisionRecord, DeliveryRepositoryRecord, DeliveryRepositoryStatus, DevHarmonicsConfig, ObjectiveRecord, PlannedTask, RunPlan, RunSummary, SteeringDirectiveRecord } from "../src/types.js";
 import { decisionRecordCreateSchema, decisionRecordSupersedeSchema, devHarmonicsConfigSchema, manualModelSchema, objectiveInputSchema, runPlanSchema, steeringPayloadSchema } from "../src/schemas.js";
-import { runProcess, subscriptionEnvironment } from "../src/process.js";
+import { runProcess, subscriptionEnvironment, type ProcessRequest, type ProcessResult } from "../src/process.js";
 import { REDACTED, redactText } from "../src/redaction.js";
 import { parseNvidiaSmi } from "../src/resources.js";
 import { empiricalLatencyScore, empiricalReliabilityScore, ModelRouter } from "../src/routing.js";
@@ -3217,9 +3217,58 @@ test("release authority distinguishes invalid manifests from genuine absence", a
   assert.deepEqual((await parseVersionAuthorityForFoundationTest("{ malformed", '[project]\nversion = "9.9.9"\n')).state, "invalid");
   assert.deepEqual((await parseVersionAuthorityForFoundationTest(JSON.stringify({ version: 123 }), null)).state, "invalid");
   assert.deepEqual((await parseVersionAuthorityForFoundationTest(JSON.stringify({ private: "true" }), null)).state, "invalid");
-  assert.deepEqual((await parseVersionAuthorityForFoundationTest(null, '[project]\nversion = "1.0.0"\nversion = "2.0.0"\n')).state, "invalid");
+  const invalidToml = await parseVersionAuthorityForFoundationTest(null, "[project\nversion = \"1.0.0\"\n");
+  assert.equal(invalidToml.state, "invalid");
+  assert.match("detail" in invalidToml ? invalidToml.detail : "", /line 1, column 9/i, "toml@5 source location survives bounded diagnostics");
   assert.deepEqual((await parseVersionAuthorityForFoundationTest(null, '[project]\ndynamic = ["version"]\n')).state, "absent");
   assert.deepEqual((await parseVersionAuthorityForFoundationTest(null, null)).state, "absent");
+});
+
+test("immutable package and pyproject blobs reject malformed UTF-8 before parsing", async () => {
+  const cases = [
+    {
+      source: "package.json",
+      bytes: Buffer.concat([
+        Buffer.from('{"description":"'),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.from('","version":"1.2.3"}\n'),
+      ]),
+    },
+    {
+      source: "pyproject.toml",
+      bytes: Buffer.concat([
+        Buffer.from('description = "'),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.from('"\n[project]\nversion = "1.2.3"\n'),
+      ]),
+    },
+  ] as const;
+
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `devharmonics-invalid-utf8-${fixture.source.replace(".", "-")}-`));
+    const ledger = new Ledger(path.join(root, "devharmonics.db"));
+    try {
+      assert.equal((await runProcess({ command: "git", args: ["init", "-b", "main"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+      await writeFile(path.join(root, fixture.source), fixture.bytes);
+      assert.equal((await runProcess({ command: "git", args: ["add", fixture.source], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+      assert.equal((await runProcess({
+        command: "git",
+        args: ["-c", "user.name=DevHarmonics Tests", "-c", "user.email=devharmonics-tests@local", "commit", "-m", "malformed utf8 fixture"],
+        cwd: root,
+        timeoutMs: 30_000,
+      })).exitCode, 0);
+      const commit = (await runProcess({ command: "git", args: ["rev-parse", "HEAD"], cwd: root, timeoutMs: 30_000 })).stdout.trim();
+      const authority = await new DeliveryService(ledger).versionAuthorityAtCommit(root, commit);
+      assert.deepEqual(
+        authority,
+        { state: "invalid", source: fixture.source, detail: `${fixture.source} is not valid UTF-8` },
+        `${fixture.source} bytes must be validated before JSON/TOML parsing`,
+      );
+    } finally {
+      ledger.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test("an authoritative public package version short-circuits lower pyproject failure", async () => {
@@ -3358,6 +3407,69 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged");
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.releaseTag, null);
     assert.equal(ledger.listEvents(runId).some((event) => event.kind === "delivery.tagged"), false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed UTF-8 in an immutable pyproject refuses direct tagging before tag side effects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-invalid-utf8-direct-tag-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const calls: Array<{ command: string; args: string[] }> = [];
+  try {
+    assert.equal((await runProcess({ command: "git", args: ["init", "-b", "main"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+    await writeFile(path.join(root, "pyproject.toml"), Buffer.concat([
+      Buffer.from('description = "'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"\n[project]\nversion = "1.2.3"\n'),
+    ]));
+    assert.equal((await runProcess({ command: "git", args: ["add", "pyproject.toml"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+    assert.equal((await runProcess({
+      command: "git",
+      args: ["-c", "user.name=DevHarmonics Tests", "-c", "user.email=devharmonics-tests@local", "commit", "-m", "malformed utf8 fixture"],
+      cwd: root,
+      timeoutMs: 30_000,
+    })).exitCode, 0);
+    const commit = (await runProcess({ command: "git", args: ["rev-parse", "HEAD"], cwd: root, timeoutMs: 30_000 })).stdout.trim();
+    const ok = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    const runner = async (request: ProcessRequest): Promise<ProcessResult> => {
+      calls.push(request);
+      if (request.command === "git" && ["ls-tree", "show", "cat-file"].includes(request.args[0]!)) return runProcess(request);
+      if (request.command === "git" && request.args.join(" ") === "remote get-url origin") {
+        return { ...ok, stdout: "https://github.com/civicsuite/invalid-utf8.git\n" };
+      }
+      if (request.command === "gh" && request.args[1] === "view") {
+        return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: commit } }) };
+      }
+      return ok;
+    };
+    const runId = ledger.createRun("Refuse malformed UTF-8 tag", root);
+    ledger.setRunStatus(runId, "running");
+    ledger.setRunStatus(runId, "ready", "READY");
+    ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:utf8", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: commit, branch: "devharmonics/utf8" });
+    ledger.updateDeliveryRepository(runId, "repo:utf8", {
+      status: "merged",
+      remoteUrl: "https://github.com/civicsuite/invalid-utf8",
+      pullRequestUrl: "https://github.com/civicsuite/invalid-utf8/pull/1",
+      mergeCommitOid: commit,
+    });
+    const config = structuredClone(defaultConfig);
+    config.runPolicy.allowExternalWrites = true;
+    await assert.rejects(
+      () => new DeliveryService(ledger, runner).execute({
+        runId,
+        repositoryId: "repo:utf8",
+        action: "tag_release",
+        tag: "v1.2.3",
+        confirmVersionMismatch: true,
+        config,
+        approval: { id: "utf8-direct", kind: "external_write", approvedBy: "local-owner", approvedAt: new Date().toISOString() },
+      }),
+      /pyproject\.toml is invalid.*UTF-8/i,
+    );
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });

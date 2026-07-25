@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export interface ProcessRequest {
   command: string;
@@ -62,6 +63,8 @@ export interface ProcessResult {
   treeKillUnconfirmed: boolean;
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
+  /** False when stdout contained bytes that are not a well-formed UTF-8 stream. */
+  stdoutUtf8Valid?: boolean;
 }
 
 export async function runProcess(request: ProcessRequest): Promise<ProcessResult> {
@@ -69,6 +72,10 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     const startedAt = Date.now();
     const stdoutCapture = createOutputCapture();
     const stderrCapture = createOutputCapture();
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stdoutUtf8Validator = new TextDecoder("utf-8", { fatal: true });
+    let stdoutUtf8Valid = true;
+    let stdoutFlushed = false;
     let settled = false;
     let timedOut = false;
     // M-timeout-abort: true once we've sent SIGTERM ourselves (from the
@@ -301,11 +308,19 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
       request.signal?.removeEventListener("abort", onAbort);
     }
 
-    child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      request.onStdout?.(chunk);
-      appendCapturedTail(stdoutCapture, chunk, maxOutputBytes);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutUtf8Valid) {
+        try {
+          stdoutUtf8Validator.decode(chunk, { stream: true });
+        } catch {
+          stdoutUtf8Valid = false;
+        }
+      }
+      const text = stdoutDecoder.write(chunk);
+      if (!text) return;
+      request.onStdout?.(text);
+      appendCapturedTail(stdoutCapture, text, maxOutputBytes);
     });
     child.stderr.on("data", (chunk: string) => {
       request.onStderr?.(chunk);
@@ -347,6 +362,21 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     function finalizeClose(code: number | null): void {
       cleanupTimers();
       if (!settled) {
+        if (!stdoutFlushed) {
+          stdoutFlushed = true;
+          const tail = stdoutDecoder.end();
+          if (tail) {
+            request.onStdout?.(tail);
+            appendCapturedTail(stdoutCapture, tail, maxOutputBytes);
+          }
+          if (stdoutUtf8Valid) {
+            try {
+              stdoutUtf8Validator.decode();
+            } catch {
+              stdoutUtf8Valid = false;
+            }
+          }
+        }
         settled = true;
         resolve({
           stdout: capturedOutput(stdoutCapture),
@@ -357,6 +387,7 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
           treeKillUnconfirmed,
           stdoutTruncated: stdoutCapture.truncated,
           stderrTruncated: stderrCapture.truncated,
+          stdoutUtf8Valid,
         });
       }
     }

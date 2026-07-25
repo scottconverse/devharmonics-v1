@@ -1075,6 +1075,15 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
 test("complete_delivery cannot bypass invalid release authority or create tag side effects", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-complete-invalid-authority-"));
   const project = await createRepository(root);
+  await writeFile(path.join(project, "package.json"), Buffer.concat([
+    Buffer.from('{"description":"'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('","version":"1.0.0"}\n'),
+  ]));
+  await git(project, ["add", "package.json"]);
+  await git(project, ["commit", "-m", "malformed utf8 package fixture"]);
+  const immutableCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  const baseCommit = (await git(project, ["rev-parse", "HEAD^"])).stdout.trim();
   await initializeProject(project);
   const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
@@ -1089,35 +1098,31 @@ test("complete_delivery cannot bypass invalid release authority or create tag si
     repositoryId: "repo:invalid-composite",
     localPath: project,
     baseBranch: "main",
-    baseCommit: "a".repeat(40),
-    headCommit: "b".repeat(40),
+    baseCommit,
+    headCommit: immutableCommit,
     branch: "devharmonics/invalid-composite",
   });
   seedLedger.close();
 
   const calls: Array<{ command: string; args: string[] }> = [];
   let prState = "OPEN";
-  const runner = async (request: { command: string; args: string[] }) => {
+  const runner = async (request: Parameters<typeof runProcess>[0]) => {
     calls.push(request);
     const joined = request.args.join(" ");
     const ok = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    if (request.command === "git" && ["cat-file", "ls-tree", "show"].includes(request.args[0]!)) return runProcess(request);
     if (request.command === "git" && joined === "remote get-url origin") return { ...ok, stdout: "https://github.com/civicsuite/invalid-composite.git\n" };
     if (request.command === "gh" && request.args[1] === "create") return { ...ok, stdout: "https://github.com/civicsuite/invalid-composite/pull/4\n" };
     if (request.command === "gh" && request.args[1] === "view" && joined.includes("state,isDraft,mergeable")) {
-      return { ...ok, stdout: JSON.stringify({ state: prState, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: "b".repeat(40), statusCheckRollup: [] }) };
+      return { ...ok, stdout: JSON.stringify({ state: prState, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: immutableCommit, statusCheckRollup: [] }) };
     }
     if (request.command === "gh" && request.args[1] === "view" && joined.includes("mergeCommit")) {
-      return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: "c".repeat(40) } }) };
+      return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: immutableCommit } }) };
     }
     if (request.command === "gh" && request.args[1] === "merge") {
       prState = "MERGED";
       return ok;
     }
-    if (request.command === "git" && request.args[0] === "cat-file") return ok;
-    if (request.command === "git" && request.args[0] === "ls-tree") {
-      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
-    }
-    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) return { ...ok, stdout: "{ malformed" };
     return ok;
   };
 
@@ -1128,7 +1133,7 @@ test("complete_delivery cannot bypass invalid release authority or create tag si
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         repositoryId: "repo:invalid-composite",
-        expectedHeadCommit: "b".repeat(40),
+        expectedHeadCommit: immutableCommit,
         action: "complete_delivery",
         tag: "v1.0.0",
         confirmVersionMismatch: true,
@@ -1140,7 +1145,7 @@ test("complete_delivery cannot bypass invalid release authority or create tag si
     assert.deepEqual(body.versionAuthority, {
       state: "invalid",
       source: "package.json",
-      detail: "JSON parser rejected the document",
+      detail: "package.json is not valid UTF-8",
     });
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
