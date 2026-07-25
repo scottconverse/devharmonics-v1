@@ -1,7 +1,7 @@
 # DevHarmonics User Manual
 
-Manual version: **0.6.1**<br>
-Product release: **v0.6.1**
+Latest tagged release: **v0.6.1**<br>
+Manual target: **unreleased `main` after v0.6.1**
 
 DevHarmonics is a local-first, provider-neutral software factory for product owners managing AI agents as development teams. It turns one software-development objective into a planned, parallel, validated run across Codex, Claude Code, and the Google Antigravity model catalog. It runs locally and uses the subscription sessions cached by the providers' official command-line tools.
 
@@ -9,6 +9,7 @@ DevHarmonics is a local-first, provider-neutral software factory for product own
 
 You need:
 
+- Windows, macOS, or Linux; continuously verified on Windows and Ubuntu; macOS verification is currently manual.
 - Node.js 24 or newer
 - Git
 - A Git repository for the project you want to change
@@ -21,11 +22,24 @@ DevHarmonics does not accept API keys or provider passwords. If a prompt asks yo
 
 ## 2. Install and launch
 
-From PowerShell:
+For the exact latest tagged release:
 
 ```powershell
 git clone https://github.com/scottconverse/DevHarmonics.git
 Set-Location DevHarmonics
+git checkout v0.6.1
+```
+
+To use the unreleased development line instead:
+
+```powershell
+git clone https://github.com/scottconverse/DevHarmonics.git
+Set-Location DevHarmonics
+```
+
+Then, from either checkout:
+
+```powershell
 npm.cmd ci
 npm.cmd run build
 node dist/src/cli.js doctor
@@ -41,7 +55,7 @@ npm.cmd link
 devharmonics --version
 ```
 
-Expected version output is `DevHarmonics 0.6.1`.
+Expected version output is `DevHarmonics 0.6.1`. An unreleased `main` checkout currently reports that same package version, so include `git rev-parse HEAD` in every issue report from the development line.
 
 ## 3. Sign in to providers
 
@@ -477,7 +491,24 @@ Without it, a Docker-dependent test typically *skips* rather than fails — whic
 
 The token expands to the repository's primary root on whatever machine the run happens to be on. An absolute path breaks on every other machine; a bare `python` runs whatever interpreter is first on PATH, which is usually not the repository's own environment.
 
-## 14. Security and privacy
+## 14. Roll back an upgrade and recover the ledger
+
+Stop DevHarmonics before inspecting, copying, or moving its SQLite ledger.
+Then follow the repository's
+[Rollback and ledger recovery guide](ROLLBACK.md). Do not improvise a
+wildcard copy or move: the guide selects one exact backup, verifies and stages
+it, preserves the newer ledger, and provides state-based recovery commands for
+an interrupted swap.
+
+The recovery procedure requires **PowerShell 7** and must be run with `pwsh` on
+Windows, Linux, or macOS. The product suite is continuously verified on Windows
+and Ubuntu, while macOS product verification is manual. The automated suite
+runs the real state-machine script and verifier against disposable ledgers,
+injects interruption after every primary and compensating filesystem mutation,
+and proves safe resumption. Rehearse it against disposable copies before
+relying on it for an incident.
+
+## 15. Security and privacy
 
 - The dashboard listens only on the local loopback interface.
 - Authentication remains inside official provider tools.
@@ -490,7 +521,7 @@ The token expands to the repository's primary root on whatever machine the run h
 
 Report security issues using the private process in [SECURITY.md](https://github.com/scottconverse/DevHarmonics/blob/main/SECURITY.md), not a public issue or Discussion.
 
-## 15. Uninstall
+## 16. Uninstall
 
 If globally linked, remove the link:
 

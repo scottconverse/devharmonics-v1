@@ -10,6 +10,12 @@ All notable DevHarmonics changes are documented here.
 - The rollback guide now records the unreleased ledger transitions from schema 34 through 37 and the actual single `backup-v34-to-v37` snapshot produced by a direct upgrade.
 - The release-truth gate now derives README's declared cross-platform test census from the TypeScript syntax tree, so indented and conditional tests count while comments and string examples do not; the README distinguishes that declaration census from each operating system's executable TAP total.
 
+### Changed
+
+- Documentation now distinguishes the latest tagged release, v0.6.1, from unreleased `main`; scopes development status and availability claims accordingly; and identifies Windows and Ubuntu as continuously verified while qualifying macOS verification as manual.
+- Rollback instructions now select one inspected backup by exact path, verify its expected `user_version`, SQLite integrity, foreign keys, and migration history before touching the live ledger, stage and re-verify the copy, and preserve the newer ledger during the swap.
+- The README and user manual now link directly to the rollback runbook. One PowerShell 7 state machine now verifies and restores an exact backup cross-platform, resumes idempotently after every primary or compensating filesystem mutation, preserves the exact backup plus kept and rejected ledgers, and fails closed on ambiguous states. Disposable-ledger black-box tests inject an abrupt exit at every mutation boundary and rerun the real script and verifier.
+
 ## [0.6.1] - 2026-07-22
 
 ### Added

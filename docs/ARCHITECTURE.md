@@ -1,6 +1,8 @@
 # DevHarmonics Architecture
 
-Architecture version: **0.6.1**
+Latest tagged release: **v0.6.1**
+
+Architecture snapshot: **unreleased `main` after v0.6.1**
 
 DevHarmonics is a local-first, provider-neutral software factory for product owners managing AI agents as development teams. Its current architecture is a local orchestration layer over official subscription-authenticated coding-agent CLIs. It does not proxy provider HTTP APIs.
 

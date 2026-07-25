@@ -8,13 +8,13 @@
 
 DevHarmonics never merges anything without you. It hands you a reviewed branch and the receipts — and when you say so, it pushes, opens the pull request, merges, and tags, each step on its own explicit approval, all from the dashboard.
 
-[Quick start](#quick-start) · [How a run works](#how-a-run-works) · [User manual](docs/USER_MANUAL.md) · [Architecture](docs/ARCHITECTURE.md) · [Product spec](docs/PRODUCT_SPEC.md) · [Landing page](https://scottconverse.github.io/DevHarmonics/)
+[Quick start](#quick-start) · [How a run works](#how-a-run-works) · [User manual](docs/USER_MANUAL.md) · [Rollback and ledger recovery](docs/ROLLBACK.md) · [Architecture](docs/ARCHITECTURE.md) · [Product spec](docs/PRODUCT_SPEC.md) · [Landing page](https://scottconverse.github.io/DevHarmonics/)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Latest release](https://img.shields.io/badge/release-v0.6.1-informational)](https://github.com/scottconverse/DevHarmonics/releases/tag/v0.6.1)
 [![CI](https://github.com/scottconverse/DevHarmonics/actions/workflows/ci.yml/badge.svg)](https://github.com/scottconverse/DevHarmonics/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A524-green)](package.json)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#requirements)
+[![CI platforms](https://img.shields.io/badge/CI%20verified-Windows%20%7C%20Ubuntu-lightgrey)](#requirements)
 [![Status](https://img.shields.io/badge/status-early%20public%20preview-orange)](#project-status)
 
 </div>
@@ -22,6 +22,8 @@ DevHarmonics never merges anything without you. It hands you a reviewed branch a
 ---
 
 Runs entirely on your machine · No model API keys for normal use · One isolated worktree per task · Every attempt, check, and verdict persisted in SQLite · No automatic merge
+
+Latest tagged release: **v0.6.1**. This branch: **unreleased main after v0.6.1**.
 
 <!-- Add a current dashboard screenshot here: docs/assets/dashboard.png -->
 
@@ -193,16 +195,31 @@ Common model API-key and cloud-credential environment variables are stripped fro
 
 ### Requirements
 
-- Windows, macOS, or Linux
+- Designed for Windows, macOS, and Linux; continuously verified on Windows and Ubuntu; macOS verification is currently manual.
 - **Node.js 24 or newer**, and Git
 - A Git repository you want to change, with a clean working tree
 - At least one installed and signed-in provider CLI (see the table above)
 
 ### Install from source
 
+The latest tagged release is **v0.6.1**. For that exact release:
+
 ```powershell
 git clone https://github.com/scottconverse/DevHarmonics.git
 Set-Location DevHarmonics
+git checkout v0.6.1
+```
+
+To try the unreleased development line instead:
+
+```powershell
+git clone https://github.com/scottconverse/DevHarmonics.git
+Set-Location DevHarmonics
+```
+
+Then, from either checkout:
+
+```powershell
 npm.cmd ci
 npm.cmd run build
 node dist/src/cli.js doctor
@@ -393,13 +410,13 @@ The dashboard binds only to `127.0.0.1`, and mutation endpoints require same-ori
 
 ## Project status
 
-**Early public preview, under active development.** Current release: **v0.6.1**.
+**Early public preview, under active development.** Latest tagged release: **v0.6.1**. This README describes **unreleased `main` after v0.6.1** unless a section explicitly says otherwise.
 
-What that judgement rests on, in both directions:
+This project-status section describes `main`. What the current unreleased `main` judgement rests on, in both directions:
 
 | Signal | Reading |
 |---|---|
-| Automated suite | 354 declared cross-platform test cases across configuration, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
+| Automated suite | 402 declared cross-platform test cases across configuration, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
 | Schema handling | Ordered transactional migrations to ledger schema 37, automatic pre-upgrade backups, integrity + foreign-key validation, rollback on failure, and refusal to open a newer schema |
 | Continuous integration | GitHub Actions runs the release-truth check and full suite on Node 24 for Ubuntu and Windows. Separate Ubuntu jobs run every compiled test file once in a logged, seeded shuffled order and mutation-prove that the verification-integrity sentinel goes RED before restoration returns it to GREEN |
 | Distribution | Source checkout only. No installer, no published package |
@@ -415,10 +432,12 @@ What that judgement rests on, in both directions:
 
 ### Roadmap
 
-**Available now** — everything above without a *planned* qualifier, including cockpit-complete delivery, live run steering, visible operation feedback, review evidence lenses, per-run cost counterfactuals, and reusable workflows — all proven against a real multi-repository product (the first cross-repository CivicSuite delivery was pushed, PR'd, and merged from the cockpit).
+**Available on unreleased `main`** — everything above without a *planned* qualifier, including cockpit-complete delivery, live run steering, visible operation feedback, review evidence lenses, per-run cost counterfactuals, and reusable workflows — all proven against a real multi-repository product (the first cross-repository CivicSuite delivery was pushed, PR'd, and merged from the cockpit).
 **Planned** — Agent Client Protocol transport; integration-set restart reconstruction; automatic worktree cleanup; one task spanning several repositories.
 
 Planned items are proposals recorded in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), not dated commitments.
+
+An unreleased checkout still reports package version `0.6.1`. When reporting a problem from `main`, include the output of `git rev-parse HEAD` so the exact development revision is identifiable.
 
 ---
 
@@ -453,6 +472,7 @@ Read [Contributing](CONTRIBUTING.md) first. Design proposals start as a GitHub D
 | | |
 |---|---|
 | [User manual](docs/USER_MANUAL.md) | Install, provider sign-in, the dashboard, troubleshooting, uninstall |
+| [Rollback and ledger recovery](docs/ROLLBACK.md) | Run the restart-safe PowerShell 7 state machine to restore a verified pre-upgrade ledger while preserving backup, kept, and rejected sources |
 | [Architecture](docs/ARCHITECTURE.md) | Components, trust boundaries, persistence, deliberate non-features |
 | [Product specification](docs/PRODUCT_SPEC.md) | Canonical product definition |
 | [Implementation plan](docs/IMPLEMENTATION_PLAN.md) | Increment-by-increment delivery plan |
