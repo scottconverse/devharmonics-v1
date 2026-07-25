@@ -157,7 +157,8 @@ if (process.argv.includes("--release")) {
     readFile(path.join(root, "docs/ROLLBACK.md"), "utf8"),
   ]);
   failures.push(...validateWorkflowPolicy(workflow).map((failure) => `.github/workflows/ci.yml: ${failure}`));
-  failures.push(...validateReadmeReleaseScope(readme, version).map((failure) => `README.md: ${failure}`));
+  const releaseMode = process.argv.includes("--release");
+  failures.push(...validateReadmeReleaseScope(readme, version, releaseMode ? "release" : "development").map((failure) => `README.md: ${failure}`));
   failures.push(...validateRollbackGuide(rollback).map((failure) => `docs/ROLLBACK.md: ${failure}`));
   checks += 3;
 }

@@ -13,25 +13,47 @@ behind.
 > stored before current redaction boundaries. Protect every copy like the live
 > `.devharmonics` directory.
 
+## Shell and platform requirement
+
+This recovery procedure requires **PowerShell 7** on every operating system.
+Start it with `pwsh`, not Windows PowerShell 5.1 or a POSIX shell, and confirm
+the major version before inspecting a ledger:
+
+```powershell
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+  throw 'Rollback requires PowerShell 7 or newer. Start this procedure with pwsh.'
+}
+```
+
+Install PowerShell 7 before continuing if `pwsh` is unavailable. The
+DevHarmonics product suite is continuously verified on Windows and Ubuntu;
+macOS product verification is manual. This rollback filesystem procedure is
+not continuously exercised on any operating system. Its happy path has been
+manually exercised on Windows, but the complete injected-failure recovery
+matrix has not yet been runtime-qualified on Windows, Ubuntu, or macOS.
+Rehearse the procedure against disposable copies before an incident.
+
 ## Exact-path restore procedure
 
 Use this procedure for each rollback below. The rollback-specific section gives
-the candidate filename pattern, expected pre-upgrade schema, kept-ledger name,
-and older tag. Run the verifier from the current unreleased checkout **before**
-checking out the older tag.
+the candidate filename pattern, expected pre-upgrade schema, current schema,
+kept-ledger name, and older tag. Run the verifier from the current unreleased
+checkout **before** checking out the older tag.
 
-First, set the three values given by the rollback-specific section and list the
+First, set the four values given by the rollback-specific section and list the
 candidates. The wildcard is used only to display possible files; it never
 selects a file for copying or moving.
 
 ```powershell
+# Windows example. On Linux or macOS, use the exact absolute POSIX path.
 $ledgerDirectory = 'C:\path\to\your\project\.devharmonics'
 $verifierPath = (Resolve-Path -LiteralPath '.\scripts\verify-ledger-backup.mjs').Path
 
-# Run the three assignments from the applicable rollback section first.
+# Run the four assignments from the applicable rollback section first.
 if (
   [string]::IsNullOrWhiteSpace($backupNamePattern) -or
   $null -eq $expectedUserVersion -or
+  $null -eq $currentUserVersion -or
   [string]::IsNullOrWhiteSpace($keptLedgerName)
 ) {
   throw 'Set the rollback-specific values before listing candidates.'
@@ -84,6 +106,7 @@ then preserve and replace the live ledger:
 $liveLedger = Join-Path -Path $ledgerDirectory -ChildPath 'devharmonics.db'
 $stagedLedger = Join-Path -Path $ledgerDirectory -ChildPath 'devharmonics.db.restore-staged'
 $keptLedger = Join-Path -Path $ledgerDirectory -ChildPath $keptLedgerName
+$failedRestoredLedger = Join-Path -Path $ledgerDirectory -ChildPath 'devharmonics.db.restore-failed-kept'
 
 if (-not (Test-Path -LiteralPath $liveLedger -PathType Leaf)) {
   throw "Live ledger is not an existing file: $liveLedger"
@@ -94,25 +117,140 @@ if (Test-Path -LiteralPath $stagedLedger) {
 if (Test-Path -LiteralPath $keptLedger) {
   throw "Kept-ledger path already exists: $keptLedger"
 }
+if (Test-Path -LiteralPath $failedRestoredLedger) {
+  throw "Failed-restore preservation path already exists: $failedRestoredLedger"
+}
 
-Copy-Item -LiteralPath $backupPath -Destination $stagedLedger
+node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+if ($LASTEXITCODE -ne 0) {
+  throw 'Current live ledger failed verification; no files were moved.'
+}
+
+Copy-Item -LiteralPath $backupPath -Destination $stagedLedger -ErrorAction Stop
 node $verifierPath --path $stagedLedger --expected-user-version $expectedUserVersion
 if ($LASTEXITCODE -ne 0) {
   throw 'Staged copy failed verification; the live ledger was not changed.'
 }
 
-Move-Item -LiteralPath $liveLedger -Destination $keptLedger
-Move-Item -LiteralPath $stagedLedger -Destination $liveLedger
+$swapPhase = 'before-live-to-kept'
+try {
+  Move-Item -LiteralPath $liveLedger -Destination $keptLedger -ErrorAction Stop
+  $swapPhase = 'after-live-to-kept'
 
-node $verifierPath --path $liveLedger --expected-user-version $expectedUserVersion
-if ($LASTEXITCODE -ne 0) {
-  throw 'Restored ledger failed verification; do not start DevHarmonics.'
+  Move-Item -LiteralPath $stagedLedger -Destination $liveLedger -ErrorAction Stop
+  $swapPhase = 'after-staged-to-live'
+
+  node $verifierPath --path $liveLedger --expected-user-version $expectedUserVersion
+  if ($LASTEXITCODE -ne 0) {
+    throw 'The restored ledger failed final verification.'
+  }
+  $swapPhase = 'complete'
+} catch {
+  $swapFailure = $_
+  $liveExists = Test-Path -LiteralPath $liveLedger -PathType Leaf
+  $stagedExists = Test-Path -LiteralPath $stagedLedger -PathType Leaf
+  $keptExists = Test-Path -LiteralPath $keptLedger -PathType Leaf
+
+  Write-Warning "Rollback swap stopped in phase '$swapPhase': $($swapFailure.Exception.Message)"
+  Write-Warning "State: live=$liveExists staged=$stagedExists kept=$keptExists"
+
+  # Failure before live -> kept completed: live remains authoritative.
+  if ($swapPhase -eq 'before-live-to-kept' -and $liveExists -and -not $keptExists) {
+    node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+    if ($LASTEXITCODE -ne 0) {
+      throw 'The first move failed and the unchanged live ledger no longer verifies. Stop; preserve every file for manual recovery.'
+    }
+    throw 'The first move failed. The verified newer ledger remains live; the verified staged rollback copy is preserved. Do not start the older build.'
+  }
+
+  # Failure after live -> kept but before staged -> live completed:
+  # copy kept back to live, retaining kept and staged as source ledgers.
+  if ($swapPhase -eq 'after-live-to-kept' -and -not $liveExists -and $stagedExists -and $keptExists) {
+    Copy-Item -LiteralPath $keptLedger -Destination $liveLedger -ErrorAction Stop
+    node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+    if ($LASTEXITCODE -ne 0) {
+      throw 'The second move failed and the copied-back newer ledger did not verify. Stop; kept and staged sources remain preserved.'
+    }
+    throw 'The second move failed. A verified copy of the newer kept ledger is live again; kept and staged source ledgers remain preserved. Do not start the older build.'
+  }
+
+  # Failure after staged -> live, including final verification failure:
+  # preserve the rejected restored file, then copy the kept newer ledger back.
+  if ($swapPhase -eq 'after-staged-to-live' -and $liveExists -and $keptExists) {
+    Move-Item -LiteralPath $liveLedger -Destination $failedRestoredLedger -ErrorAction Stop
+    Copy-Item -LiteralPath $keptLedger -Destination $liveLedger -ErrorAction Stop
+    node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+    if ($LASTEXITCODE -ne 0) {
+      throw 'The restored rollback ledger was preserved, but the copied-back newer ledger did not verify. Stop; preserve all files for manual recovery.'
+    }
+    throw 'The restored rollback ledger failed or was interrupted after the second move. It is preserved at the failed-restore path, and a verified copy of the newer kept ledger is live again. Do not start the older build.'
+  }
+
+  throw "Unexpected rollback state in phase '$swapPhase'. Do not copy, move, delete, or start DevHarmonics; preserve every path for manual recovery."
 }
 ```
 
-Do not start DevHarmonics after any failed verification. The exact
-`$keptLedger` path retains the newer database for inspection, re-upgrade, or a
-manual recovery if the final swap cannot be verified.
+Only a `complete` swap may continue to the older checkout. Every failure branch
+throws after either proving that the original newer ledger is still live or
+copying the retained newer ledger back to the live path. The exact backup and
+the exact `$keptLedger` are never consumed by recovery; a rejected restored
+ledger is retained at `$failedRestoredLedger`. Do not delete any of them until
+the rollback has been independently confirmed.
+
+### Resume after the shell or process was interrupted
+
+If `pwsh`, the terminal, or the machine stopped before the `catch` block could
+run, do not restart either DevHarmonics build. Open PowerShell 7, re-run the
+rollback-specific four assignments and the path assignments above, and then
+run this state-based recovery block exactly once:
+
+```powershell
+$liveExists = Test-Path -LiteralPath $liveLedger -PathType Leaf
+$stagedExists = Test-Path -LiteralPath $stagedLedger -PathType Leaf
+$keptExists = Test-Path -LiteralPath $keptLedger -PathType Leaf
+
+# Interruption before live -> kept: the verified newer ledger is still live.
+if ($liveExists -and $stagedExists -and -not $keptExists) {
+  node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+  if ($LASTEXITCODE -ne 0) {
+    throw 'The live ledger does not verify as the newer schema. Preserve every file for manual recovery.'
+  }
+  throw 'The verified newer ledger remains live and the staged rollback copy remains preserved. Do not start the older build.'
+}
+
+# Interruption after live -> kept but before staged -> live:
+# restore service from a copy, preserving kept and staged.
+if (-not $liveExists -and $stagedExists -and $keptExists) {
+  Copy-Item -LiteralPath $keptLedger -Destination $liveLedger -ErrorAction Stop
+  node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+  if ($LASTEXITCODE -ne 0) {
+    throw 'The copied-back newer ledger did not verify. Kept and staged sources remain preserved; stop for manual recovery.'
+  }
+  throw 'A verified copy of the newer kept ledger is live again. Kept and staged sources remain preserved. Do not start the older build.'
+}
+
+# Interruption after staged -> live but before/while final verification.
+if ($liveExists -and -not $stagedExists -and $keptExists) {
+  node $verifierPath --path $liveLedger --expected-user-version $expectedUserVersion
+  if ($LASTEXITCODE -eq 0) {
+    Write-Output 'The restored ledger verifies at the rollback schema. The swap is complete.'
+    return
+  }
+
+  if (Test-Path -LiteralPath $failedRestoredLedger) {
+    throw "Failed-restore preservation path already exists: $failedRestoredLedger"
+  }
+  Move-Item -LiteralPath $liveLedger -Destination $failedRestoredLedger -ErrorAction Stop
+  Copy-Item -LiteralPath $keptLedger -Destination $liveLedger -ErrorAction Stop
+  node $verifierPath --path $liveLedger --expected-user-version $currentUserVersion
+  if ($LASTEXITCODE -ne 0) {
+    throw 'The rejected rollback ledger was preserved, but the copied-back newer ledger did not verify. Stop for manual recovery.'
+  }
+  throw 'The rejected rollback ledger is preserved at the failed-restore path, and a verified copy of the newer kept ledger is live again. Do not start the older build.'
+}
+
+throw "Unexpected rollback state: live=$liveExists staged=$stagedExists kept=$keptExists. Do not copy, move, delete, or start DevHarmonics; preserve every path for manual recovery."
+```
 
 ## Development-line rollback: ledger schema 37 → v0.6.1
 
@@ -141,6 +279,7 @@ For the exact-path procedure, set:
 ```powershell
 $backupNamePattern = 'devharmonics.db.backup-v34-to-v37-*.sqlite'
 $expectedUserVersion = 34
+$currentUserVersion = 37
 $keptLedgerName = 'devharmonics.db.schema37-kept'
 ```
 
@@ -180,6 +319,7 @@ For the exact-path procedure, set:
 ```powershell
 $backupNamePattern = 'devharmonics.db.backup-v33-to-v34-*.sqlite'
 $expectedUserVersion = 33
+$currentUserVersion = 34
 $keptLedgerName = 'devharmonics.db.schema34-kept'
 ```
 
@@ -216,6 +356,7 @@ For the exact-path procedure, set:
 ```powershell
 $backupNamePattern = 'devharmonics.db.backup-v26-to-v33-*.sqlite'
 $expectedUserVersion = 26
+$currentUserVersion = 33
 $keptLedgerName = 'devharmonics.db.schema33-kept'
 ```
 

@@ -12,6 +12,7 @@ const mutant = 'kind: "test-skipped-mutant"';
 const sentinelName = "mutation sentinel binds the skipped-test detector to its public finding kind";
 const sentinelMessage = "MUTATION_SENTINEL: a skipped test must produce the public test-skipped finding";
 const timeoutMs = 60_000;
+const maxOutputBytes = 256 * 1024;
 const original = await readFile(compiledGuard, "utf8");
 const mutated = replaceExactlyOnce(original, target, mutant);
 
@@ -21,6 +22,7 @@ function runSentinel() {
     args: [`--test-name-pattern=${sentinelName}`, "--test", sentinelTest],
     cwd: root,
     timeoutMs,
+    maxOutputBytes,
   });
 }
 

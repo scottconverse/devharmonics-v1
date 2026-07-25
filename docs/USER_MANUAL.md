@@ -491,7 +491,25 @@ Without it, a Docker-dependent test typically *skips* rather than fails — whic
 
 The token expands to the repository's primary root on whatever machine the run happens to be on. An absolute path breaks on every other machine; a bare `python` runs whatever interpreter is first on PATH, which is usually not the repository's own environment.
 
-## 14. Security and privacy
+## 14. Roll back an upgrade and recover the ledger
+
+Stop DevHarmonics before inspecting, copying, or moving its SQLite ledger.
+Then follow the repository's
+[Rollback and ledger recovery guide](ROLLBACK.md). Do not improvise a
+wildcard copy or move: the guide selects one exact backup, verifies and stages
+it, preserves the newer ledger, and provides state-based recovery commands for
+an interrupted swap.
+
+The recovery procedure requires **PowerShell 7** and must be run with `pwsh` on
+Windows, Linux, or macOS. The product suite is continuously verified on Windows
+and Ubuntu, while macOS product verification is manual. The rollback
+filesystem procedure itself is not continuously exercised on any operating
+system; its happy path has been manually exercised on Windows, and its complete
+failure-recovery matrix has not yet been runtime-qualified on Windows, Ubuntu,
+or macOS. Rehearse it against disposable copies before relying on it for an
+incident.
+
+## 15. Security and privacy
 
 - The dashboard listens only on the local loopback interface.
 - Authentication remains inside official provider tools.
@@ -504,7 +522,7 @@ The token expands to the repository's primary root on whatever machine the run h
 
 Report security issues using the private process in [SECURITY.md](https://github.com/scottconverse/DevHarmonics/blob/main/SECURITY.md), not a public issue or Discussion.
 
-## 15. Uninstall
+## 16. Uninstall
 
 If globally linked, remove the link:
 

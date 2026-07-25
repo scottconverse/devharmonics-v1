@@ -901,6 +901,54 @@ test("runProcess terminates a still-running process on timeout and resolves once
   assert.ok(elapsedMs < 5_000, `expected the process to be confirmed dead well before 60s, took ${elapsedMs}ms`);
 });
 
+test("runProcess bounds captured output while live callbacks receive noisy child output", async () => {
+  let liveStdout = "";
+  let liveStderr = "";
+  const request = {
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('o'.repeat(20000)); process.stderr.write('e'.repeat(20000));"],
+    cwd: process.cwd(),
+    timeoutMs: 5_000,
+    maxOutputBytes: 1_024,
+    onStdout: (chunk: string) => {
+      liveStdout += chunk;
+    },
+    onStderr: (chunk: string) => {
+      liveStderr += chunk;
+    },
+  } as ProcessRequest & {
+    maxOutputBytes: number;
+    onStdout: (chunk: string) => void;
+    onStderr: (chunk: string) => void;
+  };
+
+  const result = await runProcess(request);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(liveStdout.length, 20_000);
+  assert.equal(liveStderr.length, 20_000);
+  assert.ok(Buffer.byteLength(result.stdout) <= 1_024);
+  assert.ok(Buffer.byteLength(result.stderr) <= 1_024);
+  assert.equal((result as ProcessResult & { stdoutTruncated?: boolean }).stdoutTruncated, true);
+  assert.equal((result as ProcessResult & { stderrTruncated?: boolean }).stderrTruncated, true);
+});
+
+test("runProcess output bounds preserve complete UTF-8 characters", async () => {
+  const result = await runProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('😀'.repeat(1000) + 'tail')"],
+    cwd: process.cwd(),
+    timeoutMs: 5_000,
+    maxOutputBytes: 9,
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(Buffer.byteLength(result.stdout) <= 9);
+  assert.doesNotMatch(result.stdout, /\uFFFD/);
+  assert.match(result.stdout, /tail$/);
+  assert.equal(result.stdoutTruncated, true);
+});
+
 test("runProcess honors an external AbortSignal: terminates the process and resolves once confirmed dead", async () => {
   const controller = new AbortController();
   const startedAt = Date.now();

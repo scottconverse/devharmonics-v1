@@ -4,6 +4,10 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { DatabaseSync } from "node:sqlite";
+import {
+  getLedgerSchemaManifest,
+  SUPPORTED_LEDGER_SCHEMA_VERSIONS,
+} from "./ledger-schema-manifests.mjs";
 
 function parseArguments(argv) {
   let filename;
@@ -86,24 +90,41 @@ function verifyIntegrity(database) {
   }
 }
 
-function verifyMigrationHistory(database, expectedUserVersion) {
+function verifyMigrationHistory(database, manifest) {
   const rows = database
-    .prepare("SELECT version FROM schema_migrations ORDER BY version")
+    .prepare("SELECT version, name FROM schema_migrations ORDER BY version")
     .all();
 
-  if (rows.length !== expectedUserVersion) {
+  if (rows.length !== manifest.migrationNames.length) {
     const actualMaximum = rows.length === 0 ? 0 : rows.at(-1)?.version;
     throw new Error(
-      `migration history length/maximum mismatch: expected ${expectedUserVersion} continuous version(s), actual count ${rows.length}, actual maximum ${String(actualMaximum)}`,
+      `migration history length/maximum mismatch: expected ${manifest.migrationNames.length} canonical version(s), actual count ${rows.length}, actual maximum ${String(actualMaximum)}`,
     );
   }
 
   for (let index = 0; index < rows.length; index += 1) {
     const expectedVersion = index + 1;
     const actualVersion = rows[index]?.version;
-    if (actualVersion !== expectedVersion) {
+    const expectedName = manifest.migrationNames[index];
+    const actualName = rows[index]?.name;
+    if (actualVersion !== expectedVersion || actualName !== expectedName) {
       throw new Error(
-        `migration history is discontinuous: expected version ${expectedVersion}, actual ${String(actualVersion)}`,
+        `migration history mismatch at version ${expectedVersion}: expected name ${JSON.stringify(expectedName)}, actual version ${String(actualVersion)}, actual name ${JSON.stringify(actualName)}`,
+      );
+    }
+  }
+}
+
+function verifyRequiredShape(database, manifest) {
+  for (const [table, requiredColumns] of Object.entries(manifest.requiredShape)) {
+    const rows = database
+      .prepare("SELECT name FROM pragma_table_info(?)")
+      .all(table);
+    const actualColumns = new Set(rows.map((row) => row.name));
+    const missingColumns = requiredColumns.filter((column) => !actualColumns.has(column));
+    if (missingColumns.length !== 0) {
+      throw new Error(
+        `schema shape mismatch: table ${JSON.stringify(table)} is missing required column(s) ${missingColumns.join(", ")}`,
       );
     }
   }
@@ -111,6 +132,12 @@ function verifyMigrationHistory(database, expectedUserVersion) {
 
 async function verify() {
   const { filename, expectedUserVersion } = parseArguments(process.argv.slice(2));
+  const manifest = getLedgerSchemaManifest(expectedUserVersion);
+  if (!manifest) {
+    throw new Error(
+      `unsupported expected schema ${expectedUserVersion}; supported schemas: ${SUPPORTED_LEDGER_SCHEMA_VERSIONS.join(", ")}`,
+    );
+  }
   const beforeStat = await stat(filename);
   if (!beforeStat.isFile()) {
     throw new Error(`path is not a regular file: ${filename}`);
@@ -127,7 +154,8 @@ async function verify() {
       );
     }
     verifyIntegrity(database);
-    verifyMigrationHistory(database, expectedUserVersion);
+    verifyMigrationHistory(database, manifest);
+    verifyRequiredShape(database, manifest);
   } finally {
     database?.close();
   }
@@ -150,6 +178,7 @@ async function verify() {
     sha256: beforeHash,
     userVersion: expectedUserVersion,
     migrationHistoryMaximum: expectedUserVersion,
+    schemaManifestTag: manifest.tag,
     integrityCheck: "ok",
     foreignKeyViolations: 0,
   })}\n`);

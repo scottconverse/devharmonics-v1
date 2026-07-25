@@ -44,6 +44,13 @@ function isShadowed(identifier: ts.Identifier, importedName: string, sourceFile:
     if (ts.isCatchClause(current) && current.variableDeclaration) {
       if (bindingNames(current.variableDeclaration.name).includes(importedName)) return true;
     }
+    if (
+      (ts.isForStatement(current) && current.initializer && ts.isVariableDeclarationList(current.initializer)) ||
+      ((ts.isForInStatement(current) || ts.isForOfStatement(current)) && ts.isVariableDeclarationList(current.initializer))
+    ) {
+      const declarations = current.initializer.declarations;
+      if (declarations.some((declaration) => bindingNames(declaration.name).includes(importedName))) return true;
+    }
     current = current.parent;
   }
   return false;
@@ -116,18 +123,19 @@ export function countDeclaredNodeTests(source: string, fileName: string): number
 
 export function validateWorkflowPolicy(workflow: string): string[] {
   const failures: string[] = [];
+  if (workflow.includes("\t")) failures.push("workflow must not contain ambiguous tab indentation");
   const jobsStart = workflow.indexOf("\njobs:");
   const jobsText = jobsStart >= 0 ? workflow.slice(jobsStart) : "";
-  const jobMatches = [...jobsText.matchAll(/^  ([A-Za-z0-9_-]+):\s*$/gm)];
+  const jobMatches = [...jobsText.matchAll(/^  (?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+)):\s*(?:#.*)?$/gm)];
   if (jobMatches.length === 0) {
     failures.push("workflow must expose at least one top-level job");
   } else {
     for (const [index, match] of jobMatches.entries()) {
-      const jobName = match[1]!;
+      const jobName = (match[1] ?? match[2] ?? match[3])!;
       const start = match.index!;
       const end = index + 1 < jobMatches.length ? jobMatches[index + 1]!.index! : jobsText.length;
       const block = jobsText.slice(start, end);
-      const timeouts = [...block.matchAll(/^\s{4}timeout-minutes:\s*(\d+)\s*$/gm)];
+      const timeouts = [...block.matchAll(/^\s{4}(?:"timeout-minutes"|'timeout-minutes'|timeout-minutes)\s*:\s*(\d+)\s*$/gm)];
       if (
         timeouts.length !== 1 ||
         Number(timeouts[0]?.[1]) < 1 ||
@@ -135,18 +143,57 @@ export function validateWorkflowPolicy(workflow: string): string[] {
       ) {
         failures.push(`${jobName}: expected exactly one timeout-minutes value in the range 1..30`);
       }
+      if (/^\s{4}(?:"permissions"|'permissions'|permissions)\s*:/m.test(block)) {
+        failures.push(`${jobName}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
+      }
     }
   }
 
-  if (!/^permissions:\s*\r?\n\s{2}contents:\s*read\s*$/m.test(workflow)) {
+  const lines = workflow.split(/\r?\n/);
+  const permissionHeaders = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^(?:"permissions"|'permissions'|permissions)\s*:/.test(line));
+  let permissionsAreReadOnly =
+    permissionHeaders.length === 1 &&
+    /^(?:"permissions"|'permissions'|permissions)\s*:\s*$/.test(permissionHeaders[0]!.line);
+  if (permissionsAreReadOnly) {
+    const start = permissionHeaders[0]!.index + 1;
+    const block: string[] = [];
+    for (let index = start; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (line && !/^\s/.test(line)) break;
+      if (line.trim() && !line.trim().startsWith("#")) block.push(line.trim());
+    }
+    permissionsAreReadOnly =
+      block.length === 1 &&
+      /^(?:"contents"|'contents'|contents)\s*:\s*read\s*$/.test(block[0]!);
+  }
+  if (!permissionsAreReadOnly) {
     failures.push("workflow permissions must remain contents: read");
   }
 
-  const lines = workflow.split(/\r?\n/);
   lines.forEach((line, index) => {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("uses:") || trimmed.startsWith("uses: ./")) return;
-    const match = trimmed.match(/^uses:\s+([^\s/@]+\/[^\s@]+)@([0-9a-fA-F]{40})(?:\s+#\s*(.+))?$/);
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const usesMatch = trimmed.match(/^(?:-\s*)?(?:"uses"|'uses'|uses)\s*:\s*(.+?)\s*$/);
+    if (!usesMatch) {
+      if (
+        /(?:^|[\s{,])(?:"uses"|'uses'|uses)\s*:/.test(trimmed) ||
+        /^(?:-\s*)?\?\s*(?:"uses"|'uses'|uses)\s*$/.test(trimmed)
+      ) {
+        failures.push(`line ${index + 1}: ambiguous uses syntax is not allowed: ${trimmed}`);
+      }
+      return;
+    }
+    let reference = usesMatch[1]!.replace(/\s+#.*$/, "").trim();
+    if (
+      (reference.startsWith('"') && reference.endsWith('"')) ||
+      (reference.startsWith("'") && reference.endsWith("'"))
+    ) {
+      reference = reference.slice(1, -1);
+    }
+    if (reference.startsWith("./")) return;
+    const match = reference.match(/^([^@\s]+)@([0-9a-fA-F]{40})$/);
     if (!match) {
       failures.push(`line ${index + 1}: remote action must use an immutable 40-hex SHA: ${trimmed}`);
       return;
@@ -156,16 +203,47 @@ export function validateWorkflowPolicy(workflow: string): string[] {
     if (action in REVIEWED_ACTION_SHAS) {
       const expected = REVIEWED_ACTION_SHAS[action as keyof typeof REVIEWED_ACTION_SHAS];
       if (sha.toLowerCase() !== expected) failures.push(`line ${index + 1}: ${action} must use reviewed SHA ${expected}`);
-      if (match[3]?.trim() !== "v6") failures.push(`line ${index + 1}: ${action} must retain the readable # v6 comment`);
+      if (!/\s+#\s*v6\s*$/.test(trimmed)) failures.push(`line ${index + 1}: ${action} must retain the readable # v6 comment`);
       if (action === "actions/checkout") {
         const stepIndent = line.match(/^\s*/)?.[0].length ?? 0;
+        const usesKeyIndent = stepIndent + (trimmed.match(/^-\s*/)?.[0].length ?? 0);
         const following = lines.slice(index + 1).findIndex((candidate) => {
           const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
-          return candidate.trim().startsWith("- name:") && indent <= stepIndent;
+          return candidate.trim().startsWith("- ") && indent <= stepIndent;
         });
         const end = following < 0 ? lines.length : index + 1 + following;
-        const step = lines.slice(index + 1, end).join("\n");
-        if (!/persist-credentials:\s*false\b/.test(step)) {
+        const stepLines = lines.slice(index + 1, end);
+        const withHeaders = stepLines
+          .map((candidate, stepIndex) => ({
+            line: candidate,
+            stepIndex,
+            indent: candidate.match(/^\s*/)?.[0].length ?? 0,
+          }))
+          .filter(({ line: candidate, indent }) =>
+            indent === usesKeyIndent &&
+            /^(?:"with"|'with'|with)\s*:\s*(?:#.*)?$/.test(candidate.trim()),
+          );
+        let persistsNoCredentials = false;
+        if (withHeaders.length === 1) {
+          const withHeader = withHeaders[0]!;
+          const withBody: string[] = [];
+          for (let stepIndex = withHeader.stepIndex + 1; stepIndex < stepLines.length; stepIndex += 1) {
+            const candidate = stepLines[stepIndex]!;
+            const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
+            if (candidate.trim() && indent <= withHeader.indent) break;
+            if (candidate.trim() && !candidate.trim().startsWith("#")) withBody.push(candidate);
+          }
+          persistsNoCredentials = withBody.some((candidate) => {
+            const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
+            return (
+              indent > withHeader.indent &&
+              /^(?:"persist-credentials"|'persist-credentials'|persist-credentials)\s*:\s*(?:false|"false"|'false')\s*(?:#.*)?$/.test(
+                candidate.trim(),
+              )
+            );
+          });
+        }
+        if (!persistsNoCredentials) {
           failures.push(`line ${index + 1}: actions/checkout must set persist-credentials: false`);
         }
       }
@@ -174,17 +252,33 @@ export function validateWorkflowPolicy(workflow: string): string[] {
   return failures;
 }
 
-export function validateReadmeReleaseScope(readme: string, version: string): string[] {
+export function validateReadmeReleaseScope(
+  readme: string,
+  version: string,
+  mode: "development" | "release" = "development",
+): string[] {
   const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const failures: string[] = [];
   if (!new RegExp(`Latest tagged release:\\s*\\*\\*v${escapedVersion}\\*\\*`, "i").test(readme)) {
     failures.push(`Latest tagged release: **v${version}**`);
   }
-  if (!new RegExp(`This branch:\\s*\\*\\*unreleased main after v${escapedVersion}\\*\\*`, "i").test(readme)) {
-    failures.push(`This branch: **unreleased main after v${version}**`);
+  const unreleasedMain = new RegExp(`unreleased\\s+(?:\`?main\`?)\\s+after\\s+v${escapedVersion}`, "i");
+  if (mode === "development") {
+    if (!unreleasedMain.test(readme)) failures.push(`This branch: **unreleased main after v${version}**`);
+  } else {
+    if (!new RegExp(`This checkout:\\s*\\*\\*tagged release v${escapedVersion}\\*\\*`, "i").test(readme)) {
+      failures.push(`This checkout: **tagged release v${version}**`);
+    }
+    if (unreleasedMain.test(readme)) failures.push("tagged release checkout must not claim to be unreleased main");
   }
-  if (!/Project status[\s\S]*describes\s+`?main`?/i.test(readme)) {
+  if (mode === "development" && !/Project status[\s\S]*describes\s+`?main`?/i.test(readme)) {
     failures.push("the project-status section must explicitly describe main");
+  }
+  if (
+    mode === "release" &&
+    !new RegExp(`Project status[\\s\\S]*describes\\s+(?:the\\s+)?tagged release v${escapedVersion}`, "i").test(readme)
+  ) {
+    failures.push(`the project-status section must explicitly describe tagged release v${version}`);
   }
   if (!new RegExp(`git checkout v${escapedVersion}`, "i").test(readme)) {
     failures.push(`source-install guidance must include git checkout v${version}`);
@@ -232,6 +326,8 @@ function childDiagnostic(result: ProcessResult, context: CiChildContext): string
     "exitSignal=unavailable",
     `timedOut=${result.timedOut}`,
     `treeTermination=${result.treeKillUnconfirmed ? "unconfirmed" : "confirmed"}`,
+    `stdoutTruncated=${result.stdoutTruncated ?? false}`,
+    `stderrTruncated=${result.stderrTruncated ?? false}`,
   ].filter(Boolean);
   const output = `${result.stdout}${result.stderr}`.trim().slice(-4_000);
   return `${fields.join(" ")}${output ? `\nCaptured output:\n${output}` : ""}`;

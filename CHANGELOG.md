@@ -14,6 +14,7 @@ All notable DevHarmonics changes are documented here.
 
 - Documentation now distinguishes the latest tagged release, v0.6.1, from unreleased `main`; scopes development status and availability claims accordingly; and identifies Windows and Ubuntu as continuously verified while qualifying macOS verification as manual.
 - Rollback instructions now select one inspected backup by exact path, verify its expected `user_version`, SQLite integrity, foreign keys, and migration history before touching the live ledger, stage and re-verify the copy, and preserve the newer ledger during the swap.
+- The README and user manual now link directly to the rollback runbook. The runbook requires PowerShell 7 on every platform, states its current manual qualification limits, makes every copy and move terminating, and recovers each interrupted swap state by preserving both source ledgers and restoring a verified copy of the newer ledger to the live path.
 
 ## [0.6.1] - 2026-07-22
 

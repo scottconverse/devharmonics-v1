@@ -25,6 +25,15 @@ export interface ProcessRequest {
    */
   windowsTaskkillDeadlineMs?: number;
   /**
+   * Maximum UTF-8 bytes retained independently for stdout and stderr.
+   * Older output is discarded while the most recent diagnostic tail remains.
+   * Defaults to unbounded capture for backward compatibility.
+   */
+  maxOutputBytes?: number;
+  /** Optional live-output observers. Captured output remains independently bounded. */
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
+  /**
    * Test-only seam: overrides how the Windows tree-kill helper (`taskkill`)
    * is spawned, so terminate()'s failure/retry/deadline/fallback paths
    * (round-3 finding "Windows taskkill failure path") can be exercised
@@ -51,13 +60,15 @@ export interface ProcessResult {
    * never report this as a plain, fully-confirmed timeout.
    */
   treeKillUnconfirmed: boolean;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 }
 
 export async function runProcess(request: ProcessRequest): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    let stdout = "";
-    let stderr = "";
+    const stdoutCapture = createOutputCapture();
+    const stderrCapture = createOutputCapture();
     let settled = false;
     let timedOut = false;
     // M-timeout-abort: true once we've sent SIGTERM ourselves (from the
@@ -78,6 +89,14 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     let windowsTerminationSettled: Promise<void> | null = null;
 
     const resolved = resolveCommand(request.command, request.args);
+    const maxOutputBytes = request.maxOutputBytes ?? Number.POSITIVE_INFINITY;
+    if (
+      maxOutputBytes !== Number.POSITIVE_INFINITY &&
+      (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1)
+    ) {
+      reject(new Error("maxOutputBytes must be a positive safe integer"));
+      return;
+    }
     // The child is NOT spawned with `signal` directly: Node's own
     // signal-kills the process with a single SIGTERM and no escalation. We
     // manage termination ourselves below so a process that ignores SIGTERM
@@ -285,10 +304,12 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
+      request.onStdout?.(chunk);
+      appendCapturedTail(stdoutCapture, chunk, maxOutputBytes);
     });
     child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
+      request.onStderr?.(chunk);
+      appendCapturedTail(stderrCapture, chunk, maxOutputBytes);
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
@@ -328,12 +349,14 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
       if (!settled) {
         settled = true;
         resolve({
-          stdout,
-          stderr,
+          stdout: capturedOutput(stdoutCapture),
+          stderr: capturedOutput(stderrCapture),
           exitCode: code ?? (timedOut ? 124 : 1),
           durationMs: Date.now() - startedAt,
           timedOut,
           treeKillUnconfirmed,
+          stdoutTruncated: stdoutCapture.truncated,
+          stderrTruncated: stderrCapture.truncated,
         });
       }
     }
@@ -377,6 +400,74 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     });
     child.stdin.end(request.stdin ?? "");
   });
+}
+
+interface OutputCapture {
+  chunks: string[];
+  byteLengths: number[];
+  head: number;
+  totalBytes: number;
+  truncated: boolean;
+}
+
+function createOutputCapture(): OutputCapture {
+  return { chunks: [], byteLengths: [], head: 0, totalBytes: 0, truncated: false };
+}
+
+function appendCapturedTail(capture: OutputCapture, chunk: string, maxBytes: number): void {
+  const chunkBytes = Buffer.byteLength(chunk);
+  capture.chunks.push(chunk);
+  capture.byteLengths.push(chunkBytes);
+  capture.totalBytes += chunkBytes;
+  if (maxBytes === Number.POSITIVE_INFINITY || capture.totalBytes <= maxBytes) return;
+  capture.truncated = true;
+
+  while (capture.totalBytes > maxBytes && capture.head < capture.chunks.length) {
+    const excess = capture.totalBytes - maxBytes;
+    const firstBytes = capture.byteLengths[capture.head]!;
+    if (firstBytes <= excess) {
+      capture.totalBytes -= firstBytes;
+      capture.head++;
+      continue;
+    }
+    const retained = utf8Tail(capture.chunks[capture.head]!, firstBytes - excess);
+    const retainedBytes = Buffer.byteLength(retained);
+    capture.chunks[capture.head] = retained;
+    capture.byteLengths[capture.head] = retainedBytes;
+    capture.totalBytes = capture.totalBytes - firstBytes + retainedBytes;
+  }
+
+  if (capture.head > 1_024 && capture.head * 2 > capture.chunks.length) {
+    capture.chunks = capture.chunks.slice(capture.head);
+    capture.byteLengths = capture.byteLengths.slice(capture.head);
+    capture.head = 0;
+  }
+}
+
+function capturedOutput(capture: OutputCapture): string {
+  return capture.chunks.slice(capture.head).join("");
+}
+
+function utf8Tail(value: string, maxBytes: number): string {
+  let start = value.length;
+  let bytes = 0;
+  while (start > 0) {
+    const low = value.charCodeAt(start - 1);
+    const characterStart =
+      low >= 0xdc00 &&
+      low <= 0xdfff &&
+      start > 1 &&
+      value.charCodeAt(start - 2) >= 0xd800 &&
+      value.charCodeAt(start - 2) <= 0xdbff
+        ? start - 2
+        : start - 1;
+    const character = value.slice(characterStart, start);
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > maxBytes) break;
+    bytes += characterBytes;
+    start = characterStart;
+  }
+  return value.slice(start);
 }
 
 function resolveCommand(command: string, args: string[]): { command: string; args: string[] } {
