@@ -210,6 +210,21 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
   </details>`;
 }
 
+function validatorDraftFromDom(element, priorDraft) {
+  if (!element) return priorDraft;
+  const cwd = element.querySelector("[data-validator-editor-cwd]").value.trim();
+  return {
+    ...priorDraft,
+    name: element.querySelector("[data-validator-editor-name]").value.trim(),
+    config: {
+      command: element.querySelector("[data-validator-editor-command]").value.trim(),
+      args: [...element.querySelectorAll("[data-validator-argument]")].map((input) => input.value),
+      timeoutMs: Number(element.querySelector("[data-validator-editor-timeout]").value) * 1000,
+      ...(cwd ? { cwd } : {}),
+    },
+  };
+}
+
 // M1 security fix (2026-07-22): review findings are reviewer-authored free text
 // (severity/location/rationale/disposition) that was concatenated straight into
 // innerHTML — a hostile or careless finding string could smuggle markup or script
@@ -2574,18 +2589,7 @@ $("#product-list").addEventListener("click", async (event) => {
     state.validatorDisclosureOpen[repositoryId] = true;
     const editorFromDom = () => {
       const element = validatorButton.closest(".validator-allowlist").querySelector("[data-validator-editor]");
-      if (!element) return state.validatorEditors[repositoryId];
-      const cwd = element.querySelector("[data-validator-editor-cwd]").value.trim();
-      return {
-        name: element.querySelector("[data-validator-editor-name]").value.trim(),
-        existing: state.validatorEditors[repositoryId]?.existing || false,
-        config: {
-          command: element.querySelector("[data-validator-editor-command]").value.trim(),
-          args: [...element.querySelectorAll("[data-validator-argument]")].map((input) => input.value),
-          timeoutMs: Number(element.querySelector("[data-validator-editor-timeout]").value) * 1000,
-          ...(cwd ? { cwd } : {}),
-        },
-      };
+      return validatorDraftFromDom(element, state.validatorEditors[repositoryId]);
     };
     if (action === "override" || action === "add-override" || action === "edit-override") {
       const name = validatorButton.dataset.validatorName || "";
@@ -2704,6 +2708,8 @@ $("#product-list").addEventListener("toggle", (event) => {
 $("#product-list").addEventListener("input", (event) => {
   const editor = event.target.closest("[data-validator-editor]");
   if (!editor) return;
+  const repositoryId = editor.dataset.repositoryId;
+  if (repositoryId) state.validatorEditors[repositoryId] = validatorDraftFromDom(editor, state.validatorEditors[repositoryId]);
   const command = editor.querySelector("[data-validator-editor-command]").value.trim();
   const args = [...editor.querySelectorAll("[data-validator-argument]")].map((input) => input.value);
   editor.querySelector(".validator-command-preview code").textContent = [command, ...args].filter(Boolean).join(" ") || "Enter an executable";
