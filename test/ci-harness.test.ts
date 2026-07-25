@@ -577,6 +577,73 @@ test("randomized-runner test overrides fail closed without the explicit seam env
   assert.match(`${result.stdout}\n${result.stderr}`, /test overrides require DEVHARMONICS_RANDOMIZED_RUNNER_TEST_SEAM=1/i);
 });
 
+test("version-authority corpus gate rejects a moved HEAD and an unexpected top-level Git repository", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-version-corpus-gate-"));
+
+  const git = (cwd: string, args: string[]): string => {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return result.stdout.trim();
+  };
+
+  const createRepository = async (root: string, name: string): Promise<{ path: string; oid: string }> => {
+    const repositoryPath = path.join(root, name);
+    await mkdir(repositoryPath, { recursive: true });
+    git(repositoryPath, ["init", "--initial-branch=main"]);
+    git(repositoryPath, ["config", "user.email", "corpus-fixture@example.invalid"]);
+    git(repositoryPath, ["config", "user.name", "Corpus Fixture"]);
+    await writeFile(path.join(repositoryPath, "package.json"), JSON.stringify({ name, version: "1.0.0" }), "utf8");
+    git(repositoryPath, ["add", "package.json"]);
+    git(repositoryPath, ["commit", "-m", "initial fixture"]);
+    return { path: repositoryPath, oid: git(repositoryPath, ["rev-parse", "HEAD"]) };
+  };
+
+  const runGate = (root: string, expectations: Array<[string, string, string | null]>): ReturnType<typeof spawnSync> => {
+    const { NODE_TEST_CONTEXT: _nodeTestContext, ...runnerEnvironment } = process.env;
+    return spawnSync(process.execPath, ["scripts/verify-version-authority-corpus.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...runnerEnvironment,
+        CIVICSUITE_ORG_READALL: root,
+        DEVHARMONICS_CORPUS_TEST_SEAM: "1",
+        DEVHARMONICS_CORPUS_TEST_EXPECTATIONS: JSON.stringify(expectations),
+      },
+    });
+  };
+
+  try {
+    const movedRoot = path.join(fixtureRoot, "moved");
+    await mkdir(movedRoot, { recursive: true });
+    const moved = await createRepository(movedRoot, "expected");
+    await writeFile(path.join(moved.path, "README.md"), "new checkout head\n", "utf8");
+    git(moved.path, ["add", "README.md"]);
+    git(moved.path, ["commit", "-m", "move checkout head"]);
+
+    const movedResult = runGate(movedRoot, [["expected", moved.oid, "1.0.0"]]);
+    const movedOutput = `${movedResult.stdout}\n${movedResult.stderr}`;
+    assert.notEqual(movedResult.status, 0, movedOutput);
+    assert.match(movedOutput, /expected checkout HEAD .* but found/i, "the stale pinned object must not hide a moved checkout HEAD");
+
+    const unexpectedRoot = path.join(fixtureRoot, "unexpected");
+    await mkdir(unexpectedRoot, { recursive: true });
+    const expected = await createRepository(unexpectedRoot, "expected");
+    await createRepository(unexpectedRoot, "new-repository");
+
+    const unexpectedResult = runGate(unexpectedRoot, [["expected", expected.oid, "1.0.0"]]);
+    const unexpectedOutput = `${unexpectedResult.stdout}\n${unexpectedResult.stderr}`;
+    assert.notEqual(unexpectedResult.status, 0, unexpectedOutput);
+    assert.match(unexpectedOutput, /unexpected top-level Git repositories: new-repository/i, "a newly discovered repository must fail the closed-world corpus census");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("declared test census follows node:test aliases and namespaces but ignores foreign and shadowed bindings", () => {
   const cases = {
     defaultAlias: countDeclaredNodeTests(

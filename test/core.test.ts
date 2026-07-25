@@ -2988,6 +2988,60 @@ test("workflow revisions persist immutably and runs pin the exact revision execu
   }
 });
 
+test("a private package version falls through to the PEP 621 project release version", async () => {
+  const { parseDeclaredVersion } = await import("../src/delivery.js");
+  assert.equal(
+    parseDeclaredVersion(
+      JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }),
+      '[project]\nname = "released-product"\nversion = "1.0.8"\n',
+    ),
+    "1.0.8",
+    "boolean private=true makes the package version non-authoritative",
+  );
+});
+
+test("a private-only package exposes no authoritative release version", async () => {
+  const { parseDeclaredVersion } = await import("../src/delivery.js");
+  assert.equal(
+    parseDeclaredVersion(JSON.stringify({ name: "internal-tool", version: "1.0.0", private: true }), null),
+    null,
+    "a private package version must never become a repository release claim",
+  );
+});
+
+test("package release authority changes only for boolean private=true", async () => {
+  const { parseDeclaredVersion } = await import("../src/delivery.js");
+  const pyproject = '[project]\nname = "python-product"\nversion = "3.4.5"\n';
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1" }), pyproject), "1.2.1", "an absent private field preserves package precedence");
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: false }), pyproject), "1.2.1", "private=false preserves package precedence");
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: "true" }), pyproject), "1.2.1", "a non-boolean private field does not change the existing behavior");
+  assert.equal(parseDeclaredVersion("{ malformed", pyproject), "3.4.5", "malformed package JSON still falls through to pyproject");
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: true }), '[project]\ndynamic = ["version"]\n'), null, "a private package plus dynamic-only PEP 621 metadata makes no static release claim");
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: true }), '[tool.release]\nversion = "8.8.8"\n'), null, "a private package never falls through to a non-project TOML version");
+});
+
+test("immutable commit lookup ignores a private package version in favor of PEP 621", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-private-version-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const commit = "d".repeat(40);
+  const runner = async (request: { command: string; args: string[] }) => {
+    if (request.command === "git" && request.args.join(" ") === `show ${commit}:package.json`) {
+      return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args.join(" ") === `show ${commit}:pyproject.toml`) {
+      return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    return { stdout: "", stderr: "unexpected command", exitCode: 1, durationMs: 1, timedOut: false };
+  };
+  try {
+    const service = new DeliveryService(ledger, runner as never);
+    assert.equal(await service.declaredVersionAtCommit(root, commit), "1.0.8", "the immutable manifest pair resolves the authoritative release version");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the tag-truth gate refuses a tag the repository's own files contradict unless the owner confirms", async () => {
   // Owner-requested (2026-07-22): "if it's at 1.2.1 and I tag it 1.0.0, won't
   // that screw up versioning across all surfaces?" — yes, so the tag step now
@@ -3014,9 +3068,13 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     if (request.command === "gh" && request.args[1] === "merge") prState = "MERGED";
     // The tag-truth gate reads the version from the IMMUTABLE merge commit
     // ("c" * 40) via `git show <oid>:package.json`, not the checkout: this
-    // commit declares 1.2.1 about itself.
+    // commit has a private frontend package at 1.0.0 and declares the product
+    // release as 1.2.1 in PEP 621 metadata.
     if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
-      return { stdout: JSON.stringify({ name: "truth", version: "1.2.1" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+      return { stdout: JSON.stringify({ name: "truth-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":pyproject.toml")) {
+      return { stdout: '[project]\nname = "truth"\nversion = "1.2.1"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
       return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
@@ -3024,7 +3082,8 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
   };
   try {
-    // The pure parser: package.json wins, pyproject reads ONLY [project].version.
+    // The pure parser: an authoritative package version wins; pyproject reads
+    // ONLY [project].version.
     assert.equal(workflows.parseDeclaredVersion(null, null), null, "no manifest text means no discoverable claim");
     assert.equal(workflows.parseDeclaredVersion(null, '[project]\nname = "truth"\nversion = "3.4.5"\n'), "3.4.5", "pyproject declares the version when package.json is absent");
     assert.equal(workflows.parseDeclaredVersion(JSON.stringify({ name: "truth", version: "1.2.1" }), '[project]\nversion = "3.4.5"\n'), "1.2.1", "package.json wins when both exist");
@@ -3281,10 +3340,11 @@ test("delivery tag caption never claims 'declares no version' during a mergeVers
   assert.match(unavailable.help, /can't be read right now|retry/i, "the outage state gives explicit retry guidance");
   assert.equal(unavailable.prefill, null, "the outage state never prefills a tag — there is nothing confirmed to prefill");
 
-  // (b) A genuinely versionless repository (no mergeVersionUnavailable flag)
-  // keeps the pre-existing, correct copy — this finding must not overcorrect.
+  // (b) A null result means no manifest made an authoritative release claim;
+  // a private package may still contain an internal version.
   const trulyVersionless = deliveryTagCaption({ repositoryId: "repo:truth", declaredVersion: null });
-  assert.match(trulyVersionless.help, /declares no version/, "a repository that truly has no declared version still says so");
+  assert.match(trulyVersionless.help, /no authoritative release version/i, "a null result never claims the repository contains no version at all");
+  assert.doesNotMatch(trulyVersionless.help, /declares no version/, "private-only repositories are not mislabeled as containing no version");
   assert.equal(trulyVersionless.prefill, null);
 
   // (c) The ordinary success path is unaffected by the new branch.
