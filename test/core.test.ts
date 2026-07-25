@@ -8637,7 +8637,20 @@ test("listDecisionRecords excludes superseded records by default, includes them 
 
 test("searchDecisionRecords normalizes tokens (lowercase, split on non-alphanumerics, drop <3-char tokens) and ranks subject hits before question-only hits, newest first", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-decisions-search-"));
-  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const filename = path.join(root, "devharmonics.db");
+  const seed = new Ledger(filename);
+  seed.close(); // create the schema before inserting exact recency fixtures.
+  const raw = new DatabaseSync(filename);
+  const insert = raw.prepare(
+    `INSERT INTO decision_records (id, subject, question, options_json, deciding_constraint, evidence, accepted_cost, scope, product_id, run_id, source, supersedes, what_changed, created_at)
+     VALUES (?, ?, ?, '[{"option":"x","disposition":"selected","reason":null}]', 'c', 'e', 'a', 'machine', NULL, NULL, 'owner', NULL, NULL, ?)`,
+  );
+  // Deliberately oppose id order to recency order: recency, not the final
+  // equal-timestamp id tie-breaker, must decide these two records.
+  insert.run("z-older-id", "logging pipeline", "How should logs be shipped?", "2026-07-24T12:00:00.000Z");
+  insert.run("a-newer-id", "logging retention", "How long should logs be kept?", "2026-07-24T12:00:01.000Z");
+  raw.close();
+  const ledger = new Ledger(filename);
   try {
     // Subject hit: "container-runtime" contains the token "container".
     const subjectHit = ledger.createDecisionRecord(
@@ -8662,12 +8675,10 @@ test("searchDecisionRecords normalizes tokens (lowercase, split on non-alphanume
     assert.deepEqual(shortTokenResults, [], "tokens under 3 characters are dropped, not treated as a wildcard");
 
     // Newest-first tie-break among records that hit the same field.
-    const older = ledger.createDecisionRecord(baseDecisionInput({ subject: "logging pipeline", question: "How should logs be shipped?" }));
-    const newer = ledger.createDecisionRecord(baseDecisionInput({ subject: "logging retention", question: "How long should logs be kept?" }));
     const bothSubjectHits = ledger.searchDecisionRecords("logging");
     assert.deepEqual(
       bothSubjectHits.map((record) => record.id),
-      [newer.id, older.id],
+      ["a-newer-id", "z-older-id"],
       "equal-relevance results are ordered newest first",
     );
   } finally {
