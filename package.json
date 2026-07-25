@@ -26,6 +26,7 @@
     "test:randomized": "npm run build && node scripts/run-tests-randomized.mjs",
     "test:mutation": "npm run build && node scripts/verify-mutation-discipline.mjs",
     "verify:version-authority-corpus": "npm run build && node scripts/verify-version-authority-corpus.mjs",
+    "verify:validator-discovery-corpus": "npm run build && node scripts/verify-validator-discovery-corpus.mjs",
     "version:check": "npm run build --silent && node scripts/check-version.mjs",
     "version:check:release": "npm run build --silent && node scripts/check-version.mjs --release",
     "check": "npm run build && node scripts/check-version.mjs && npm run test:compiled"

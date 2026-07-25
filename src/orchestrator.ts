@@ -53,6 +53,7 @@ import { adjudicateReviewQuorum, applicableReviewLenses, claimsArtifactDivergenc
 import { OPENROUTER_MAX_OUTPUT_TOKENS, OpenRouterService, requireInvocationCostCeiling, type PaidSpendReservation } from "./openrouter.js";
 import { ensureSchedulerCandidateQualified, ensureSchedulerProviderCandidateQualified, hasQualifiableCandidate, type SchedulerQualificationResult } from "./qualification.js";
 import { mergeRepositoryValidators, resolveValidatorCwd, runValidator, unknownValidator } from "./validators.js";
+import { effectiveValidatorAllowlist } from "./validator-discovery.js";
 import { analyzeVerificationIntegrity } from "./verification-integrity.js";
 import { runLocalToolLoop } from "./local-tools.js";
 import { WorktreeManager, WorkspaceIsolationError } from "./worktrees.js";
@@ -249,6 +250,11 @@ export class Orchestrator {
       ? (this.ledger.getProduct(input.objective.productId!)?.repositories ?? []).filter((repository) => repositoryContext.requiredImpactIds.includes(repository.id))
       : [];
     const architectValidators = architectValidatorNames(config.repository.validators, impactedRepositories);
+    if (!architectValidators.length) {
+      throw new Error(
+        "Zero validators are configured for this objective. Add a manual validator or explicitly preview and apply a repository validator rescan before planning.",
+      );
+    }
     // DH-647 S2: computed once per proposal (not per architect candidate) so
     // every retry sees the exact same retrieval, and the same object feeds
     // both the injected prompt section and the preview's "Prior decisions on
@@ -654,6 +660,12 @@ export class Orchestrator {
         signal,
       });
       return;
+    }
+
+    if (!request.approvedPlan && !Object.keys(config.repository.validators).length) {
+      throw new Error(
+        "Zero validators are configured for this objective. Add a manual validator or explicitly preview and apply a repository validator rescan before planning.",
+      );
     }
 
     const worktrees = new WorktreeManager(projectPath, runId);
@@ -2649,7 +2661,7 @@ export class Orchestrator {
         `dirty=${inspection?.dirty ?? "unknown"}`,
         `dependencies=${repository.dependencyRepositoryIds.join(",") || "none"}`,
         `owners=${repository.owners.join(",") || "unspecified"}`,
-        `validators=${Object.keys(repository.validators).join(",") || "none mapped"}`,
+        `validators=${Object.keys(effectiveValidatorAllowlist(repository.validatorDiscovery, repository.validatorLocalConfig, repository.validators, repository.validatorSuppressions).effectiveValidators).join(",") || "none mapped"}`,
         `governanceSources=${repository.governanceSources.join(",") || "none mapped"}`,
         `compatibilityIssues=${inspection?.compatibilityIssues.join(" | ") || "none observed"}`,
       ].join("; ");
@@ -2919,13 +2931,29 @@ export class Orchestrator {
  */
 export async function buildRepositoryContext(
   baseConfig: DevHarmonicsConfig,
-  repository: { localPath: string | null; validators: Record<string, ValidatorConfig> },
+  repository: {
+    localPath: string | null;
+    validators: Record<string, ValidatorConfig>;
+    validatorDiscovery?: import("./validator-discovery.js").PersistedValidatorDiscovery | null;
+    validatorLocalConfig?: Record<string, ValidatorConfig>;
+    validatorSuppressions?: string[];
+  },
 ): Promise<{ config: DevHarmonicsConfig; constitution: string }> {
-  const localConfig = await loadConfig(repository.localPath!);
   return {
     config: {
       ...baseConfig,
-      repository: { validators: mergeRepositoryValidators(localConfig.repository.validators, repository.validators, repository.localPath) },
+      repository: {
+        validators: mergeRepositoryValidators(
+          {},
+          effectiveValidatorAllowlist(
+            repository.validatorDiscovery ?? null,
+            repository.validatorLocalConfig ?? {},
+            repository.validators,
+            repository.validatorSuppressions ?? [],
+          ).effectiveValidators,
+          repository.localPath,
+        ),
+      },
     },
     constitution: await loadConstitution(repository.localPath!),
   };
@@ -2944,10 +2972,23 @@ export async function buildRepositoryContext(
  */
 export function architectValidatorNames(
   projectValidators: Record<string, ValidatorConfig>,
-  repositories: ReadonlyArray<{ validators: Record<string, ValidatorConfig> }>,
+  repositories: ReadonlyArray<{
+    validators: Record<string, ValidatorConfig>;
+    validatorDiscovery?: import("./validator-discovery.js").PersistedValidatorDiscovery | null;
+    validatorLocalConfig?: Record<string, ValidatorConfig>;
+    validatorSuppressions?: string[];
+  }>,
 ): string[] {
   const names = new Set(Object.keys(projectValidators));
-  for (const repository of repositories) for (const name of Object.keys(repository.validators)) names.add(name);
+  for (const repository of repositories) {
+    const effective = effectiveValidatorAllowlist(
+      repository.validatorDiscovery ?? null,
+      repository.validatorLocalConfig ?? {},
+      repository.validators,
+      repository.validatorSuppressions ?? [],
+    ).effectiveValidators;
+    for (const name of Object.keys(effective)) names.add(name);
+  }
   return [...names].sort();
 }
 

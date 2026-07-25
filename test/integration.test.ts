@@ -11,7 +11,7 @@ import { initializeProject, loadConfig, devHarmonicsDirectory } from "../src/con
 import { inspectProviders } from "../src/doctor.js";
 import { Ledger } from "../src/ledger.js";
 import { profileMetadata } from "../src/model-intelligence.js";
-import { Orchestrator, repositoryTaskIds } from "../src/orchestrator.js";
+import { buildRepositoryContext, Orchestrator, repositoryTaskIds } from "../src/orchestrator.js";
 import { syncOllamaRuntimes } from "../src/ollama.js";
 import { runProcess } from "../src/process.js";
 import { startDashboard } from "../src/server.js";
@@ -39,6 +39,16 @@ async function createRepository(root: string): Promise<string> {
   await git(project, ["add", "."]);
   await git(project, ["commit", "-m", "fixture"]);
   return project;
+}
+
+async function loadPlanningFixtureConfig(project: string) {
+  const config = await loadConfig(project);
+  config.repository.validators["diff-check"] = {
+    command: "git",
+    args: ["diff", "--check"],
+    timeoutMs: 30_000,
+  };
+  return config;
 }
 
 async function createFakeCli(root: string, authenticated = true): Promise<string> {
@@ -376,7 +386,7 @@ test("signed-out providers are detected and blocked before a run starts", async 
   const project = await createRepository(root);
   const command = await createFakeCli(root, false);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   for (const provider of ["codex", "claude", "gemini"] as const) {
     config.connections[provider].command = command;
   }
@@ -421,6 +431,39 @@ test("signed-out providers are detected and blocked before a run starts", async 
   }
 });
 
+test("an empty validator allowlist fails before architect invocation with an actionable reason", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-zero-validator-preflight-"));
+  const project = await createRepository(root);
+  const command = await createFakeCli(root);
+  await initializeProject(project);
+  const config = await loadConfig(project);
+  assert.deepEqual(config.repository.validators, {});
+  for (const provider of ["codex", "claude", "gemini"] as const) {
+    config.connections[provider].command = command;
+  }
+  await writeFile(
+    path.join(devHarmonicsDirectory(project), "config.json"),
+    `${JSON.stringify(config, null, 2)}\n`,
+    "utf8",
+  );
+
+  const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+  try {
+    const runId = await new Orchestrator(ledger).run({
+      goal: "Do not ask an architect to invent a validator",
+      projectPath: project,
+      agents: 1,
+    });
+    const run = ledger.getRun(runId);
+    assert.equal(run?.status, "failed");
+    assert.match(run?.finalReview ?? "", /zero validators|no validators/i);
+    assert.equal(run?.events.some((event) => event.kind === "architect.started"), false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("orchestrator completes a verified run through fake subscription CLIs", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-e2e-"));
   const project = await createRepository(root);
@@ -434,7 +477,7 @@ test("orchestrator completes a verified run through fake subscription CLIs", asy
     process.platform === "win32" ? "junction" : "dir",
   );
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -525,7 +568,7 @@ test("high-risk orchestration requires two independent provider reviews", async 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -639,7 +682,7 @@ test("review fixer changes evidence, invalidates the rejected receipt, and requi
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -675,7 +718,7 @@ test("green validators cannot hide a verification-integrity shortcut", async () 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -704,7 +747,7 @@ test("qualified Ollama implementor completes a bounded receipted local-tool chan
   const command = await createFakeCli(root);
   const ollama = await startFakeOllama();
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -906,7 +949,7 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-delivery-http-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1614,7 +1657,7 @@ test("the tag prefill follows the MERGE commit's declared version once merged, n
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-divergent-prefill-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1706,7 +1749,7 @@ test("a transient merge-time gh mergeCommit failure is repaired lazily at read t
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-merge-oid-repair-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1804,7 +1847,7 @@ test("a persisted merge OID whose object is not local is fetched at read time, n
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-merge-fetch-repair-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1914,7 +1957,7 @@ test("run provenance pins before execution and survives pause and resume", async
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   for (const provider of ["codex", "claude", "gemini"] as const) config.connections[provider].command = command;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
@@ -1974,7 +2017,7 @@ test("observe run completes from diagnostic reports without repository changes o
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2040,6 +2083,8 @@ test("dashboard serves its UI and bootstrap data on localhost", async () => {
     const appText = await fetch(`${dashboard.url}/app.js`).then((response) => response.text());
     assert.match(appText, /create_draft_pr/);
     assert.match(appText, /Approve &amp; push branch/);
+    assert.match(appText, /Fixed-recipe discovery never copies package, workflow, or release-script bodies/);
+    assert.match(appText, /Commands in <code>\.devharmonics\/config\.json<\/code> are owner-authored and snapshotted separately/);
     // Slice A: "PR" was unexplained shorthand — the button now spells out
     // "pull request" to match the rest of the delivery panel's wording.
     assert.match(appText, /Approve &amp; create draft pull request/);
@@ -2275,7 +2320,7 @@ test("objective preview creates no run and exact approved revision executes with
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2363,7 +2408,7 @@ test("objective planning context injects prior decisions scoped to the objective
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2537,7 +2582,7 @@ test("objective planning context caps prior decisions at 8 and the header names 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2602,7 +2647,7 @@ test("plan decisions[] are persisted as durable DecisionRecords only on approval
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2694,7 +2739,7 @@ test("M1: an ordinary approved run persists its architect plan decisions on appr
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2758,7 +2803,7 @@ test("M3: a duplicate objective start returns the existing run and persists deci
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2830,7 +2875,7 @@ test("an architect plan decision missing a rejection reason is refused by plan-s
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3058,7 +3103,7 @@ test("a run whose subscription worker is exhausted falls back to a qualified loc
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3125,7 +3170,7 @@ test("one signed-out provider does not block planning that a healthy architect c
   const healthy = await createFakeCli(root);
   const signedOut = await createFakeCli(await mkdtemp(path.join(os.tmpdir(), "devharmonics-signedout-cli-")), false);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   // codex is a configured worker, but signed out. claude can architect and work.
@@ -3189,7 +3234,7 @@ test("a run starts when its reviewer is not yet qualified but can be", async () 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3245,7 +3290,7 @@ test("a write task that changes nothing does not pass", async () => {
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3301,7 +3346,7 @@ test("a task no model can route settles the task instead of crashing the run", a
   assert.ok(address && typeof address === "object");
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3359,7 +3404,7 @@ test("a diagnostic whose citations do not resolve is rejected by the run, not ju
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3411,7 +3456,7 @@ test("a cross-repository architect is told the validators its repositories actua
   await git(docs, ["remote", "add", "origin", "https://github.com/vocab-product/docs.git"]);
   const command = await createFakeCli(root);
   await initializeProject(core);
-  const config = await loadConfig(core);
+  const config = await loadPlanningFixtureConfig(core);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3502,7 +3547,7 @@ test("cross-repository objective planning maps impact without starting an unsupp
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   for (const provider of ["codex", "claude", "gemini"] as const) config.connections[provider].command = command;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -3830,9 +3875,68 @@ test("Workbench creates a durable read-only discussion and converts it to an obj
   }
 });
 
+test("failed first-attachment validator snapshot leaves no registered repository state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-unsafe-config-"));
+  const host = await createRepository(path.join(root, "host"));
+  const candidate = await createRepository(path.join(root, "candidate"));
+  await initializeProject(host);
+  await mkdir(path.join(candidate, ".devharmonics"), { recursive: true });
+  await writeFile(path.join(candidate, ".devharmonics", "config.json"), "x".repeat(1_048_577));
+  const dashboard = await startDashboard({ projectPath: host, port: 0, open: false });
+  try {
+    const productResponse = await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "unsafe-snapshot",
+        name: "Unsafe Snapshot",
+        organizationUrl: "https://github.com/example",
+        description: "Unsafe snapshot fixture",
+        repositories: [],
+      }),
+    });
+    assert.equal(productResponse.status, 201);
+
+    const repositoryResponse = await fetch(`${dashboard.url}/api/products/unsafe-snapshot/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: candidate, role: "service" }),
+    });
+    assert.notEqual(repositoryResponse.status, 201);
+    assert.match(await repositoryResponse.text(), /too large|size limit/i);
+
+    const products = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
+      products: Array<{ id: string; repositories: unknown[] }>;
+    };
+    assert.deepEqual(
+      products.products.find((product) => product.id === "unsafe-snapshot")?.repositories,
+      [],
+      "a rejected initial snapshot must not leave a repository row with misleading validator state",
+    );
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("product registry inspects and retains a local repository without changing or running it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-registry-api-"));
   const project = await createRepository(root);
+  await initializeProject(project);
+  const projectConfig = await loadConfig(project);
+  projectConfig.repository.validators["local-config-check"] = {
+    command: process.execPath,
+    args: ["-e", "process.exit(0)"],
+    timeoutMs: 30_000,
+  };
+  await writeFile(
+    path.join(devHarmonicsDirectory(project), "config.json"),
+    `${JSON.stringify(projectConfig, null, 2)}\n`,
+    "utf8",
+  );
+  await mkdir(path.join(project, "scripts"), { recursive: true });
+  await writeFile(path.join(project, "pyproject.toml"), "[tool.pytest.ini_options]\n", "utf8");
+  await writeFile(path.join(project, "scripts", "verify-release.sh"), "#!/bin/sh\n", "utf8");
   await writeFile(path.join(project, "local-note.txt"), "uncommitted\n", "utf8");
   const dashboard = await startDashboard({ projectPath: project, port: 0, open: false });
   try {
@@ -3857,11 +3961,170 @@ test("product registry inspects and retains a local repository without changing 
       }),
     });
     assert.equal(repositoryResponse.status, 201);
-    const registered = await repositoryResponse.json() as { repository: { role: string; localPath: string; inspection: { dirty: boolean; currentBranch: string } } };
+    const registered = await repositoryResponse.json() as { repository: { id: string; role: string; localPath: string; validatorDiscovery: { validators: Record<string, unknown> }; inspection: { dirty: boolean; currentBranch: string } } };
     assert.equal(registered.repository.role, "umbrella");
     assert.equal(registered.repository.localPath, path.resolve(project));
     assert.equal(registered.repository.inspection.dirty, true);
     assert.equal(registered.repository.inspection.currentBranch, "main");
+    assert.ok(registered.repository.validatorDiscovery, "first attachment must persist a discovery snapshot");
+    assert.deepEqual(Object.keys(registered.repository.validatorDiscovery.validators), ["pytest", "verify-release"]);
+
+    const validatorResponse = await fetch(
+      `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`,
+    );
+    assert.equal(validatorResponse.status, 200, await validatorResponse.clone().text());
+    const allowlist = await validatorResponse.json() as {
+      effectiveValidators: Record<string, { command: string; args: string[] }>;
+      entries: Array<{ name: string; effectiveOrigin: string; discovered: { sources: Array<{ path: string }> } | null }>;
+    };
+    assert.deepEqual(Object.keys(allowlist.effectiveValidators), ["local-config-check", "pytest", "test", "verify-release"]);
+    assert.equal(allowlist.entries.find((entry) => entry.name === "local-config-check")?.effectiveOrigin, "local_config");
+    assert.equal(allowlist.effectiveValidators.test?.command, "npm");
+    assert.equal(allowlist.effectiveValidators.pytest?.command, "python");
+    assert.equal(allowlist.entries.find((entry) => entry.name === "pytest")?.effectiveOrigin, "discovered");
+    assert.deepEqual(
+      allowlist.entries.find((entry) => entry.name === "verify-release")?.discovered?.sources.map((source) => source.path),
+      ["scripts/verify-release.sh"],
+    );
+    const validatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`;
+    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+      const removed = await fetch(`${validatorBase}/${encodeURIComponent(name)}/suppression`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(removed.status, 200, await removed.clone().text());
+    }
+    const removeManual = await fetch(`${validatorBase}/test/override`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(removeManual.status, 200, await removeManual.clone().text());
+    const zeroAllowlist = await fetch(validatorBase).then((response) => response.json()) as {
+      effectiveValidators: Record<string, unknown>;
+    };
+    assert.deepEqual(zeroAllowlist.effectiveValidators, {});
+    const zeroRepository = (await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
+      products: Array<{ repositories: Array<Parameters<typeof buildRepositoryContext>[1]> }>;
+    }).products[0]!.repositories[0]!;
+    const zeroRuntimeContext = await buildRepositoryContext(await loadConfig(project), zeroRepository);
+    assert.deepEqual(zeroRuntimeContext.config.repository.validators, {}, "ZERO in the API must mean execution has zero validators");
+
+    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+      const restored = await fetch(`${validatorBase}/${encodeURIComponent(name)}/suppression`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(restored.status, 200, await restored.clone().text());
+    }
+    const restoreManual = await fetch(`${validatorBase}/test/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "npm", args: ["test"], timeoutMs: 120_000 }),
+    });
+    assert.equal(restoreManual.status, 200, await restoreManual.clone().text());
+
+    const suppress = await fetch(`${validatorBase}/pytest/suppression`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(suppress.status, 200, await suppress.clone().text());
+    assert.equal(((await suppress.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
+
+    const override = await fetch(`${validatorBase}/pytest/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "python", args: ["-m", "pytest", "-q"], timeoutMs: 30_000 }),
+    });
+    assert.equal(override.status, 200, await override.clone().text());
+    assert.deepEqual(
+      ((await override.json()) as { effectiveValidators: Record<string, { args: string[] }> }).effectiveValidators.pytest?.args,
+      ["-m", "pytest", "-q"],
+    );
+
+    const removeOverride = await fetch(`${validatorBase}/pytest/override`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(removeOverride.status, 200, await removeOverride.clone().text());
+    assert.equal(((await removeOverride.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
+
+    const restore = await fetch(`${validatorBase}/pytest/suppression`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(restore.status, 200, await restore.clone().text());
+    assert.ok(((await restore.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest);
+
+    const changedLocalConfig = await loadConfig(project);
+    changedLocalConfig.repository.validators["local-config-check"] = {
+      command: process.execPath,
+      args: ["-e", "process.exit(1)"],
+      timeoutMs: 30_000,
+    };
+    changedLocalConfig.repository.validators["local-config-new"] = {
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      timeoutMs: 30_000,
+    };
+    await writeFile(
+      path.join(devHarmonicsDirectory(project), "config.json"),
+      `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(path.join(project, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    const preview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    const previewBody = await preview.json() as {
+      previewToken: string;
+      expectedHeadSha: string;
+      baseStateFingerprint: string;
+      candidateFingerprint: string;
+      diff: { added: string[]; removed: string[] };
+      localConfigDiff: { added: string[]; changed: string[]; removed: string[] };
+    };
+    assert.deepEqual(previewBody.diff.added, ["ruff"]);
+    assert.deepEqual(previewBody.diff.removed, ["pytest"]);
+    assert.deepEqual(previewBody.localConfigDiff.added, ["local-config-new"]);
+    assert.deepEqual(previewBody.localConfigDiff.changed, ["local-config-check"]);
+    assert.deepEqual(previewBody.localConfigDiff.removed, []);
+    const beforeApply = await fetch(validatorBase).then((response) => response.json()) as { effectiveValidators: Record<string, unknown> };
+    assert.ok(beforeApply.effectiveValidators.pytest, "preview is read-only");
+    assert.equal(beforeApply.effectiveValidators.ruff, undefined, "preview never silently refreshes the allowlist");
+
+    await writeFile(path.join(project, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }), "utf8");
+    const staleApply = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(previewBody),
+    });
+    assert.equal(staleApply.status, 409, await staleApply.clone().text());
+
+    const freshPreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    const applied = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(freshPreview),
+    });
+    assert.equal(applied.status, 200, await applied.clone().text());
+    const appliedBody = await applied.json() as { effectiveValidators: Record<string, unknown> };
+    assert.deepEqual(Object.keys(appliedBody.effectiveValidators), ["build", "local-config-check", "local-config-new", "ruff", "test", "verify-release"]);
 
     const portfolio = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as { products: Array<{ repositories: Array<{ owners: string[]; validators: Record<string, { command: string }> }> }> };
     assert.deepEqual(portfolio.products[0]?.repositories[0]?.owners, ["product-platform"]);
@@ -3879,7 +4142,7 @@ test("cancel during planning does not save a late plan or restart the run", asyn
   const project = await createRepository(root);
   const command = await createSlowArchitectCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3949,7 +4212,7 @@ test("cancel stops the scheduler and marks the run and in-flight task cancelled"
   const project = await createRepository(root);
   const command = await createHangingCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4162,7 +4425,7 @@ test("cancel during planning terminates the architect child process", async () =
   const completedFile = path.join(root, "completed.marker");
   const command = await createPlanningHangingCli(root, startedFile, completedFile);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4244,7 +4507,7 @@ test("cancel during validator verification marks task cancelled and avoids merge
   const command = await createValidatorTestCli(root);
   const slowCheckCommand = await createSlowCheckScript(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4337,7 +4600,7 @@ test("owner steering interrupts a live attempt and hands off to an attributed co
   const hanging = await createHangingCli(root);
   const fixture = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4532,7 +4795,7 @@ process.exit(0);
   const fixture = await createFakeCli(root);
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];

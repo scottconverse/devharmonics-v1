@@ -96,7 +96,7 @@ One temporary Git branch and worktree per task. Tasks merge serially into a run 
 
 ### Check with commands you chose
 
-Validators come from `.devharmonics/config.json` only. For Node projects DevHarmonics discovers existing `test`, `lint`, `build`, and `typecheck` scripts; every project also gets a built-in `diff-check`. Failed checks return exact stdout, stderr, exit code, and duration to the worker for a bounded retry.
+Validators are selected by name from the effective allowlist. New projects discover supported fixed recipes, while owner-authored commands in `.devharmonics/config.json` remain explicit configuration; no project receives a placeholder `diff-check`. A run with zero effective validators refuses before asking an architect to invent a check. Failed checks return exact stdout, stderr, exit code, and duration to the worker for a bounded retry.
 
 </td>
 <td width="50%" valign="top">
@@ -302,9 +302,7 @@ The generated file contains more than this; version 1 files from earlier release
     "workers": ["codex", "claude", "gemini"]
   },
   "repository": {
-    "validators": {
-      "diff-check": { "command": "git", "args": ["diff", "--check"], "timeoutMs": 60000 }
-    }
+    "validators": {}
   },
   "runPolicy": {
     "autonomy": "supervised",
@@ -322,7 +320,7 @@ The generated file contains more than this; version 1 files from earlier release
 }
 ```
 
-`gemini` is the internal compatibility key for the Google Antigravity connection. Validator commands and arguments may use a `${repoRoot}` token, expanded to the owning repository's root — which keeps a registered validator portable across checkouts.
+`gemini` is the internal compatibility key for the Google Antigravity connection. On first initialization, DevHarmonics discovers only supported fixed validator recipes: selected npm script names, pytest/Ruff configuration, and the conventional `scripts/verify-release.sh` path. Fixed-recipe discovery never copies a package-script body, workflow command, or release-script body into the allowlist, and a repository with no detected validator receives an empty map—not a `git diff --check` placeholder. Owner-authored commands in `.devharmonics/config.json` are a separate source, snapshotted during first attachment or an owner-applied rescan. Existing configuration files are never silently rescanned or rewritten. Validator commands and arguments may use a `${repoRoot}` token, expanded to the owning repository's root—which keeps an owner-authored validator portable across checkouts.
 
 </details>
 
@@ -332,7 +330,7 @@ The generated file contains more than this; version 1 files from earlier release
 
 Most real products are several repositories that ship together. DevHarmonics models that without pretending they are a monorepo.
 
-Register a **product**, then attach each local Git checkout with its role, expected branch, owners, dependencies, validator commands, and governance sources. Inspection is read-only Git: DevHarmonics records the observed branch, HEAD, origin, dirty state, and compatibility issues, and never checks out, fetches, resets, stashes, or modifies a registered checkout.
+Register a **product**, then attach each local Git checkout with its role, expected branch, owners, dependencies, validator commands, and governance sources. First attachment performs read-only fixed-recipe discovery and snapshots any validators already present in that repository's `.devharmonics/config.json`; it never creates a missing config. The Products view enumerates the exact effective allowlist, fixed-recipe detection sources, local-config snapshot, manual overrides, and suppressed entries—the same map execution receives. An owner can remove, restore, or override individual entries. Later repository inspection never refreshes validators: **Preview validator rescan** separately shows discovery and local-config-snapshot added, changed, removed, and unchanged entries, and **Apply validator rescan** atomically replaces those two snapshots only while the reviewed HEAD, repository evidence, and persisted allowlist state still match. Manual overrides and suppressions are preserved. There is no background refresh. A legacy registered repository with no persisted snapshot honestly remains at zero until its owner applies a rescan. Inspection is read-only Git: DevHarmonics records the observed branch, HEAD, origin, dirty state, and compatibility issues, and never checks out, fetches, resets, stashes, or modifies a registered checkout.
 
 **Canonical intelligence sources** go a step further. Point DevHarmonics at the governance, architecture, version, status, compatibility, and release files that actually matter in each repository, and a scan produces an immutable snapshot with exact revisions, SHA-256 content hashes, working-tree state, explicit subject-aware claims, unavailable-source findings, and cited contradictions with path and line numbers. Git tags are deliberately not read as product claims. The latest bounded findings are injected into planning.
 
@@ -416,8 +414,8 @@ This project-status section describes `main`. What the current unreleased `main`
 
 | Signal | Reading |
 |---|---|
-| Automated suite | 407 declared cross-platform test cases across configuration, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
-| Schema handling | Ordered transactional migrations to ledger schema 37, automatic pre-upgrade backups, integrity + foreign-key validation, rollback on failure, and refusal to open a newer schema |
+| Automated suite | 427 declared cross-platform test cases across configuration, validator discovery and immutable CivicSuite corpus verification, credential stripping, provider parsing, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
+| Schema handling | Ordered transactional migrations to ledger schema 38, automatic pre-upgrade backups, integrity + foreign-key validation, rollback on failure, and refusal to open a newer schema |
 | Continuous integration | GitHub Actions runs the release-truth check and full suite on Node 24 for Ubuntu and Windows. Separate Ubuntu jobs run every compiled test file once in a logged, seeded shuffled order and mutation-prove that the verification-integrity sentinel goes RED before restoration returns it to GREEN |
 | Distribution | Source checkout only. No installer, no published package |
 | Operational tooling | Temporary worktrees are retained for inspection until explicit cleanup is added; an interrupted integration set is not reconstructed after restart |

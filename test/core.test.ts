@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, resolveProviderCommand } from "../src/config.js";
+import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, loadConfiguredValidatorSnapshot, resolveProviderCommand } from "../src/config.js";
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
@@ -521,8 +521,89 @@ test("project initialization detects Node validators and writes constitution", a
     assert.equal(config.connections.gemini.command, "agy");
     assert.deepEqual(config.repository.validators.test?.args, ["run", "test"]);
     assert.deepEqual(config.repository.validators.build?.args, ["run", "build"]);
-    assert.ok(config.repository.validators["diff-check"]);
+    assert.equal(config.repository.validators["diff-check"], undefined);
     assert.match(await readFile(path.join(root, ".devharmonics", "constitution.md"), "utf8"), /execution receipt/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("project initialization gives an empty repository zero validators", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-empty-"));
+  try {
+    await initializeProject(root);
+    const config = await loadConfig(root);
+    assert.deepEqual(config.repository.validators, {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot rejects an out-of-root symlink", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-outside-"));
+  try {
+    const outsideConfig = path.join(outside, "config.json");
+    await writeFile(outsideConfig, JSON.stringify(defaultConfig));
+    await symlink(outside, path.join(root, ".devharmonics"), "junction");
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(root),
+      /unsafe|symbolic link|symlink/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot rejects oversized config before parsing", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-limit-"));
+  try {
+    await mkdir(path.join(root, ".devharmonics"), { recursive: true });
+    await writeFile(path.join(root, ".devharmonics", "config.json"), "x".repeat(1_048_577));
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(root),
+      /too large|size limit/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot distinguishes absence from malformed JSON", async () => {
+  const absent = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-absent-"));
+  const malformed = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-malformed-"));
+  try {
+    assert.deepEqual(await loadConfiguredValidatorSnapshot(absent), {});
+    await mkdir(path.join(malformed, ".devharmonics"), { recursive: true });
+    await writeFile(path.join(malformed, ".devharmonics", "config.json"), "{broken");
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(malformed),
+      /invalid configuration JSON/i,
+    );
+  } finally {
+    await rm(absent, { recursive: true, force: true });
+    await rm(malformed, { recursive: true, force: true });
+  }
+});
+
+test("project initialization persists the production Python and release discovery result once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-python-"));
+  try {
+    await mkdir(path.join(root, "scripts"), { recursive: true });
+    await writeFile(path.join(root, "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n");
+    await writeFile(path.join(root, "scripts", "verify-release.sh"), "#!/bin/sh\n");
+    await initializeProject(root);
+    const first = await readFile(path.join(root, ".devharmonics", "config.json"), "utf8");
+    const config = await loadConfig(root);
+    assert.deepEqual(config.repository.validators, {
+      pytest: { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000 },
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000 },
+      "verify-release": { command: "bash", args: ["scripts/verify-release.sh"], timeoutMs: 3_600_000 },
+    });
+    await writeFile(path.join(root, "pyproject.toml"), "[project]\nname = \"changed\"\n");
+    await initializeProject(root);
+    assert.equal(await readFile(path.join(root, ".devharmonics", "config.json"), "utf8"), first);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1971,6 +2052,23 @@ test("repository validators cannot escape their assigned worktree through cwd", 
       /outside the assigned worktree/i,
     );
     await assert.rejects(() => readFile(outside, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing discovered validator tool returns an honest failed check receipt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-missing-tool-"));
+  try {
+    const result = await runValidator("pytest", {
+      command: "devharmonics-definitely-missing-validator-tool",
+      args: ["-m", "pytest"],
+      timeoutMs: 5_000,
+    }, root);
+    assert.equal(result.passed, false);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /not found|missing|ENOENT|unavailable/i);
+    assert.equal(result.name, "pytest");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -5391,6 +5489,7 @@ test("ledger upgrades a v0.1 database transactionally and preserves a pre-migrat
           { version: 35, name: "runs-status-index" },
           { version: 36, name: "decision-records" },
           { version: 37, name: "decision-provenance-and-append-only-invariants" },
+          { version: 38, name: "repository-validator-discovery-state" },
         ],
       );
     } finally {
@@ -6909,7 +7008,7 @@ test("steering directives persist with actor, target, disposition, and supersede
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-steering-ledger-"));
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
-    assert.equal(LEDGER_SCHEMA_VERSION, 37, "the decision-provenance/append-only migration advances the ledger schema");
+    assert.equal(LEDGER_SCHEMA_VERSION, 38, "the validator-discovery state migration advances the ledger schema");
     const runId = ledger.createRun("Steer me", root);
     ledger.savePlan(runId, {
       summary: "One task",
@@ -9120,6 +9219,126 @@ test("migration 37 makes decision_records append-only and its provenance/success
     assert.throws(() => insertProvenance("prov-2"), /UNIQUE|constraint/i, "the same (objective, revision, ordinal) provenance triple cannot be persisted twice");
   } finally {
     raw.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the validator allowlist UI renders discovered, override, suppressed, empty, and preview states safely", () => {
+  const appSource = readFileSync(path.join(process.cwd(), "src", "ui", "app.js"), "utf8");
+  const start = appSource.indexOf('function escapeHtml(value = "")');
+  const end = appSource.indexOf("\n// DH-632 visible operation feedback");
+  const seam = appSource.slice(start, end);
+  assert.match(seam, /function renderValidatorAllowlistHtml/);
+  const { renderValidatorAllowlistHtml } = new Function(
+    `${seam}; return { renderValidatorAllowlistHtml };`,
+  )() as {
+    renderValidatorAllowlistHtml: (
+      productId: string,
+      repositoryId: string,
+      allowlist: Record<string, any>,
+      preview?: Record<string, any>,
+    ) => string;
+  };
+  const html = renderValidatorAllowlistHtml("<product>", "<repo>", {
+    effectiveValidators: {
+      manual: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+    },
+    entries: [
+      {
+        name: "manual",
+        discovered: { sources: [{ kind: "pyproject_table", path: "<pyproject>", evidence: "tool.pytest.ini_options" }] },
+        override: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+        suppressed: false,
+        effectiveOrigin: "manual_override",
+        effectiveConfig: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+      },
+      {
+        name: "local",
+        discovered: null,
+        localConfig: { command: "node", args: ["local.js"], timeoutMs: 1_000 },
+        override: null,
+        suppressed: false,
+        effectiveOrigin: "local_config",
+        effectiveConfig: { command: "node", args: ["local.js"], timeoutMs: 1_000 },
+      },
+      {
+        name: "removed",
+        discovered: { sources: [{ kind: "release_script", path: "scripts/verify-release.sh", evidence: "regular-file" }] },
+        override: null,
+        suppressed: true,
+        effectiveOrigin: null,
+        effectiveConfig: null,
+      },
+    ],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, {
+    diff: { added: ["new"], changed: [], removed: ["old"], unchanged: ["manual"] },
+    localConfigDiff: { added: ["local-new"], changed: ["local"], removed: [], unchanged: [] },
+    previewToken: "token",
+  });
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /manual override/i);
+  assert.match(html, /local config/i);
+  assert.match(html, /suppressed|removed/i);
+  assert.match(html, /pyproject/i);
+  assert.match(html, /Previewed changes/i);
+  assert.match(html, /Local config snapshot/i);
+  assert.match(html, /Apply validator rescan/i);
+  assert.match(html, /<details[^>]*open/);
+  const empty = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  });
+  assert.match(empty, /Zero validators detected/i);
+  assert.doesNotMatch(empty, /diff-check/i);
+});
+
+test("migration 38 preserves existing validators as manual overrides and initializes discovery state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-migration-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    assert.equal(LEDGER_SCHEMA_VERSION, 38);
+    ledger.upsertProduct({
+      id: "github:fixture",
+      name: "Fixture",
+      organizationUrl: "https://github.com/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    const repository = ledger.upsertRepository({
+      id: "github:fixture/repo",
+      productId: "github:fixture",
+      name: "repo",
+      fullName: "fixture/repo",
+      url: "https://github.com/fixture/repo",
+      cloneUrl: "https://github.com/fixture/repo.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: { owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 } },
+      governanceSources: [],
+      governanceRules: [],
+    });
+    assert.deepEqual(repository.validators, {
+      owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 },
+    });
+    assert.equal((repository as any).validatorDiscovery, null);
+    assert.deepEqual((repository as any).validatorLocalConfig, {});
+    assert.deepEqual((repository as any).validatorSuppressions, []);
+  } finally {
+    ledger.close();
     await rm(root, { recursive: true, force: true });
   }
 });

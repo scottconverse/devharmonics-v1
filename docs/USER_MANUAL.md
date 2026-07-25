@@ -357,9 +357,15 @@ Key settings in `config.json`:
 - `retry.maxAttempts`: maximum attempts per task
 - `runPolicy.autonomy`: default run mode used by the dashboard and CLI
 - `providers.*.timeoutMs`: provider-process timeout
-- `validators`: commands the architect may select by name
+- `validators`: owner-authored commands the architect may select by name
 
-Validator commands are trusted local configuration. Models can request a configured validator name but cannot invent a command for execution.
+For a new project or a repository's first product attachment, DevHarmonics also performs read-only validator discovery. Repository evidence can select only a DevHarmonics-owned fixed recipe (`npm run` for supported literal script names, `python -m pytest`, `python -m ruff check .`, or `bash scripts/verify-release.sh`). Fixed-recipe discovery never copies package-script bodies, workflow shell text, or release-script bodies into a command. Commands explicitly authored by the repository owner in `.devharmonics/config.json` are separate: DevHarmonics snapshots them during first attachment or an owner-applied rescan. Compose may appear as setup-dependent evidence, but it is not made executable automatically. No detectable gate means exactly zero validators; `git diff --check` is never inserted as a substitute for behavioral verification.
+
+In **Products**, expand **Validator allowlist** under a local repository to see every effective or suppressed entry, whether it came from fixed-recipe discovery, the repository's snapshotted `.devharmonics/config.json`, or a later manual override. This is the exact map execution receives. You can remove/restore a discovered or local-config entry and add/remove a manual override. **Inspect Git** updates only Git status. To refresh validator evidence, choose **Preview validator rescan** and review the separate discovery and local-config-snapshot added/changed/removed/unchanged diffs; the panel stays open while that preview is pending. **Apply validator rescan** atomically replaces those two snapshots without touching manual overrides or suppressions. If HEAD, a dirty manifest/workflow/script/config, or allowlist state changed after preview, apply refuses as stale and asks for a new preview. DevHarmonics never refreshes this allowlist in the background. A repository registered before snapshots existed remains honestly at zero until its owner applies this explicit rescan.
+
+If an objective has zero effective validators, DevHarmonics refuses before invoking an architect and asks the owner to add a manual validator or explicitly rescan. Provider output is never used to disguise the missing verification policy.
+
+Discovered recipes can still execute repository-controlled test or release code when a run selects them. Fixed structured spawning prevents command-text injection; it is not a sandbox. A missing launcher remains a failed check receipt rather than disappearing or falling back to another gate.
 
 ### Local Ollama specialists and reviewers
 

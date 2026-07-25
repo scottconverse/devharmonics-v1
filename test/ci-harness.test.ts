@@ -644,6 +644,97 @@ test("version-authority corpus gate rejects a moved HEAD and an unexpected top-l
   }
 });
 
+test("validator-discovery corpus gate is closed-world and mutation-sensitive", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-corpus-gate-"));
+  const git = (cwd: string, args: string[]): string => {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return result.stdout.trim();
+  };
+  const createRepository = async (root: string, name: string): Promise<{ path: string; oid: string }> => {
+    const repositoryPath = path.join(root, name);
+    await mkdir(path.join(repositoryPath, "scripts"), { recursive: true });
+    git(repositoryPath, ["init", "--initial-branch=main"]);
+    git(repositoryPath, ["config", "user.email", "validator-corpus@example.invalid"]);
+    git(repositoryPath, ["config", "user.name", "Validator Corpus Fixture"]);
+    await writeFile(path.join(repositoryPath, "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n", "utf8");
+    await writeFile(path.join(repositoryPath, "scripts", "verify-release.sh"), "#!/bin/sh\n", "utf8");
+    git(repositoryPath, ["add", "."]);
+    git(repositoryPath, ["commit", "-m", "validator fixture"]);
+    return { path: repositoryPath, oid: git(repositoryPath, ["rev-parse", "HEAD"]) };
+  };
+  const runGate = (
+    root: string,
+    expectations: Array<[string, string, string[], string[]]>,
+    seam = true,
+  ): ReturnType<typeof spawnSync> => {
+    const { NODE_TEST_CONTEXT: _nodeTestContext, ...runnerEnvironment } = process.env;
+    return spawnSync(process.execPath, ["scripts/verify-validator-discovery-corpus.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...runnerEnvironment,
+        CIVICSUITE_ORG_READALL: root,
+        ...(seam ? { DEVHARMONICS_VALIDATOR_CORPUS_TEST_SEAM: "1" } : {}),
+        DEVHARMONICS_VALIDATOR_CORPUS_TEST_EXPECTATIONS: JSON.stringify(expectations),
+      },
+    });
+  };
+  try {
+    const mutationRoot = path.join(fixtureRoot, "mutation");
+    await mkdir(mutationRoot, { recursive: true });
+    const fixture = await createRepository(mutationRoot, "expected");
+    const expected: [string, string, string[], string[]] = [
+      "expected",
+      fixture.oid,
+      ["pytest", "ruff", "verify-release"],
+      [],
+    ];
+    const green = runGate(mutationRoot, [expected]);
+    assert.equal(green.status, 0, `${green.stdout}\n${green.stderr}`);
+
+    const wrong = runGate(mutationRoot, [[
+      "expected",
+      fixture.oid,
+      ["pytest", "verify-release"],
+      [],
+    ]]);
+    assert.notEqual(wrong.status, 0, `${wrong.stdout}\n${wrong.stderr}`);
+    assert.match(`${wrong.stdout}\n${wrong.stderr}`, /expected validators .* received/i);
+
+    const unguarded = runGate(mutationRoot, [expected], false);
+    assert.notEqual(unguarded.status, 0, `${unguarded.stdout}\n${unguarded.stderr}`);
+    assert.match(`${unguarded.stdout}\n${unguarded.stderr}`, /overrides require .*seam=1/i);
+
+    await writeFile(path.join(fixture.path, "README.md"), "moved\n", "utf8");
+    git(fixture.path, ["add", "README.md"]);
+    git(fixture.path, ["commit", "-m", "move head"]);
+    const moved = runGate(mutationRoot, [expected]);
+    assert.notEqual(moved.status, 0, `${moved.stdout}\n${moved.stderr}`);
+    assert.match(`${moved.stdout}\n${moved.stderr}`, /expected checkout HEAD .* but found/i);
+
+    const unexpectedRoot = path.join(fixtureRoot, "unexpected");
+    await mkdir(unexpectedRoot, { recursive: true });
+    const expectedRepo = await createRepository(unexpectedRoot, "expected");
+    await createRepository(unexpectedRoot, "new-repository");
+    const unexpected = runGate(unexpectedRoot, [[
+      "expected",
+      expectedRepo.oid,
+      ["pytest", "ruff", "verify-release"],
+      [],
+    ]]);
+    assert.notEqual(unexpected.status, 0, `${unexpected.stdout}\n${unexpected.stderr}`);
+    assert.match(`${unexpected.stdout}\n${unexpected.stderr}`, /unexpected top-level Git repositories: new-repository/i);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("declared test census follows node:test aliases and namespaces but ignores foreign and shadowed bindings", () => {
   const cases = {
     defaultAlias: countDeclaredNodeTests(

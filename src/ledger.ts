@@ -73,6 +73,7 @@ import type {
   WorkbenchSessionRecord,
 } from "./types.js";
 import { modelQuotaGroup, quotaResetAt } from "./antigravity.js";
+import type { PersistedValidatorDiscovery } from "./validator-discovery.js";
 
 interface RunRow {
   id: string;
@@ -178,7 +179,7 @@ interface CheckRow {
   duration_ms: number;
 }
 
-export const LEDGER_SCHEMA_VERSION = 37;
+export const LEDGER_SCHEMA_VERSION = 38;
 
 export const REPOSITORY_ROLES = [
   "umbrella",
@@ -250,6 +251,9 @@ export interface RepositoryRecord {
   owners: string[];
   dependencyRepositoryIds: string[];
   validators: Record<string, ValidatorConfig>;
+  validatorDiscovery: PersistedValidatorDiscovery | null;
+  validatorLocalConfig: Record<string, ValidatorConfig>;
+  validatorSuppressions: string[];
   governanceSources: string[];
   governanceRules: string[];
   inspection: RepositoryInspectionRecord | null;
@@ -307,6 +311,11 @@ function repositoryRecordFromRow(row: Record<string, unknown>): RepositoryRecord
     owners: JSON.parse(String(row.owners_json)) as string[],
     dependencyRepositoryIds: JSON.parse(String(row.dependency_repository_ids_json)) as string[],
     validators: JSON.parse(String(row.validators_json)) as Record<string, ValidatorConfig>,
+    validatorDiscovery: row.validator_discovery_json === null
+      ? null
+      : JSON.parse(String(row.validator_discovery_json)) as PersistedValidatorDiscovery,
+    validatorLocalConfig: JSON.parse(String(row.validator_local_config_json)) as Record<string, ValidatorConfig>,
+    validatorSuppressions: JSON.parse(String(row.validator_suppressions_json)) as string[],
     governanceSources: JSON.parse(String(row.governance_sources_json)) as string[],
     governanceRules: JSON.parse(String(row.governance_rules_json)) as string[],
     inspection: checkedAt === null ? null : {
@@ -1470,6 +1479,24 @@ const MIGRATIONS: readonly LedgerMigration[] = [
       `);
     },
   },
+  {
+    version: 38,
+    name: "repository-validator-discovery-state",
+    apply(database) {
+      const columns = new Set(
+        (database.prepare("SELECT name FROM pragma_table_info('repositories')").all() as unknown as Array<{ name: string }>).map((column) => column.name),
+      );
+      if (!columns.has("validator_discovery_json")) {
+        database.exec("ALTER TABLE repositories ADD COLUMN validator_discovery_json TEXT;");
+      }
+      if (!columns.has("validator_local_config_json")) {
+        database.exec("ALTER TABLE repositories ADD COLUMN validator_local_config_json TEXT NOT NULL DEFAULT '{}';");
+      }
+      if (!columns.has("validator_suppressions_json")) {
+        database.exec("ALTER TABLE repositories ADD COLUMN validator_suppressions_json TEXT NOT NULL DEFAULT '[]';");
+      }
+    },
+  },
 ];
 
 function summarizeGoal(goal: string, maxLength = 180): string {
@@ -1587,6 +1614,7 @@ const REQUIRED_SCHEMA: Readonly<Record<string, readonly string[]>> = {
     "language", "description", "intelligence_json", "observed_at", "local_path", "repository_role", "expected_branch", "owners_json",
     "dependency_repository_ids_json", "validators_json", "governance_sources_json", "governance_rules_json", "current_branch",
     "head_sha", "remote_url", "dirty", "compatibility_issues_json", "checked_at",
+    "validator_discovery_json", "validator_local_config_json", "validator_suppressions_json",
   ],
   catalog_refreshes: ["provider", "status", "source", "model_count", "detail", "refreshed_at"],
   provider_catalog_models: ["id", "provider", "canonical_name", "display_name", "metadata_json", "first_seen_at", "last_seen_at", "missing_observations", "retired"],
@@ -3169,6 +3197,37 @@ export class Ledger {
       ? this.database.prepare("SELECT * FROM repositories WHERE product_id = ? ORDER BY name, id").all(productId)
       : this.database.prepare("SELECT * FROM repositories ORDER BY product_id, name, id").all()) as unknown as Array<Record<string, unknown>>;
     return rows.map(repositoryRecordFromRow);
+  }
+
+  updateRepositoryValidatorState(
+    repositoryId: string,
+    input: {
+      validators?: Record<string, ValidatorConfig>;
+      validatorDiscovery?: PersistedValidatorDiscovery | null;
+      validatorLocalConfig?: Record<string, ValidatorConfig>;
+      validatorSuppressions?: string[];
+    },
+  ): RepositoryRecord {
+    const existing = this.getRepository(repositoryId);
+    if (!existing) throw new Error(`Repository '${repositoryId}' was not found`);
+    const validators = input.validators ?? existing.validators;
+    const discovery = input.validatorDiscovery === undefined
+      ? existing.validatorDiscovery
+      : input.validatorDiscovery;
+    const localConfig = input.validatorLocalConfig ?? existing.validatorLocalConfig;
+    const suppressions = input.validatorSuppressions ?? existing.validatorSuppressions;
+    this.database.prepare(`
+      UPDATE repositories
+      SET validators_json = ?, validator_discovery_json = ?, validator_local_config_json = ?, validator_suppressions_json = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(redactValue(validators)),
+      discovery === null ? null : JSON.stringify(discovery),
+      JSON.stringify(redactValue(localConfig)),
+      JSON.stringify([...new Set(suppressions)].sort()),
+      repositoryId,
+    );
+    return this.getRepository(repositoryId)!;
   }
 
   recordRepositoryInspection(repositoryId: string, input: RepositoryInspectionInput): RepositoryRecord {
