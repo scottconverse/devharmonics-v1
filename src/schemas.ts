@@ -467,6 +467,7 @@ export const devHarmonicsConfigSchema = z.object({
   }),
   repository: z.object({
     validators: validatorsSchema,
+    generatedValidators: validatorsSchema.default({}),
   }),
   runPolicy: z.object({
     autonomy: z.enum(["observe", "supervised", "bounded"]),

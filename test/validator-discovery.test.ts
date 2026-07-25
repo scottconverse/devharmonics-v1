@@ -215,6 +215,121 @@ test("workflow discovery fails closed after the bounded workflow-count cap", asy
   }
 });
 
+test("workflow discovery discards the whole workflow source after the aggregate byte cap", async () => {
+  const root = await fixture();
+  try {
+    const workflows = path.join(root, ".github", "workflows");
+    await mkdir(workflows, { recursive: true });
+    const validPrefix = "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n";
+    await Promise.all(Array.from({ length: 9 }, (_, index) => {
+      const prefix = index === 0 ? validPrefix : "name: filler\n";
+      return writeFile(
+        path.join(workflows, `large-${index}.yml`),
+        `${prefix}#${"x".repeat(500_000 - prefix.length - 2)}\n`,
+      );
+    }));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.ok(result.diagnostics.some((item) => item.source === ".github/workflows" && item.code === "limit_reached"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("source byte limits accept exact boundaries and reject the first oversized byte", async () => {
+  const exact = await fixture();
+  const oversized = await fixture();
+  try {
+    const packagePrefix = JSON.stringify({ scripts: { test: "hostile text is evidence only" } });
+    await writeFile(path.join(exact, "package.json"), `${packagePrefix}${" ".repeat(1024 * 1024 - packagePrefix.length)}`);
+    await writeFile(path.join(oversized, "package.json"), `${packagePrefix}${" ".repeat(1024 * 1024 + 1 - packagePrefix.length)}`);
+    await mkdir(path.join(exact, "scripts"), { recursive: true });
+    await mkdir(path.join(oversized, "scripts"), { recursive: true });
+    await writeFile(path.join(exact, "scripts", "verify-release.sh"), Buffer.alloc(4 * 1024 * 1024, 35));
+    await writeFile(path.join(oversized, "scripts", "verify-release.sh"), Buffer.alloc(4 * 1024 * 1024 + 1, 35));
+    await mkdir(path.join(exact, ".github", "workflows"), { recursive: true });
+    await mkdir(path.join(oversized, ".github", "workflows"), { recursive: true });
+    const workflowPrefix = "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n#";
+    await writeFile(
+      path.join(exact, ".github", "workflows", "boundary.yml"),
+      `${workflowPrefix}${"x".repeat(512 * 1024 - workflowPrefix.length)}`,
+    );
+    await writeFile(
+      path.join(oversized, ".github", "workflows", "boundary.yml"),
+      `${workflowPrefix}${"x".repeat(512 * 1024 + 1 - workflowPrefix.length)}`,
+    );
+
+    const exactResult = await discoverRepositoryValidators(exact);
+    assert.deepEqual(Object.keys(discoveredValidatorMap(exactResult)), ["pytest", "test", "verify-release"]);
+    assert.deepEqual(exactResult.diagnostics, []);
+
+    const oversizedResult = await discoverRepositoryValidators(oversized);
+    assert.deepEqual(discoveredValidatorMap(oversizedResult), {});
+    assert.deepEqual(oversizedResult.diagnostics, [
+      { source: ".github/workflows/boundary.yml", code: "oversized" },
+      { source: "package.json", code: "oversized" },
+      { source: "scripts/verify-release.sh", code: "oversized" },
+    ]);
+  } finally {
+    await rm(exact, { recursive: true, force: true });
+    await rm(oversized, { recursive: true, force: true });
+  }
+});
+
+test("workflow count and directory-entry caps accept the boundary and fail closed at boundary plus one", async () => {
+  const exactCount = await fixture();
+  const exactEntries = await fixture();
+  const overEntries = await fixture();
+  try {
+    for (const root of [exactCount, exactEntries, overEntries]) {
+      await mkdir(path.join(root, ".github", "workflows"), { recursive: true });
+    }
+    await Promise.all(Array.from({ length: 64 }, (_, index) => writeFile(
+      path.join(exactCount, ".github", "workflows", `check-${String(index).padStart(2, "0")}.yml`),
+      "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n",
+    )));
+    assert.deepEqual(Object.keys(discoveredValidatorMap(await discoverRepositoryValidators(exactCount))), ["pytest"]);
+
+    for (const [root, entries] of [[exactEntries, 256], [overEntries, 257]] as const) {
+      await writeFile(
+        path.join(root, ".github", "workflows", "check.yml"),
+        "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n",
+      );
+      await Promise.all(Array.from({ length: entries - 1 }, (_, index) => writeFile(
+        path.join(root, ".github", "workflows", `note-${String(index).padStart(3, "0")}.txt`),
+        "not a workflow",
+      )));
+    }
+    assert.deepEqual(Object.keys(discoveredValidatorMap(await discoverRepositoryValidators(exactEntries))), ["pytest"]);
+    const over = await discoverRepositoryValidators(overEntries);
+    assert.deepEqual(discoveredValidatorMap(over), {});
+    assert.ok(over.diagnostics.some((item) => item.source === ".github/workflows" && item.code === "limit_reached"));
+  } finally {
+    await rm(exactCount, { recursive: true, force: true });
+    await rm(exactEntries, { recursive: true, force: true });
+    await rm(overEntries, { recursive: true, force: true });
+  }
+});
+
+test("persisted discovery retains sorted diagnostics for later API and UI projection", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "package.json"), "{broken");
+    await writeFile(path.join(root, "pyproject.toml"), "x".repeat(1_048_577));
+    const snapshot = createValidatorDiscoverySnapshot(
+      await discoverRepositoryValidators(root),
+      "a".repeat(40),
+      "2026-07-25T00:00:00.000Z",
+    );
+    assert.deepEqual((snapshot as { diagnostics?: unknown }).diagnostics, [
+      { source: "package.json", code: "malformed" },
+      { source: "pyproject.toml", code: "oversized" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("effective allowlist exposes provenance, suppression, and manual override without placeholders", async () => {
   const root = await fixture();
   try {

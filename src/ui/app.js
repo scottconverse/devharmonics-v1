@@ -18,6 +18,9 @@ const state = {
   productIntelligence: {},
   validatorAllowlists: {},
   validatorRescanPreviews: {},
+  validatorEditors: {},
+  validatorErrors: {},
+  validatorFocus: null,
   qualifications: [],
   performanceProfiles: [],
   performancePolicies: [],
@@ -80,7 +83,63 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
-function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, preview) {
+function validatorConfigSummary(entry) {
+  const config = entry?.effectiveConfig;
+  if (!config) return "not executable";
+  const command = [config.command, ...(config.args || [])].join(" ");
+  const source = entry.discovered?.sources?.map((item) => `${item.path} (${item.kind})`).join(" Â· ")
+    || (entry.localConfig ? ".devharmonics/config.json" : entry.override ? "manual override" : "none");
+  return `${entry.effectiveOrigin || "inactive"} | ${command} | timeout ${config.timeoutMs / 1000} seconds | cwd ${config.cwd || "repository root"} | source ${source}`;
+}
+
+function previewHasDelta(preview) {
+  return ["added", "changed", "removed"].some((key) => (
+    (preview?.diff?.[key] || []).length || (preview?.localConfigDiff?.[key] || []).length
+  ));
+}
+
+function renderValidatorPreviewChanges(allowlist, preview) {
+  const names = [...new Set([
+    ...(preview.diff?.added || []),
+    ...(preview.diff?.changed || []),
+    ...(preview.diff?.removed || []),
+    ...(preview.localConfigDiff?.added || []),
+    ...(preview.localConfigDiff?.changed || []),
+    ...(preview.localConfigDiff?.removed || []),
+  ])].sort();
+  if (!names.length) return '<p class="validator-up-to-date">Allowlist is already up to date.</p>';
+  const before = new Map((allowlist.entries || []).map((entry) => [entry.name, entry]));
+  const after = new Map((preview.candidate?.entries || []).map((entry) => [entry.name, entry]));
+  return `<div class="validator-diff-table" role="table" aria-label="Executable validator changes">
+    ${names.map((name) => `<div class="validator-diff-row" role="row">
+      <strong role="rowheader">${escapeHtml(name)}</strong>
+      <span role="cell"><b>Before</b> ${escapeHtml(validatorConfigSummary(before.get(name)))}</span>
+      <span role="cell"><b>After</b> ${escapeHtml(validatorConfigSummary(after.get(name)))}</span>
+    </div>`).join("")}
+  </div>`;
+}
+
+function renderValidatorEditor(editor, product, repository) {
+  if (!editor) return "";
+  const config = editor.config || {};
+  const args = config.args?.length ? config.args : [""];
+  return `<div class="validator-editor" data-validator-editor data-product-id="${product}" data-repository-id="${repository}">
+    <strong>${editor.existing ? "Edit manual validator" : "Add manual validator"}</strong>
+    <label>Validator name<input class="input" data-validator-editor-name value="${escapeHtml(editor.name || "")}" ${editor.existing ? "readonly" : ""}></label>
+    <label>Executable<input class="input" data-validator-editor-command value="${escapeHtml(config.command || "")}"></label>
+    <fieldset data-validator-arguments><legend>Arguments</legend>${args.map((argument, index) => `<label>Argument ${index + 1}<input class="input" data-validator-argument value="${escapeHtml(argument)}"></label>`).join("")}</fieldset>
+    <button class="secondary small" type="button" data-validator-action="add-argument" data-product-id="${product}" data-repository-id="${repository}">Add argument</button>
+    <label>Timeout (seconds)<input class="input" type="number" min="1" max="3600" step="1" data-validator-editor-timeout value="${escapeHtml((config.timeoutMs || 600_000) / 1000)}"></label>
+    <label>Working directory <span class="muted">(optional, relative to repository)</span><input class="input" data-validator-editor-cwd value="${escapeHtml(config.cwd || "")}"></label>
+    <p class="validator-command-preview"><strong>After save</strong> <code>${escapeHtml([config.command || "", ...args].filter(Boolean).join(" ") || "Enter an executable")}</code></p>
+    <div class="validator-editor-actions">
+      <button class="primary small" type="button" data-validator-action="save-editor" data-product-id="${product}" data-repository-id="${repository}">Save manual validator</button>
+      <button class="secondary small" type="button" data-validator-action="cancel-editor" data-product-id="${product}" data-repository-id="${repository}">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, preview, editor, localError) {
   const product = escapeHtml(productId);
   const repository = escapeHtml(repositoryId);
   if (allowlist?.error) {
@@ -108,7 +167,7 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
         : '<span class="validator-sources">Owner-configured; no discovery source.</span>';
     const discoveryAction = entry.discovered || entry.localConfig
       ? entry.suppressed
-        ? `<button class="secondary small" type="button" data-validator-action="restore" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Restore discovered validator ${name}">Restore</button>`
+        ? `<button class="secondary small" type="button" data-validator-action="restore" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Restore validator ${name} to the executable allowlist">Restore</button>`
         : `<button class="secondary small" type="button" data-validator-action="suppress" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Remove validator ${name}">Remove</button>`
       : "";
     const overrideAction = entry.override
@@ -118,18 +177,30 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
       <div><strong>${name}</strong><span class="validator-origin">${escapeHtml(origin)}</span>${command}${sources}</div>
       <div class="validator-entry-actions">${discoveryAction}${overrideAction}</div>
     </li>`;
-  }).join("") : '<p class="validator-empty">Zero validators detected. This repository has no executable validation allowlist.</p>';
+  }).join("") : allowlist?.discovery?.status === "scanned_with_diagnostics"
+    ? '<p class="validator-empty degraded">Zero executable validators. Discovery is incomplete; review the skipped evidence below.</p>'
+    : '<p class="validator-empty">Zero validators detected. This repository has no executable validation allowlist.</p>';
+  const diagnosticsMarkup = (allowlist?.diagnostics || []).length
+    ? `<div class="validator-diagnostics" role="alert"><strong>Discovery is incomplete</strong><ul>${allowlist.diagnostics.map((item) => `<li><code>${escapeHtml(item.source)}</code>: ${escapeHtml(item.code.replaceAll("_", " "))}. Fix this repository evidence, then preview a rescan.</li>`).join("")}</ul></div>`
+    : "";
+  const errorMarkup = localError
+    ? `<div class="validator-local-error" role="alert" tabindex="-1" data-validator-error-for="${repository}"><strong>Couldnâ€™t update validators</strong><span>${escapeHtml(localError)}</span>${/preview.*stale/i.test(localError) ? `<button class="secondary small" type="button" data-validator-action="preview-rescan" data-product-id="${product}" data-repository-id="${repository}">Preview again</button>` : ""}</div>`
+    : "";
   const previewMarkup = preview ? `<div class="validator-preview" role="status">
     <strong>Previewed changes</strong>
     <span>Added: ${escapeHtml((preview.diff?.added || []).join(", ") || "none")} · Changed: ${escapeHtml((preview.diff?.changed || []).join(", ") || "none")} · Removed: ${escapeHtml((preview.diff?.removed || []).join(", ") || "none")} · Unchanged: ${escapeHtml((preview.diff?.unchanged || []).join(", ") || "none")}</span>
     <span>Local config snapshot — Added: ${escapeHtml((preview.localConfigDiff?.added || []).join(", ") || "none")} · Changed: ${escapeHtml((preview.localConfigDiff?.changed || []).join(", ") || "none")} · Removed: ${escapeHtml((preview.localConfigDiff?.removed || []).join(", ") || "none")} · Unchanged: ${escapeHtml((preview.localConfigDiff?.unchanged || []).join(", ") || "none")}</span>
-    <button class="primary small" type="button" data-validator-action="apply-rescan" data-product-id="${product}" data-repository-id="${repository}">Apply validator rescan</button>
+    ${renderValidatorPreviewChanges(allowlist, preview)}
+    ${previewHasDelta(preview) ? `<button class="primary small" type="button" data-validator-action="apply-rescan" data-product-id="${product}" data-repository-id="${repository}">Apply these validator changes</button>` : ""}
   </div>` : "";
-  return `<details class="validator-allowlist"${preview ? " open" : ""}>
+  return `<details class="validator-allowlist"${preview || editor || localError ? " open" : ""}>
     <summary><strong>Validator allowlist</strong><span>${effectiveCount} executable</span></summary>
-    <p class="field-help">Fixed-recipe discovery never copies package, workflow, or release-script bodies. Commands in <code>.devharmonics/config.json</code> are owner-authored and snapshotted separately during attachment or an owner-applied rescan.</p>
+    <p class="field-help">Fixed-recipe discovery never copies package, workflow, or release-script bodies. DevHarmonics-generated fixed recipes retain generated provenance; commands an owner adds or changes in <code>.devharmonics/config.json</code> are snapshotted separately during attachment or an owner-applied rescan.</p>
+    ${errorMarkup}
+    ${diagnosticsMarkup}
     <ul>${entryMarkup}</ul>
     ${previewMarkup}
+    ${renderValidatorEditor(editor, product, repository)}
     <div class="validator-management-actions">
       <button class="secondary small" type="button" data-validator-action="add-override" data-product-id="${product}" data-repository-id="${repository}">Add manual validator</button>
       <button class="secondary small" type="button" data-validator-action="preview-rescan" data-product-id="${product}" data-repository-id="${repository}">Preview validator rescan</button>
@@ -771,6 +842,14 @@ async function refreshFleet() {
 }
 
 async function refreshProducts() {
+  const focusedValidatorControl = document.activeElement?.closest?.("[data-validator-action]");
+  const retainedValidatorFocus = focusedValidatorControl?.dataset?.repositoryId
+    ? {
+      repositoryId: focusedValidatorControl.dataset.repositoryId,
+      action: focusedValidatorControl.dataset.validatorAction,
+      name: focusedValidatorControl.dataset.validatorName || null,
+    }
+    : null;
   const result = await api("/api/products");
   state.products = result.products;
   state.productIntelligence = Object.fromEntries(await Promise.all(state.products.map(async (product) => {
@@ -821,15 +900,31 @@ async function refreshProducts() {
     <div class="repository-list">${product.repositories.map((repository) => {
       const local = repository.inspection || null;
       const issues = local?.compatibilityIssues || [];
+      const validatorDiscoveryDegraded = state.validatorAllowlists[repository.id]?.discovery?.status === "scanned_with_diagnostics";
       const facts = [repository.role ? repository.role.replaceAll("_", " ") : null, local?.currentBranch || repository.defaultBranch, local ? local.dirty ? "dirty" : "clean" : null, ...issues.slice(0, 2)].filter(Boolean);
       const inspectTitle = local ? "Re-inspect Git state and compatibility. This never refreshes the validator allowlist." : "Inspect this repository's Git state.";
       const allowlist = repository.localPath
-        ? renderValidatorAllowlistHtml(product.id, repository.id, state.validatorAllowlists[repository.id], state.validatorRescanPreviews[repository.id])
+        ? renderValidatorAllowlistHtml(
+          product.id,
+          repository.id,
+          state.validatorAllowlists[repository.id],
+          state.validatorRescanPreviews[repository.id],
+          state.validatorEditors[repository.id],
+          state.validatorErrors[repository.id],
+        )
         : "";
-      return `<div class="repository-item"><div class="repository-row ${repository.localPath ? "local" : ""}"><span><strong>${escapeHtml(repository.name)}</strong><small>ID: <code>${escapeHtml(repository.id)}</code> · ${escapeHtml(repository.localPath || repository.fullName)} · ${escapeHtml(repository.visibility)}${local?.headSha ? ` · ${escapeHtml(local.headSha.slice(0, 10))}` : ""}</small><span class="repository-facts">${facts.map((fact) => `<em class="${issues.includes(fact) ? "issue" : ""}">${escapeHtml(fact)}</em>`).join("")}</span></span><div class="repository-actions"><span class="lifecycle ${issues.length || local?.dirty ? "degraded" : repository.archived ? "retired" : "qualified"}">${issues.length ? `${issues.length} issues` : local?.dirty ? "dirty" : local ? "ready" : "observed"}</span>${repository.localPath ? `<button class="secondary small" type="button" data-refresh-repository="${escapeHtml(repository.id)}" data-product-id="${escapeHtml(product.id)}" title="${inspectTitle}">Inspect Git</button>` : ""}</div></div>${allowlist}</div>`;
+      return `<div class="repository-item"><div class="repository-row ${repository.localPath ? "local" : ""}"><span><strong>${escapeHtml(repository.name)}</strong><small>ID: <code>${escapeHtml(repository.id)}</code> · ${escapeHtml(repository.localPath || repository.fullName)} · ${escapeHtml(repository.visibility)}${local?.headSha ? ` · ${escapeHtml(local.headSha.slice(0, 10))}` : ""}</small><span class="repository-facts">${facts.map((fact) => `<em class="${issues.includes(fact) ? "issue" : ""}">${escapeHtml(fact)}</em>`).join("")}</span></span><div class="repository-actions"><span class="lifecycle ${issues.length || local?.dirty || validatorDiscoveryDegraded ? "degraded" : repository.archived ? "retired" : "qualified"}">${validatorDiscoveryDegraded ? "validator discovery degraded" : issues.length ? `${issues.length} issues` : local?.dirty ? "dirty" : local ? "ready" : "observed"}</span>${repository.localPath ? `<button class="secondary small" type="button" data-refresh-repository="${escapeHtml(repository.id)}" data-product-id="${escapeHtml(product.id)}" title="${inspectTitle}">Inspect Git</button>` : ""}</div></div>${allowlist}</div>`;
     }).join("")}</div>
   </article>`;
   }).join("");
+  const validatorFocus = state.validatorFocus || retainedValidatorFocus;
+  if (validatorFocus) {
+    const { repositoryId, action, name } = validatorFocus;
+    const selector = action === "error"
+      ? `[data-validator-error-for="${CSS.escape(repositoryId)}"]`
+      : `[data-validator-action="${CSS.escape(action)}"][data-repository-id="${CSS.escape(repositoryId)}"]${name ? `[data-validator-name="${CSS.escape(name)}"]` : ""}`;
+    $("#product-list").querySelector(selector)?.focus();
+  }
   renderObjectiveRepositoryPicker();
 }
 
@@ -1318,7 +1413,7 @@ async function refreshWorkflows() {
   const { workflows } = await api("/api/workflows");
   state.workflows = workflows;
   $("#workflow-list").innerHTML = workflows.length
-    ? workflows.map((workflow) => `<button class="connection-card" style="text-align:left;cursor:pointer" data-workflow-hash="${escapeHtml(workflow.revisionHash)}">
+    ? workflows.map((workflow) => `<button class="connection-card workflow-select" data-workflow-hash="${escapeHtml(workflow.revisionHash)}">
         <strong>${escapeHtml(workflow.name)}</strong>
         <p class="field-help" title="Workflows can be edited over time; this is the exact version you're looking at.">version ${escapeHtml(workflow.revisionHash.slice(0, 12))} · saved ${escapeHtml(workflow.createdAt.slice(0, 10))}</p>
       </button>`).join("")
@@ -2470,13 +2565,62 @@ $("#product-list").addEventListener("click", async (event) => {
     const repositoryId = validatorButton.dataset.repositoryId;
     const base = `/api/products/${encodeURIComponent(productId)}/repositories/${encodeURIComponent(repositoryId)}/validators`;
     const action = validatorButton.dataset.validatorAction;
+    const currentAllowlist = state.validatorAllowlists[repositoryId] || {};
+    const editorFromDom = () => {
+      const element = validatorButton.closest(".validator-allowlist").querySelector("[data-validator-editor]");
+      if (!element) return state.validatorEditors[repositoryId];
+      const cwd = element.querySelector("[data-validator-editor-cwd]").value.trim();
+      return {
+        name: element.querySelector("[data-validator-editor-name]").value.trim(),
+        existing: state.validatorEditors[repositoryId]?.existing || false,
+        config: {
+          command: element.querySelector("[data-validator-editor-command]").value.trim(),
+          args: [...element.querySelectorAll("[data-validator-argument]")].map((input) => input.value),
+          timeoutMs: Number(element.querySelector("[data-validator-editor-timeout]").value) * 1000,
+          ...(cwd ? { cwd } : {}),
+        },
+      };
+    };
+    if (action === "override" || action === "add-override") {
+      const name = validatorButton.dataset.validatorName || "";
+      const existing = (currentAllowlist.entries || []).find((entry) => entry.name === name);
+      state.validatorEditors[repositoryId] = {
+        name,
+        existing: action === "override",
+        config: existing?.override || existing?.effectiveConfig || { command: "", args: [""], timeoutMs: 600_000 },
+      };
+      state.validatorFocus = { repositoryId, action: "save-editor", name: null };
+      await refreshProducts();
+      return;
+    }
+    if (action === "cancel-editor") {
+      delete state.validatorEditors[repositoryId];
+      state.validatorFocus = { repositoryId, action: "add-override", name: null };
+      await refreshProducts();
+      return;
+    }
+    if (action === "add-argument") {
+      const editor = editorFromDom();
+      editor.config.args.push("");
+      state.validatorEditors[repositoryId] = editor;
+      state.validatorFocus = { repositoryId, action: "save-editor", name: null };
+      await refreshProducts();
+      return;
+    }
+    const validatorError = async (message) => {
+      state.validatorErrors[repositoryId] = message;
+      state.validatorFocus = { repositoryId, action: "error", name: null };
+      await refreshProducts();
+    };
     await withOperation(validatorButton, "Updating the repository validator allowlist", async () => {
+      delete state.validatorErrors[repositoryId];
       if (action === "preview-rescan") {
         state.validatorRescanPreviews[repositoryId] = await api(`${base}/rescan-preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: "{}",
         });
+        state.validatorFocus = { repositoryId, action: previewHasDelta(state.validatorRescanPreviews[repositoryId]) ? "apply-rescan" : "preview-rescan", name: null };
       } else if (action === "apply-rescan") {
         const preview = state.validatorRescanPreviews[repositoryId];
         if (!preview) throw new Error("Preview the validator changes again before applying them.");
@@ -2486,52 +2630,41 @@ $("#product-list").addEventListener("click", async (event) => {
           body: JSON.stringify(preview),
         });
         delete state.validatorRescanPreviews[repositoryId];
+        state.validatorFocus = { repositoryId, action: "preview-rescan", name: null };
       } else if (action === "suppress" || action === "restore") {
         const name = validatorButton.dataset.validatorName;
         await api(`${base}/${encodeURIComponent(name)}/suppression`, {
           method: action === "suppress" ? "PUT" : "DELETE",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({ baseStateFingerprint: currentAllowlist.stateFingerprint }),
         });
+        state.validatorFocus = { repositoryId, action: action === "suppress" ? "restore" : "suppress", name };
       } else if (action === "remove-override") {
         const name = validatorButton.dataset.validatorName;
         await api(`${base}/${encodeURIComponent(name)}/override`, {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({ baseStateFingerprint: currentAllowlist.stateFingerprint }),
         });
-      } else if (action === "override" || action === "add-override") {
-        const name = action === "override"
-          ? validatorButton.dataset.validatorName
-          : window.prompt("Validator name (for example: tests)")?.trim();
-        if (!name) return;
-        const command = window.prompt("Executable only (for example: npm or python)")?.trim();
-        if (!command) return;
-        const argsText = window.prompt("Arguments as a JSON array", "[]");
-        if (argsText === null) return;
-        let args;
-        try {
-          args = JSON.parse(argsText);
-        } catch {
-          throw new Error("Validator arguments must be a JSON array of strings.");
-        }
-        if (!Array.isArray(args) || args.some((value) => typeof value !== "string")) {
-          throw new Error("Validator arguments must be a JSON array of strings.");
-        }
-        const timeoutText = window.prompt("Timeout in milliseconds", "600000");
-        if (timeoutText === null) return;
-        const timeoutMs = Number(timeoutText);
-        if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000) {
-          throw new Error("Validator timeout must be a whole number from 1 to 3600000 milliseconds.");
+        state.validatorFocus = { repositoryId, action: "override", name };
+      } else if (action === "save-editor") {
+        const editor = editorFromDom();
+        const { name, config } = editor;
+        if (!name || name.length > 100) throw new Error("Validator name must be between 1 and 100 characters.");
+        if (!config.command) throw new Error("Enter the validator executable.");
+        if (!Number.isInteger(config.timeoutMs) || config.timeoutMs <= 0 || config.timeoutMs > 3_600_000) {
+          throw new Error("Validator timeout must be a whole number from 1 to 3600 seconds.");
         }
         await api(`${base}/${encodeURIComponent(name)}/override`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command, args, timeoutMs }),
+          body: JSON.stringify({ baseStateFingerprint: currentAllowlist.stateFingerprint, validator: config }),
         });
+        delete state.validatorEditors[repositoryId];
+        state.validatorFocus = { repositoryId, action: "remove-override", name };
       }
       await refreshProducts();
-    }, { onError: registryError, busyLabel: action === "preview-rescan" ? "Previewing…" : "Updating…" });
+    }, { onError: validatorError, busyLabel: action === "preview-rescan" ? "Previewing…" : "Updating…" });
     return;
   }
   const button = event.target.closest("[data-refresh-repository]");
@@ -2544,6 +2677,13 @@ $("#product-list").addEventListener("click", async (event) => {
     });
     await refreshProducts();
   }, { onError: registryError, busyLabel: "Inspecting…" });
+});
+$("#product-list").addEventListener("input", (event) => {
+  const editor = event.target.closest("[data-validator-editor]");
+  if (!editor) return;
+  const command = editor.querySelector("[data-validator-editor-command]").value.trim();
+  const args = [...editor.querySelectorAll("[data-validator-argument]")].map((input) => input.value);
+  editor.querySelector(".validator-command-preview code").textContent = [command, ...args].filter(Boolean).join(" ") || "Enter an executable";
 });
 
 // DH-647 S3. The Decisions panel (Products view).
@@ -3122,6 +3262,25 @@ $("#steering-task").addEventListener("change", () => {
 });
 $("#close-drawer").addEventListener("click", closeTask);
 $("#drawer-backdrop").addEventListener("click", closeTask);
+document.addEventListener("focusin", (event) => {
+  // Removing a focused control during a Products rerender temporarily moves
+  // focus to <body>. That is not an owner focus choice and must not erase the
+  // explicit successor/error target that the same render is about to restore.
+  if (event.target === document.body) return;
+  const control = event.target.closest?.("[data-validator-action]");
+  if (control?.dataset.repositoryId) {
+    state.validatorFocus = {
+      repositoryId: control.dataset.repositoryId,
+      action: control.dataset.validatorAction,
+      name: control.dataset.validatorName || null,
+    };
+    return;
+  }
+  const error = event.target.closest?.("[data-validator-error-for]");
+  state.validatorFocus = error
+    ? { repositoryId: error.dataset.validatorErrorFor, action: "error", name: null }
+    : null;
+});
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTask(); });
 
 initialize().catch((error) => showError(error.message));

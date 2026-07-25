@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -507,7 +507,7 @@ test("noisy hang", async () => {
         "--test-directory",
         fixtureTestDirectory,
         "--timeout-ms",
-        "300",
+        "1000",
         "--max-output-bytes",
         "1024",
       ],
@@ -528,7 +528,7 @@ test("noisy hang", async () => {
     assert.equal(result.signal, null, output);
     assert.match(output, /file=.*noisy-hang\.test\.js/i);
     assert.match(output, /seed=black-box-seed/i);
-    assert.match(output, /timeoutMs=300/i);
+    assert.match(output, /timeoutMs=1000/i);
     assert.match(output, /timedOut=true/i);
     assert.doesNotMatch(output, /NOISY_PREFIX/, "discarded output must not be live-forwarded before the bounded tail");
     assert.match(output, /NOISY_TAIL/, "the bounded diagnostic tail should preserve the most recent output");
@@ -732,6 +732,198 @@ test("validator-discovery corpus gate is closed-world and mutation-sensitive", a
     assert.match(`${unexpected.stdout}\n${unexpected.stderr}`, /unexpected top-level Git repositories: new-repository/i);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("validator-discovery corpus manifest is the exact frozen 24-repository census", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      "import { validatorDiscoveryCorpusManifest as manifest } from './scripts/validator-discovery-corpus-manifest.mjs'; console.log(JSON.stringify(manifest));",
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const manifest = JSON.parse(result.stdout) as Array<[string, string, string[], string[]]>;
+  assert.deepEqual(
+    manifest.map(([name, oid]) => [name, oid]),
+    [
+      ["civic311", "b65d21c7d19aa1b3f458e56333481bb75f6ef584"],
+      ["civicboards", "845e777f432ad512953ed49be994c366b87a6070"],
+      ["civicbudget", "731a6b4802cfd8593a00180c37ca3d76a7236de0"],
+      ["civicclerk", "dae807ec9d1370dd22cf6aba88e4c6fc6b4168d5"],
+      ["civiccode", "05994fe716fa904682ec91b574a35e7cef066aa1"],
+      ["civiccomms", "73be36fdcd3b7d429321fbe8d51cec07a466e16b"],
+      ["civiccontracts", "23bcee99a09e1d58441775f2a03b7dcda870ed21"],
+      ["civiccore", "aca61910a3dd58325d4cfc02da10df90fb6b9efa"],
+      ["civiccourt", "666525cb1e646127a8150894deec1e97fa64912d"],
+      ["civicdata", "5d8378d59bd4e5a7f68d0df48e794c5721d0c8eb"],
+      ["civicelections", "c532f6ceaeba9ed6399e848ce067c50c3789cb74"],
+      ["civicgrants", "5b01d8c6b9c2952591b28f2c5f09039382d4573a"],
+      ["civichr", "7cd481b75f6d97eb3f28c68c78e12940f5879cdd"],
+      ["civicinspect", "02f7912bfb492988d740f303f694d9b782a4a139"],
+      ["civiclegal", "ac511514ed1d52a8e9c1433e757f8a97ddb53f64"],
+      ["civiclibrary", "d7699189707f6dc9b75ad33c5a498d88cb572ab5"],
+      ["civicparks", "7b9b5147c6a265184b713f5bb71f430a81810085"],
+      ["civicpermit", "3d0998ae40930e71094f511471689846abc350f1"],
+      ["civicplan", "252f23cc83638944fadd303955cda11e13bee674"],
+      ["civicprocure", "5836032f396cb901769e9f2ff7a168e30aefb2f6"],
+      ["civicrecords-ai", "538766523ad90ee7553b0ffa75b626d3d4850b17"],
+      ["civicsafety", "38038f9cab7857b278250ff41946f4d1777715f1"],
+      ["civicutility", "4342098cfc72d5cbd52326fa9fc5db8ec3fde346"],
+      ["civiczone", "1d37826d909a601eea5a10f4ebce0b31a605f5d0"],
+    ],
+  );
+  assert.equal(new Set(manifest.map(([name]) => name)).size, 24);
+  assert.ok(manifest.every((entry) => entry.length === 4 && /^[0-9a-f]{40}$/.test(entry[1])));
+  const standard = ["pytest", "ruff", "verify-release"];
+  assert.deepEqual(
+    manifest.map(([name, , validators, signals]) => [name, validators, signals]),
+    manifest.map(([name]) => [
+      name,
+      name === "civicclerk"
+        ? ["pytest", "verify-release"]
+        : name === "civiccode"
+          ? ["build", "pytest", "ruff", "typecheck", "verify-release"]
+          : name === "civicrecords-ai"
+            ? ["verify-release"]
+            : standard,
+      name === "civicrecords-ai" ? ["compose_test_evidence"] : [],
+    ]),
+  );
+});
+
+test("validator corpus provisioner publishes an exact detached clean checkout without retained remotes", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-provision-"));
+  const source = path.join(fixtureRoot, "source");
+  const remotes = path.join(fixtureRoot, "remotes");
+  const target = path.join(fixtureRoot, "published");
+  const git = (cwd: string, args: string[]): ReturnType<typeof spawnSync> =>
+    spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+  try {
+    await mkdir(source);
+    await mkdir(remotes);
+    assert.equal(git(source, ["init", "--initial-branch=main"]).status, 0);
+    assert.equal(git(source, ["config", "user.email", "fixture@example.invalid"]).status, 0);
+    assert.equal(git(source, ["config", "user.name", "Fixture"]).status, 0);
+    await writeFile(path.join(source, "README.md"), "fixture\n", "utf8");
+    assert.equal(git(source, ["add", "README.md"]).status, 0);
+    assert.equal(git(source, ["commit", "-m", "fixture"]).status, 0);
+    const oid = String(git(source, ["rev-parse", "HEAD"]).stdout).trim();
+    const bare = spawnSync("git", ["clone", "--bare", source, path.join(remotes, "fixture.git")], { encoding: "utf8" });
+    assert.equal(bare.status, 0, `${bare.stdout}\n${bare.stderr}`);
+
+    const result = spawnSync(process.execPath, ["scripts/provision-validator-discovery-corpus.mjs", target], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        DEVHARMONICS_VALIDATOR_CORPUS_PROVISION_TEST_SEAM: "1",
+        DEVHARMONICS_VALIDATOR_CORPUS_TEST_MANIFEST: JSON.stringify([["fixture", oid, [], []]]),
+        DEVHARMONICS_VALIDATOR_CORPUS_TEST_REMOTE_ROOT: remotes,
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const checkout = path.join(target, "fixture");
+    assert.equal(String(git(checkout, ["rev-parse", "HEAD"]).stdout).trim(), oid);
+    assert.equal(String(git(checkout, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout), "");
+    assert.notEqual(git(checkout, ["symbolic-ref", "-q", "HEAD"]).status, 0, "HEAD must be detached");
+    assert.equal(String(git(checkout, ["remote"]).stdout), "");
+    assert.notEqual(
+      git(checkout, ["config", "--local", "--get-regexp", "^(remote\\..*\\.promisor|extensions\\.partialClone)$"]).status,
+      0,
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("validator corpus provisioner rejects unsafe input and never publishes partial or pre-existing targets", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-provision-fail-"));
+  const remotes = path.join(fixtureRoot, "remotes");
+  const run = (target: string, manifest: unknown): ReturnType<typeof spawnSync> =>
+    spawnSync(process.execPath, ["scripts/provision-validator-discovery-corpus.mjs", target], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        DEVHARMONICS_VALIDATOR_CORPUS_PROVISION_TEST_SEAM: "1",
+        DEVHARMONICS_VALIDATOR_CORPUS_TEST_MANIFEST: JSON.stringify(manifest),
+        DEVHARMONICS_VALIDATOR_CORPUS_TEST_REMOTE_ROOT: remotes,
+      },
+    });
+  try {
+    await mkdir(remotes);
+    const badOidTarget = path.join(fixtureRoot, "bad-oid");
+    const badOid = run(badOidTarget, [["missing", "a".repeat(40), [], []]]);
+    assert.notEqual(badOid.status, 0, `${badOid.stdout}\n${badOid.stderr}`);
+    await assert.rejects(stat(badOidTarget), /ENOENT/);
+
+    const unsafeTarget = path.join(fixtureRoot, "unsafe");
+    const unsafe = run(unsafeTarget, [["../escape", "a".repeat(40), [], []]]);
+    assert.notEqual(unsafe.status, 0, `${unsafe.stdout}\n${unsafe.stderr}`);
+    assert.match(`${unsafe.stdout}\n${unsafe.stderr}`, /unsafe.*name/i);
+    await assert.rejects(stat(path.join(fixtureRoot, "escape")), /ENOENT/);
+
+    const malformedOidTarget = path.join(fixtureRoot, "malformed-oid");
+    const malformedOid = run(malformedOidTarget, [["safe-name", "not-an-oid", [], []]]);
+    assert.notEqual(malformedOid.status, 0, `${malformedOid.stdout}\n${malformedOid.stderr}`);
+    assert.match(`${malformedOid.stdout}\n${malformedOid.stderr}`, /invalid 40-hex commit OID/i);
+    await assert.rejects(stat(malformedOidTarget), /ENOENT/);
+
+    const duplicateTarget = path.join(fixtureRoot, "duplicate");
+    const duplicate = run(duplicateTarget, [
+      ["same", "a".repeat(40), [], []],
+      ["same", "b".repeat(40), [], []],
+    ]);
+    assert.notEqual(duplicate.status, 0, `${duplicate.stdout}\n${duplicate.stderr}`);
+    assert.match(`${duplicate.stdout}\n${duplicate.stderr}`, /duplicate repository name/i);
+    await assert.rejects(stat(duplicateTarget), /ENOENT/);
+
+    const existingTarget = path.join(fixtureRoot, "existing");
+    await mkdir(existingTarget);
+    await writeFile(path.join(existingTarget, "marker"), "preserve", "utf8");
+    const existing = run(existingTarget, [["missing", "a".repeat(40), [], []]]);
+    assert.notEqual(existing.status, 0, `${existing.stdout}\n${existing.stderr}`);
+    assert.match(`${existing.stdout}\n${existing.stderr}`, /already exists/i);
+    assert.equal(await readFile(path.join(existingTarget, "marker"), "utf8"), "preserve");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("CI provisions and verifies the frozen validator corpus in a dedicated uncached Ubuntu job", async () => {
+  const workflow = await readFile(".github/workflows/ci.yml", "utf8");
+  const start = workflow.indexOf("  validator-discovery-corpus:");
+  assert.ok(start >= 0, "dedicated validator-discovery-corpus job is required");
+  const job = workflow.slice(start);
+  assert.match(job, /runs-on:\s*ubuntu-latest/);
+  assert.match(job, /timeout-minutes:\s*30/);
+  assert.doesNotMatch(job, /cache:\s*npm/);
+  assert.match(job, /node scripts\/provision-validator-discovery-corpus\.mjs\s+"?\$RUNNER_TEMP\/validator-discovery-corpus"?/);
+  assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:validator-discovery-corpus/);
+  assert.doesNotMatch(job, /DEVHARMONICS_VALIDATOR_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
+});
+
+test("validator corpus verifier shares the manifest and stays offline, read-only, and execution-free", async () => {
+  const [verifier, provisioner] = await Promise.all([
+    readFile("scripts/verify-validator-discovery-corpus.mjs", "utf8"),
+    readFile("scripts/provision-validator-discovery-corpus.mjs", "utf8"),
+  ]);
+  assert.match(verifier, /import\s+\{\s*validatorDiscoveryCorpusManifest\s*\}\s+from\s+"\.\/validator-discovery-corpus-manifest\.mjs"/);
+  assert.match(verifier, /discoverRepositoryValidators\(extracted\)/);
+  assert.doesNotMatch(verifier, /\b(?:npm|npx|pnpm|yarn)\b/);
+  assert.doesNotMatch(verifier, /\["(?:clone|fetch|pull|push|ls-remote)"/);
+  assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename)\s*\(/);
+  assert.match(provisioner, /const GIT_TIMEOUT_MS = 180_000/);
+  assert.match(provisioner, /const POOL_SIZE = 4/);
+  assert.match(provisioner, /\["fetch", "--depth=1", "--no-tags", repositoryUrl\(name\), oid\]/);
+  for (const guard of ["GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE"]) {
+    assert.match(provisioner, new RegExp(`\\b${guard}\\b`), guard);
   }
 });
 

@@ -249,6 +249,22 @@ export class Orchestrator {
     const impactedRepositories = repositoryContext
       ? (this.ledger.getProduct(input.objective.productId!)?.repositories ?? []).filter((repository) => repositoryContext.requiredImpactIds.includes(repository.id))
       : [];
+    if (repositoryContext) {
+      const selectedWithZero = impactedRepositories
+        .filter((repository) => input.objective.repositoryIds.includes(repository.id))
+        .filter((repository) => Object.keys(effectiveValidatorAllowlist(
+          repository.validatorDiscovery,
+          repository.validatorLocalConfig,
+          repository.validators,
+          repository.validatorSuppressions,
+        ).effectiveValidators).length === 0)
+        .map((repository) => repository.id);
+      if (selectedWithZero.length) {
+        throw new Error(
+          `Zero validators are configured for selected repositories: ${selectedWithZero.join(", ")}. Add a manual validator or explicitly preview and apply a repository validator rescan before planning.`,
+        );
+      }
+    }
     const architectValidators = architectValidatorNames(config.repository.validators, impactedRepositories);
     if (!architectValidators.length) {
       throw new Error(
@@ -2709,6 +2725,22 @@ export class Orchestrator {
       if (!(task.repositoryIds ?? []).length) throw new Error(`Task '${task.id}' does not identify its repository IDs`);
       const invalid = (task.repositoryIds ?? []).filter((id) => !affected.has(id));
       if (invalid.length) throw new Error(`Task '${task.id}' targets repositories not marked affected: ${invalid.join(", ")}`);
+      for (const repositoryId of task.repositoryIds ?? []) {
+        const repository = product.repositories.find((item) => item.id === repositoryId)!;
+        const available = Object.keys(effectiveValidatorAllowlist(
+          repository.validatorDiscovery,
+          repository.validatorLocalConfig,
+          repository.validators,
+          repository.validatorSuppressions,
+        ).effectiveValidators).sort();
+        for (const check of task.checks) {
+          if (!available.includes(check)) {
+            throw new Error(
+              `Task '${task.id}' selected validator '${check}' for repository ${repositoryId}, where it is unavailable. Available validators: ${available.join(", ") || "none"}`,
+            );
+          }
+        }
+      }
     }
     const uncovered = [...affected].filter((id) => !plan.tasks.some((task) => (task.repositoryIds ?? []).includes(id)));
     if (uncovered.length) throw new Error(`Affected repositories have no planned task: ${uncovered.join(", ")}`);
@@ -2953,6 +2985,7 @@ export async function buildRepositoryContext(
           ).effectiveValidators,
           repository.localPath,
         ),
+        generatedValidators: {},
       },
     },
     constitution: await loadConstitution(repository.localPath!),
@@ -2979,7 +3012,7 @@ export function architectValidatorNames(
     validatorSuppressions?: string[];
   }>,
 ): string[] {
-  const names = new Set(Object.keys(projectValidators));
+  const names = new Set(repositories.length ? [] : Object.keys(projectValidators));
   for (const repository of repositories) {
     const effective = effectiveValidatorAllowlist(
       repository.validatorDiscovery ?? null,

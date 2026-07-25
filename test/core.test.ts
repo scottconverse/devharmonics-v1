@@ -54,6 +54,7 @@ import { DeliveryService } from "../src/delivery.js";
 import { INBOX_RELEVANT_RUN_STATUSES, projectInbox, type InboxItem } from "../src/inbox.js";
 import { projectProgramStatus, PROGRAM_QUIET_THRESHOLD_MS, type ProgramBucket } from "../src/program-status.js";
 import type { ProductRecord } from "../src/ledger.js";
+import { createValidatorDiscoverySnapshot, discoverRepositoryValidators, effectiveValidatorAllowlist } from "../src/validator-discovery.js";
 
 test("provider output parsers extract each CLI's final response", () => {
   const codex = [
@@ -523,6 +524,65 @@ test("project initialization detects Node validators and writes constitution", a
     assert.deepEqual(config.repository.validators.build?.args, ["run", "build"]);
     assert.equal(config.repository.validators["diff-check"], undefined);
     assert.match(await readFile(path.join(root, ".devharmonics", "constitution.md"), "utf8"), /execution receipt/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generated initialization validators stay discovered until an owner edits local config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-generated-provenance-"));
+  try {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ scripts: { test: "hostile body is never copied", build: "another hostile body" } }),
+    );
+    await initializeProject(root);
+    const generated = await loadConfig(root);
+    assert.deepEqual(Object.keys(generated.repository.validators), ["build", "test"]);
+    assert.deepEqual(
+      await loadConfiguredValidatorSnapshot(root),
+      {},
+      "DevHarmonics-generated fixed recipes are not owner-authored local commands",
+    );
+    await rm(path.join(root, "package.json"));
+    const removedEvidence = createValidatorDiscoverySnapshot(
+      await discoverRepositoryValidators(root),
+      "a".repeat(40),
+    );
+    assert.deepEqual(
+      effectiveValidatorAllowlist(
+        removedEvidence,
+        await loadConfiguredValidatorSnapshot(root),
+        {},
+        [],
+      ).effectiveValidators,
+      {},
+      "when evidence disappears, generated recipes disappear instead of becoming sticky local commands",
+    );
+
+    generated.repository.validators.test = {
+      command: "node",
+      args: ["owner-test.mjs"],
+      timeoutMs: 30_000,
+    };
+    await writeFile(
+      path.join(devHarmonicsDirectory(root), "config.json"),
+      `${JSON.stringify(generated, null, 2)}\n`,
+      "utf8",
+    );
+    assert.deepEqual(await loadConfiguredValidatorSnapshot(root), {
+      test: { command: "node", args: ["owner-test.mjs"], timeoutMs: 30_000 },
+    });
+    assert.deepEqual(
+      effectiveValidatorAllowlist(
+        removedEvidence,
+        await loadConfiguredValidatorSnapshot(root),
+        {},
+        [],
+      ).effectiveValidators,
+      { test: { command: "node", args: ["owner-test.mjs"], timeoutMs: 30_000 } },
+      "an owner edit breaks generated provenance and survives later evidence removal",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -8149,11 +8209,88 @@ test("a cross-repository architect is offered the validators its repositories ac
   ];
   assert.deepEqual(
     architectValidatorNames(project, repositories),
-    ["diff-check", "lint", "test", "tests", "typecheck"],
-    "the vocabulary is the union of the project's validators and every affected repository's, deduplicated and stable",
+    ["lint", "tests", "typecheck"],
+    "a product objective is offered only repository-local validators; project validators are never implicitly global",
   );
   // With no repository scope the project's own validators are the whole answer.
   assert.deepEqual(architectValidatorNames(project, []), ["diff-check", "test"]);
+});
+
+test("product plans reject a validator that exists only in another task repository", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-repository-validator-plan-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    ledger.upsertProduct({
+      id: "product:fixture",
+      name: "Fixture",
+      organizationUrl: "https://github.com/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    const addRepository = (id: string, validator: string) => ledger.upsertRepository({
+      id,
+      productId: "product:fixture",
+      name: id.split(":").at(-1)!,
+      fullName: `fixture/${id.split(":").at(-1)!}`,
+      url: `https://github.com/fixture/${id.split(":").at(-1)!}`,
+      cloneUrl: `https://github.com/fixture/${id.split(":").at(-1)!}.git`,
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "module",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: { [validator]: { command: "node", args: [validator], timeoutMs: 1_000 } },
+      governanceSources: [],
+      governanceRules: [],
+    });
+    addRepository("repo:a", "test");
+    addRepository("repo:b", "lint");
+    const orchestrator = new Orchestrator(ledger);
+    const objective = {
+      id: "objective",
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      outcome: "Change both repositories",
+      acceptanceCriteria: [],
+      constraints: [],
+      projectPath: root,
+      productId: "product:fixture",
+      repositoryIds: ["repo:a", "repo:b"],
+      risk: "medium",
+      autonomy: "supervised",
+      priority: "normal",
+      policyNotes: [],
+      workflowRevisionHash: null,
+    };
+    const plan = {
+      summary: "Wrong local check",
+      recommendedConcurrency: 2,
+      repositoryImpact: [
+        { repositoryId: "repo:a", disposition: "affected", rationale: "selected" },
+        { repositoryId: "repo:b", disposition: "affected", rationale: "selected" },
+      ],
+      integrationConditions: ["Both repositories remain compatible"],
+      tasks: [
+        { id: "a", title: "A", description: "A", dependencies: [], repositoryIds: ["repo:a"], preferredProvider: null, checks: ["test"] },
+        { id: "b", title: "B", description: "B", dependencies: [], repositoryIds: ["repo:b"], preferredProvider: null, checks: ["test"] },
+      ],
+    };
+    assert.throws(
+      () => (orchestrator as any).validateObjectiveRepositoryPlan(objective, plan, ["repo:a", "repo:b"]),
+      /task 'b'.*validator 'test'.*repo:b.*lint/i,
+    );
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("a qualification for one role does not hide the provider default for another", async () => {
@@ -9237,6 +9374,7 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
       repositoryId: string,
       allowlist: Record<string, any>,
       preview?: Record<string, any>,
+      editor?: Record<string, any>,
     ) => string;
   };
   const html = renderValidatorAllowlistHtml("<product>", "<repo>", {
@@ -9275,6 +9413,16 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   }, {
     diff: { added: ["new"], changed: [], removed: ["old"], unchanged: ["manual"] },
     localConfigDiff: { added: ["local-new"], changed: ["local"], removed: [], unchanged: [] },
+    candidate: {
+      entries: [
+        {
+          name: "local",
+          effectiveOrigin: "local_config",
+          effectiveConfig: { command: "node", args: ["after.js"], timeoutMs: 2_000, cwd: "tools" },
+          discovered: null,
+        },
+      ],
+    },
     previewToken: "token",
   });
   assert.doesNotMatch(html, /<script>/);
@@ -9284,7 +9432,11 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   assert.match(html, /pyproject/i);
   assert.match(html, /Previewed changes/i);
   assert.match(html, /Local config snapshot/i);
-  assert.match(html, /Apply validator rescan/i);
+  assert.match(html, /Apply these validator changes/i);
+  assert.match(html, /node local\.js/i);
+  assert.match(html, /node after\.js/i);
+  assert.match(html, /2 seconds/i);
+  assert.match(html, /tools/i);
   assert.match(html, /<details[^>]*open/);
   const empty = renderValidatorAllowlistHtml("product", "repo", {
     effectiveValidators: {},
@@ -9294,21 +9446,61 @@ test("the validator allowlist UI renders discovered, override, suppressed, empty
   });
   assert.match(empty, /Zero validators detected/i);
   assert.doesNotMatch(empty, /diff-check/i);
+  const degraded = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned_with_diagnostics" },
+    diagnostics: [{ source: "package.json", code: "malformed" }],
+    signals: [],
+  });
+  assert.match(degraded, /Discovery is incomplete/i);
+  assert.match(degraded, /package\.json/i);
+  assert.match(degraded, /malformed/i);
+  assert.doesNotMatch(degraded, /Zero validators detected/i);
+  const editor = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, undefined, {
+    name: "owner-check",
+    config: { command: "node", args: ["test.mjs"], timeoutMs: 30_000, cwd: "tools" },
+  });
+  assert.match(editor, /data-validator-editor/i);
+  assert.match(editor, /Executable/i);
+  assert.match(editor, /Argument 1/i);
+  assert.match(editor, /Timeout \(seconds\)/i);
+  assert.match(editor, /Working directory/i);
+  assert.match(editor, /Save manual validator/i);
+  assert.match(editor, /<details[^>]*open/);
+  const noDelta = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, {
+    diff: { added: [], changed: [], removed: [], unchanged: [] },
+    localConfigDiff: { added: [], changed: [], removed: [], unchanged: [] },
+    candidate: { entries: [] },
+    previewToken: "no-delta",
+  });
+  assert.match(noDelta, /already up to date/i);
+  assert.doesNotMatch(noDelta, /Apply these validator changes/i);
 });
 
-test("migration 38 preserves existing validators as manual overrides and initializes discovery state", async () => {
+test("physical schema 37 to 38 migration preserves owner validators and its pre-migration backup", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-migration-"));
-  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const filename = path.join(root, "devharmonics.db");
+  const seed = new Ledger(filename);
   try {
-    assert.equal(LEDGER_SCHEMA_VERSION, 38);
-    ledger.upsertProduct({
+    seed.upsertProduct({
       id: "github:fixture",
       name: "Fixture",
       organizationUrl: "https://github.com/fixture",
       description: "Fixture",
       repositories: [],
     });
-    const repository = ledger.upsertRepository({
+    seed.upsertRepository({
       id: "github:fixture/repo",
       productId: "github:fixture",
       name: "repo",
@@ -9331,14 +9523,48 @@ test("migration 38 preserves existing validators as manual overrides and initial
       governanceSources: [],
       governanceRules: [],
     });
-    assert.deepEqual(repository.validators, {
-      owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 },
-    });
-    assert.equal((repository as any).validatorDiscovery, null);
-    assert.deepEqual((repository as any).validatorLocalConfig, {});
-    assert.deepEqual((repository as any).validatorSuppressions, []);
+    seed.close();
+    const schema37 = new DatabaseSync(filename);
+    schema37.exec(`
+      ALTER TABLE repositories DROP COLUMN validator_discovery_json;
+      ALTER TABLE repositories DROP COLUMN validator_local_config_json;
+      ALTER TABLE repositories DROP COLUMN validator_suppressions_json;
+      DELETE FROM schema_migrations WHERE version = 38;
+      PRAGMA user_version = 37;
+    `);
+    schema37.close();
+
+    const upgraded = new Ledger(filename);
+    try {
+      const repository = upgraded.getRepository("github:fixture/repo")!;
+      assert.equal(upgraded.getSchemaVersion(), 38);
+      assert.deepEqual(repository.validators, {
+        owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 },
+      });
+      assert.equal(repository.validatorDiscovery, null);
+      assert.deepEqual(repository.validatorLocalConfig, {});
+      assert.deepEqual(repository.validatorSuppressions, []);
+    } finally {
+      upgraded.close();
+    }
+
+    const backups = (await readdir(root)).filter((name) => name.startsWith("devharmonics.db.backup-v37-to-v38-"));
+    assert.equal(backups.length, 1);
+    const backup = new DatabaseSync(path.join(root, backups[0]!));
+    try {
+      assert.equal((backup.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 37);
+      assert.deepEqual(
+        JSON.parse((backup.prepare("SELECT validators_json FROM repositories WHERE id = ?").get("github:fixture/repo") as { validators_json: string }).validators_json),
+        { owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 } },
+      );
+      const backupColumns = new Set(
+        (backup.prepare("SELECT name FROM pragma_table_info('repositories')").all() as Array<{ name: string }>).map((row) => row.name),
+      );
+      assert.equal(backupColumns.has("validator_discovery_json"), false);
+    } finally {
+      backup.close();
+    }
   } finally {
-    ledger.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

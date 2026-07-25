@@ -4,36 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { discoverRepositoryValidators } from "../dist/src/validator-discovery.js";
+import { validatorDiscoveryCorpusManifest } from "./validator-discovery-corpus-manifest.mjs";
 
 const execFileAsync = promisify(execFile);
 const corpusRoot = process.env.CIVICSUITE_ORG_READALL;
-const standard = ["pytest", "ruff", "verify-release"];
-const defaultExpectations = [
-  ["civic311", "b65d21c7d19aa1b3f458e56333481bb75f6ef584", standard, []],
-  ["civicboards", "845e777f432ad512953ed49be994c366b87a6070", standard, []],
-  ["civicbudget", "731a6b4802cfd8593a00180c37ca3d76a7236de0", standard, []],
-  ["civicclerk", "dae807ec9d1370dd22cf6aba88e4c6fc6b4168d5", ["pytest", "verify-release"], []],
-  ["civiccode", "05994fe716fa904682ec91b574a35e7cef066aa1", ["build", "pytest", "ruff", "typecheck", "verify-release"], []],
-  ["civiccomms", "73be36fdcd3b7d429321fbe8d51cec07a466e16b", standard, []],
-  ["civiccontracts", "23bcee99a09e1d58441775f2a03b7dcda870ed21", standard, []],
-  ["civiccore", "aca61910a3dd58325d4cfc02da10df90fb6b9efa", standard, []],
-  ["civiccourt", "666525cb1e646127a8150894deec1e97fa64912d", standard, []],
-  ["civicdata", "5d8378d59bd4e5a7f68d0df48e794c5721d0c8eb", standard, []],
-  ["civicelections", "c532f6ceaeba9ed6399e848ce067c50c3789cb74", standard, []],
-  ["civicgrants", "5b01d8c6b9c2952591b28f2c5f09039382d4573a", standard, []],
-  ["civichr", "7cd481b75f6d97eb3f28c68c78e12940f5879cdd", standard, []],
-  ["civicinspect", "02f7912bfb492988d740f303f694d9b782a4a139", standard, []],
-  ["civiclegal", "ac511514ed1d52a8e9c1433e757f8a97ddb53f64", standard, []],
-  ["civiclibrary", "d7699189707f6dc9b75ad33c5a498d88cb572ab5", standard, []],
-  ["civicparks", "7b9b5147c6a265184b713f5bb71f430a81810085", standard, []],
-  ["civicpermit", "3d0998ae40930e71094f511471689846abc350f1", standard, []],
-  ["civicplan", "252f23cc83638944fadd303955cda11e13bee674", standard, []],
-  ["civicprocure", "5836032f396cb901769e9f2ff7a168e30aefb2f6", standard, []],
-  ["civicrecords-ai", "538766523ad90ee7553b0ffa75b626d3d4850b17", ["verify-release"], ["compose_test_evidence"]],
-  ["civicsafety", "38038f9cab7857b278250ff41946f4d1777715f1", standard, []],
-  ["civicutility", "4342098cfc72d5cbd52326fa9fc5db8ec3fde346", standard, []],
-  ["civiczone", "1d37826d909a601eea5a10f4ebce0b31a605f5d0", standard, []],
-];
 
 if (!corpusRoot) {
   console.error("CIVICSUITE_ORG_READALL must name the local read-only CivicSuite clone directory.");
@@ -42,7 +16,7 @@ if (!corpusRoot) {
 
 function loadExpectations() {
   const override = process.env.DEVHARMONICS_VALIDATOR_CORPUS_TEST_EXPECTATIONS;
-  if (override === undefined) return defaultExpectations;
+  if (override === undefined) return validatorDiscoveryCorpusManifest;
   if (process.env.DEVHARMONICS_VALIDATOR_CORPUS_TEST_SEAM !== "1") {
     throw new Error("Validator corpus expectation overrides require DEVHARMONICS_VALIDATOR_CORPUS_TEST_SEAM=1");
   }

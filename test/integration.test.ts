@@ -98,7 +98,7 @@ if (process.argv.includes("--version")) {
         integrationConditions:["The documentation must describe the behavior implemented in the core repository."],
         tasks:[
           {id:"core",title:"Implement the product change",description:"Update the core repository",dependencies:[],preferredProvider:"codex",checks:input.includes("automatic fixer")?["diff-check","defect-free"]:(input.includes("repo-only-lint")?["repo-only-lint"]:["diff-check"]),repositoryIds:["repo:core"]},
-          {id:"docs",title:"Document the product change",description:"Update the documentation repository",dependencies:["core"],preferredProvider:"codex",checks:["diff-check"],repositoryIds:["repo:docs"]}
+          {id:"docs",title:"Document the product change",description:"Update the documentation repository",dependencies:["core"],preferredProvider:"codex",checks:input.includes("repo-only-docs-check")?["repo-only-docs-check"]:["diff-check"],repositoryIds:["repo:docs"]}
         ]
       }
     // DH-647 S2 fixtures. "Decision context fixture" is for a PRODUCT-linked
@@ -2084,7 +2084,9 @@ test("dashboard serves its UI and bootstrap data on localhost", async () => {
     assert.match(appText, /create_draft_pr/);
     assert.match(appText, /Approve &amp; push branch/);
     assert.match(appText, /Fixed-recipe discovery never copies package, workflow, or release-script bodies/);
-    assert.match(appText, /Commands in <code>\.devharmonics\/config\.json<\/code> are owner-authored and snapshotted separately/);
+    assert.match(appText, /commands an owner adds or changes in <code>\.devharmonics\/config\.json<\/code> are snapshotted separately/i);
+    assert.doesNotMatch(appText, /window\.prompt/);
+    assert.match(appText, /data-validator-editor/);
     // Slice A: "PR" was unexplained shorthand — the button now spells out
     // "pull request" to match the rest of the delivery panel's wording.
     assert.match(appText, /Approve &amp; create draft pull request/);
@@ -2439,6 +2441,9 @@ test("objective planning context injects prior decisions scoped to the objective
         description: null,
         intelligence: {},
       }],
+    });
+    seedLedger.updateRepositoryValidatorState("repo:decisions", {
+      validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
     });
 
     const objectiveBody = {
@@ -3523,7 +3528,7 @@ test("a cross-repository architect is told the validators its repositories actua
     const allowlist = /Allowlisted validators: (.+)/.exec(prompt)?.[1] ?? "";
     assert.match(allowlist, /repo-only-lint/, "the architect is offered the validators the affected repositories register");
     assert.match(allowlist, /repo-only-docs-check/, "including every affected repository, not just the first");
-    assert.match(allowlist, /diff-check/, "and the project's own validators remain available");
+    assert.match(allowlist, /diff-check/, "the core repository's snapshotted local config remains visible as repository-local evidence");
 
     // BOTH SIDES of the contract. Offering a vocabulary the plan validator then
     // rejects is the same drift twice: the architect was told to choose from the
@@ -3534,6 +3539,11 @@ test("a cross-repository architect is told the validators its repositories actua
     assert.ok(
       planned.some((check) => check === "repo-only-lint" || check === "repo-only-docs-check"),
       `the accepted plan uses a repository-registered validator: ${JSON.stringify(revision.revision.plan.tasks.map((t) => ({ id: t.id, checks: t.checks })))}`,
+    );
+    assert.deepEqual(
+      revision.revision.plan.tasks.map((task) => [task.id, task.checks]),
+      [["core", ["repo-only-lint"]], ["docs", ["repo-only-docs-check"]]],
+      "each task uses a validator effective in its own repository rather than borrowing a sibling's validator",
     );
   } finally {
     delete process.env.DH_CAPTURE_ARCHITECT_PROMPT;
@@ -3595,6 +3605,16 @@ test("cross-repository objective planning maps impact without starting an unsupp
       }),
     });
     assert.equal(productResponse.status, 201, await productResponse.clone().text());
+    const fixtureLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    try {
+      for (const repositoryId of ["repo:core", "repo:docs"]) {
+        fixtureLedger.updateRepositoryValidatorState(repositoryId, {
+          validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
+        });
+      }
+    } finally {
+      fixtureLedger.close();
+    }
 
     const objectiveResponse = await fetch(`${dashboard.url}/api/objectives`, {
       method: "POST",
@@ -3902,7 +3922,7 @@ test("failed first-attachment validator snapshot leaves no registered repository
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ localPath: candidate, role: "service" }),
     });
-    assert.notEqual(repositoryResponse.status, 201);
+    assert.equal(repositoryResponse.status, 422);
     assert.match(await repositoryResponse.text(), /too large|size limit/i);
 
     const products = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
@@ -3913,6 +3933,96 @@ test("failed first-attachment validator snapshot leaves no registered repository
       [],
       "a rejected initial snapshot must not leave a repository row with misleading validator state",
     );
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed discovery evidence persists as an actionable degraded validator state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-diagnostics-"));
+  const host = await createRepository(path.join(root, "host"));
+  const candidate = await createRepository(path.join(root, "candidate"));
+  await initializeProject(host);
+  await writeFile(path.join(candidate, "package.json"), "{ definitely-not-json", "utf8");
+  await git(candidate, ["add", "package.json"]);
+  await git(candidate, ["commit", "-m", "malformed discovery evidence"]);
+  const dashboard = await startDashboard({ projectPath: host, port: 0, open: false });
+  try {
+    assert.equal((await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "diagnostics",
+        name: "Diagnostics",
+        organizationUrl: "https://github.com/example",
+        description: "Diagnostics fixture",
+        repositories: [],
+      }),
+    })).status, 201);
+    const attached = await fetch(`${dashboard.url}/api/products/diagnostics/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: candidate }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repositoryId = ((await attached.json()) as { repository: { id: string } }).repository.id;
+    const response = await fetch(
+      `${dashboard.url}/api/products/diagnostics/repositories/${encodeURIComponent(repositoryId)}/validators`,
+    );
+    assert.equal(response.status, 200);
+    const allowlist = await response.json() as {
+      effectiveValidators: Record<string, unknown>;
+      discovery: { status: string };
+      diagnostics: Array<{ source: string; code: string }>;
+    };
+    assert.deepEqual(allowlist.effectiveValidators, {});
+    assert.equal(allowlist.discovery.status, "scanned_with_diagnostics");
+    assert.deepEqual(allowlist.diagnostics, [{ source: "package.json", code: "malformed" }]);
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator rescan previews expire under the server-owned TTL", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-preview-expiry-"));
+  const project = await createRepository(root);
+  const dashboard = await startDashboard({
+    projectPath: project,
+    port: 0,
+    open: false,
+    validatorPreviewTtlMs: 1,
+  });
+  try {
+    assert.equal((await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "expiry", name: "Expiry", organizationUrl: "https://github.com/expiry", repositories: [] }),
+    })).status, 201);
+    const attached = await fetch(`${dashboard.url}/api/products/expiry/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "other", validators: {} }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repository = (await attached.json()) as { repository: { id: string } };
+    const base = `${dashboard.url}/api/products/expiry/repositories/${encodeURIComponent(repository.repository.id)}/validators`;
+    const preview = await fetch(`${base}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    const body = await preview.json();
+    await delay(10);
+    const expired = await fetch(`${base}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(expired.status, 409);
+    assert.match(await expired.text(), /preview is stale/i);
   } finally {
     await dashboard.close();
     await rm(root, { recursive: true, force: true });
@@ -3987,6 +4097,54 @@ test("product registry inspects and retains a local repository without changing 
       ["scripts/verify-release.sh"],
     );
     const validatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`;
+    const unsupported = await fetch(validatorBase, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(unsupported.status, 405);
+    assert.equal(unsupported.headers.get("allow"), "GET");
+    for (const [pathname, method, allow] of [
+      [`${validatorBase}/test/override`, "POST", "PUT, DELETE"],
+      [`${validatorBase}/test/suppression`, "POST", "PUT, DELETE"],
+      [`${validatorBase}/rescan-preview`, "GET", "POST"],
+      [`${validatorBase}/rescan-apply`, "GET", "POST"],
+      [`${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/refresh`, "GET", "POST"],
+    ] as const) {
+      const wrongMethod = await fetch(pathname, { method });
+      assert.equal(wrongMethod.status, 405, `${method} ${pathname}`);
+      assert.equal(wrongMethod.headers.get("allow"), allow, `${method} ${pathname}`);
+    }
+    const observedState = await fetch(validatorBase).then((response) => response.json()) as {
+      stateFingerprint: string;
+    };
+    assert.match(observedState.stateFingerprint, /^[a-f0-9]{64}$/);
+    const guardedOverride = (name: string, baseStateFingerprint: string) => fetch(`${validatorBase}/${name}/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        baseStateFingerprint,
+        validator: { command: "node", args: [`${name}.js`], timeoutMs: 1_000 },
+      }),
+    });
+    assert.equal((await guardedOverride("alpha", observedState.stateFingerprint)).status, 200);
+    const stale = await guardedOverride("beta", observedState.stateFingerprint);
+    assert.equal(stale.status, 409);
+    assert.match(await stale.text(), /validator allowlist changed/i);
+    const afterGuard = await fetch(validatorBase).then((response) => response.json()) as {
+      effectiveValidators: Record<string, unknown>;
+      stateFingerprint: string;
+    };
+    assert.ok(afterGuard.effectiveValidators.alpha, "the accepted override survives");
+    assert.equal(afterGuard.effectiveValidators.beta, undefined, "the stale request cannot overwrite current state");
+    assert.equal((await guardedOverride("beta", afterGuard.stateFingerprint)).status, 200);
+    for (const name of ["alpha", "beta"]) {
+      assert.equal((await fetch(`${validatorBase}/${name}/override`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      })).status, 200);
+    }
     for (const name of ["local-config-check", "pytest", "verify-release"]) {
       const removed = await fetch(`${validatorBase}/${encodeURIComponent(name)}/suppression`, {
         method: "PUT",
@@ -4101,13 +4259,63 @@ test("product registry inspects and retains a local repository without changing 
     assert.ok(beforeApply.effectiveValidators.pytest, "preview is read-only");
     assert.equal(beforeApply.effectiveValidators.ruff, undefined, "preview never silently refreshes the allowlist");
 
-    await writeFile(path.join(project, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }), "utf8");
-    const staleApply = await fetch(`${validatorBase}/rescan-apply`, {
+    const wrongTokenApply = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...previewBody, previewToken: "not-the-issued-token" }),
+    });
+    assert.equal(wrongTokenApply.status, 409, "a wrong preview token is independently stale");
+
+    await writeFile(path.join(project, "README.md"), "# Fixture\n\nHEAD-only change\n", "utf8");
+    await git(project, ["add", "README.md"]);
+    await git(project, ["commit", "-m", "test: advance HEAD without changing validator evidence"]);
+    const headOnlyStale = await fetch(`${validatorBase}/rescan-apply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(previewBody),
     });
-    assert.equal(staleApply.status, 409, await staleApply.clone().text());
+    assert.equal(headOnlyStale.status, 409, "a HEAD-only change is independently stale");
+
+    const statePreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    assert.equal((await fetch(`${validatorBase}/state-race/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "node", args: ["state-race.js"], timeoutMs: 1_000 }),
+    })).status, 200);
+    const stateOnlyStale = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(statePreview),
+    });
+    assert.equal(stateOnlyStale.status, 409, "an allowlist-state-only change is independently stale");
+    assert.equal((await fetch(`${validatorBase}/state-race/override`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    })).status, 200);
+
+    const candidatePreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    await writeFile(path.join(project, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }), "utf8");
+    const staleApply = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(candidatePreview),
+    });
+    assert.equal(staleApply.status, 409, `a candidate-only change is independently stale: ${await staleApply.clone().text()}`);
 
     const freshPreview = await fetch(`${validatorBase}/rescan-preview`, {
       method: "POST",

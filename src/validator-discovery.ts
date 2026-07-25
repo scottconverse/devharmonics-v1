@@ -60,6 +60,7 @@ export interface PersistedValidatorDiscovery {
     sources: ValidatorDetectionSource[];
   }>;
   signals: ValidatorDiscoverySignal[];
+  diagnostics: ValidatorDiscoveryDiagnostic[];
 }
 
 export interface EffectiveValidatorEntry {
@@ -438,6 +439,10 @@ export async function discoverRepositoryValidators(rootPath: string): Promise<Va
     workflowNames = [];
   }
   let workflowBytes = 0;
+  let workflowAggregateLimited = false;
+  const workflowFoundCandidates: Candidate[] = [];
+  const workflowFoundSignals: ValidatorDiscoverySignal[] = [];
+  const workflowSourceDigests: Array<[string, string]> = [];
   for (const name of workflowNames) {
     const source = `.github/workflows/${name}`;
     const result = await boundedRegularFile(root, source, WORKFLOW_FILE_LIMIT);
@@ -446,19 +451,25 @@ export async function discoverRepositoryValidators(rootPath: string): Promise<Va
       diagnostics.push({ source, code: result.error });
       continue;
     }
-    sourceDigests.push([source, result.digest]);
+    workflowSourceDigests.push([source, result.digest]);
     workflowBytes += Buffer.byteLength(result.text);
     if (workflowBytes > WORKFLOW_TOTAL_LIMIT) {
       diagnostics.push({ source: ".github/workflows", code: "limit_reached" });
+      workflowAggregateLimited = true;
       break;
     }
     try {
       const found = workflowCandidates(source, result.text);
-      candidates.push(...found.candidates);
-      signals.push(...found.signals);
+      workflowFoundCandidates.push(...found.candidates);
+      workflowFoundSignals.push(...found.signals);
     } catch {
       diagnostics.push({ source, code: "malformed" });
     }
+  }
+  if (!workflowAggregateLimited) {
+    candidates.push(...workflowFoundCandidates);
+    signals.push(...workflowFoundSignals);
+    sourceDigests.push(...workflowSourceDigests);
   }
 
   // A workflow may corroborate a root-level npm/release recipe, but it cannot
@@ -514,6 +525,7 @@ export function createValidatorDiscoverySnapshot(
       sources: entry.sources,
     }])),
     signals: result.signals,
+    diagnostics: result.diagnostics,
   };
 }
 

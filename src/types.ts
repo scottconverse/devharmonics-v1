@@ -66,6 +66,7 @@ export interface DevHarmonicsConfig {
   };
   repository: {
     validators: Record<string, ValidatorConfig>;
+    generatedValidators: Record<string, ValidatorConfig>;
   };
   runPolicy: {
     autonomy: "observe" | "supervised" | "bounded";

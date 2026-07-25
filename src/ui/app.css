@@ -150,7 +150,7 @@ button { cursor: pointer; }
 .repository-actions { display: flex; align-items: center; gap: 7px; }
 .repository-item { display: grid; gap: 8px; }
 .validator-allowlist { margin: 0 8px 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: #090c10; }
-.validator-allowlist summary { display: flex; justify-content: space-between; gap: 12px; cursor: pointer; }
+.validator-allowlist summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; min-height: 44px; }
 .validator-allowlist summary span, .validator-sources, .validator-origin { color: var(--muted); font-size: 11px; }
 .validator-allowlist ul { display: grid; gap: 7px; padding: 0; list-style: none; }
 .validator-entry { display: flex; justify-content: space-between; gap: 10px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; }
@@ -158,12 +158,28 @@ button { cursor: pointer; }
 .validator-entry code { overflow-wrap: anywhere; }
 .validator-entry.suppressed { opacity: .75; }
 .validator-entry-actions, .validator-management-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.validator-preview { display: grid; gap: 7px; margin: 8px 0; padding: 9px; border: 1px solid var(--accent); border-radius: 7px; }
+.validator-entry-actions button, .validator-management-actions button, .validator-preview button { min-height: 44px; }
+.validator-preview { display: grid; gap: 7px; margin: 8px 0; padding: 9px; border: 1px solid var(--blue); border-radius: 7px; background: rgba(117, 167, 255, .06); }
+.validator-preview::before { content: "Review required"; color: var(--blue); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.validator-diff-table { display: grid; gap: 7px; }
+.validator-diff-row { display: grid; grid-template-columns: minmax(90px, .4fr) 1fr 1fr; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; }
+.validator-diff-row span { overflow-wrap: anywhere; font-size: 11px; }
+.validator-up-to-date { color: var(--green); font-weight: 700; }
 .validator-empty { color: var(--muted); }
-.validator-error { color: var(--danger); }
+.validator-error, .validator-diagnostics { color: var(--red); border-color: var(--red); background: rgba(255, 121, 121, .06); }
+.validator-error::before, .validator-diagnostics > strong::before { content: "Error: "; font-weight: 800; }
+.validator-diagnostics ul { margin: 7px 0 0; padding-left: 20px; }
+.validator-empty.degraded { color: var(--amber); }
+.validator-local-error { display: grid; gap: 8px; margin: 8px 0; padding: 10px; color: var(--red); border: 1px solid var(--red); border-radius: 7px; background: rgba(255, 121, 121, .06); }
+.validator-editor { display: grid; gap: 8px; margin: 10px 0; padding: 12px; border: 1px solid var(--blue); border-radius: 9px; background: #0d1014; }
+.validator-editor label { margin: 0; }
+.validator-editor fieldset { display: grid; gap: 7px; }
+.validator-editor-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.validator-command-preview { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   .validator-entry { align-items: stretch; flex-direction: column; }
   .validator-entry-actions button, .validator-management-actions button { flex: 1 1 100%; }
+  .validator-diff-row { grid-template-columns: 1fr; }
 }
 .product-empty { padding: 22px; margin-top: 16px; }
 .workbench-boundary { display: flex; align-items: center; gap: 12px; margin: 16px 0; padding: 13px 15px; border: 1px solid #3d5428; border-radius: 11px; background: rgba(200,245,96,.055); }
@@ -230,6 +246,7 @@ legend { padding: 0; }
 textarea { resize: vertical; min-height: 122px; line-height: 1.55; }
 .input:focus, textarea:focus, select:focus { border-color: #68774b; box-shadow: 0 0 0 3px rgba(200,245,96,.08); }
 .input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--lime); outline-offset: 1px; }
+button:focus-visible, summary:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
 .composer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
 .objective-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .objective-grid label, .objective-policy-grid label { margin-bottom: 0; }
@@ -517,3 +534,11 @@ pre { margin: 0; padding: 12px; overflow: auto; max-height: 280px; background: #
 .reconcile-checked-at { margin-top: 2px; }
 .program-run-diverged { border-left: 3px solid var(--red); padding-left: 8px; }
 .program-run-divergence-marker { color: var(--red); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.pre-wrap {
+  white-space: pre-wrap;
+}
+
+.workflow-select {
+  cursor: pointer;
+  text-align: left;
+}

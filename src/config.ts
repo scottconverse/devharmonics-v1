@@ -42,6 +42,7 @@ export const defaultConfig: DevHarmonicsConfig = {
   },
   repository: {
     validators: {},
+    generatedValidators: {},
   },
   runPolicy: {
     autonomy: "supervised",
@@ -84,9 +85,9 @@ export async function initializeProject(projectPath: string): Promise<string> {
     await readFile(destination, "utf8");
   } catch {
     const config = structuredClone(defaultConfig);
-    config.repository.validators = discoveredValidatorMap(
-      await discoverRepositoryValidators(projectPath),
-    );
+    const generated = discoveredValidatorMap(await discoverRepositoryValidators(projectPath));
+    config.repository.validators = generated;
+    config.repository.generatedValidators = structuredClone(generated);
     await writeFile(destination, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
@@ -142,7 +143,7 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
         reviewer: legacy.reviewer,
         workers: legacy.workers,
       },
-      repository: { validators: legacy.validators },
+      repository: { validators: legacy.validators, generatedValidators: {} },
       runPolicy: structuredClone(defaultConfig.runPolicy),
       reviewPolicy: structuredClone(defaultConfig.reviewPolicy),
       routing: structuredClone(defaultConfig.routing),
@@ -161,7 +162,20 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
  * fact. Migration is likewise not performed here; the owner can open/save that
  * repository normally when they want its config migrated.
  */
+export class ValidatorConfigSnapshotError extends Error {}
+
 export async function loadConfiguredValidatorSnapshot(
+  projectPath: string,
+): Promise<Record<string, ValidatorConfig>> {
+  try {
+    return await loadConfiguredValidatorSnapshotUnchecked(projectPath);
+  } catch (error) {
+    if (error instanceof ValidatorConfigSnapshotError) throw error;
+    throw new ValidatorConfigSnapshotError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function loadConfiguredValidatorSnapshotUnchecked(
   projectPath: string,
 ): Promise<Record<string, ValidatorConfig>> {
   const destination = configPath(projectPath);
@@ -176,10 +190,13 @@ export async function loadConfiguredValidatorSnapshot(
   const version = typeof raw === "object" && raw !== null && "version" in raw
     ? (raw as { version?: unknown }).version
     : undefined;
-  const validators = version === 1
-    ? parseConfig(legacyDevHarmonicsConfigSchema, raw, destination).validators
-    : parseConfig(devHarmonicsConfigSchema, raw, destination).repository.validators;
-  return expandValidatorTokens(validators, path.resolve(projectPath));
+  const parsed = version === 1
+    ? { validators: parseConfig(legacyDevHarmonicsConfigSchema, raw, destination).validators, generatedValidators: {} }
+    : parseConfig(devHarmonicsConfigSchema, raw, destination).repository;
+  const ownerValidators = Object.fromEntries(Object.entries(parsed.validators).filter(([name, validator]) => (
+    JSON.stringify(validator) !== JSON.stringify(parsed.generatedValidators[name])
+  )));
+  return expandValidatorTokens(ownerValidators, path.resolve(projectPath));
 }
 
 const VALIDATOR_CONFIG_SNAPSHOT_LIMIT = 1024 * 1024;
@@ -279,7 +296,13 @@ function isWithinRoot(root: string, candidate: string): boolean {
  * ledger are expanded separately against that repository's local path.
  */
 function withExpandedValidators(config: DevHarmonicsConfig, projectPath: string): DevHarmonicsConfig {
-  return { ...config, repository: { validators: expandValidatorTokens(config.repository.validators, path.resolve(projectPath)) } };
+  return {
+    ...config,
+    repository: {
+      validators: expandValidatorTokens(config.repository.validators, path.resolve(projectPath)),
+      generatedValidators: config.repository.generatedValidators,
+    },
+  };
 }
 
 export async function saveConfig(projectPath: string, value: unknown): Promise<DevHarmonicsConfig> {

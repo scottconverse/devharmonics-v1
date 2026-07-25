@@ -6,7 +6,7 @@ All notable DevHarmonics changes are documented here.
 
 ### Added
 
-- Fixed-recipe validator discovery for new projects and first product-repository attachment. Discovery never copies package, workflow, or release-script bodies; owner-authored `.devharmonics/config.json` commands are snapshotted separately through a bounded, in-root regular-file read. The Products view now enumerates effective validators with detection provenance, manual overrides, suppressions, an honest zero-validator state, and an explicit rescan preview/apply diff protected against stale HEAD, dirty evidence, or concurrent allowlist changes. A closed-world 24-repository CivicSuite corpus gate runs the production read-only detector against exact immutable commit archives.
+- Fixed-recipe validator discovery for new projects and first product-repository attachment. Discovery never copies package, workflow, or release-script bodies; owner-authored `.devharmonics/config.json` commands are snapshotted separately through a bounded, in-root regular-file read, while exact generated initialization recipes remain discovery-owned until an owner edits them. Aggregate workflow overflow fails the whole source closed and persisted diagnostics distinguish degraded discovery from a clean zero. The Products view now enumerates effective validators with detection provenance, manual overrides, suppressions, an honest zero-validator state, an inline structured editor, and an explicit rescan preview/apply diff protected against wrong/expired tokens, stale HEAD, dirty evidence, or concurrent allowlist changes. A closed-world 24-repository CivicSuite corpus gate runs the production read-only detector against exact immutable commit archives, and a real-Chromium CI journey covers the owner controls.
 - Ledger schema 38 persists distinct fixed-recipe discovery and local-config snapshots plus suppression tombstones while preserving every existing registered validator as an owner-authored override. Enumeration, planning context, and execution consume the same persisted effective map; rescan previews show both snapshot diffs and apply atomically without overwriting overrides.
 - GitHub Actions CI runs the release-truth check and full suite on Node 24 for Ubuntu and Windows, plus separate seeded test-file-order and mutation-discipline lanes. The mutation lane asserts its verification-integrity mutation applied exactly once, requires the named sentinel to fail for the expected reason, restores the compiled guard, and requires the sentinel to pass.
 - The rollback guide now records the unreleased ledger transitions from schema 34 through 37 and the actual single `backup-v34-to-v37` snapshot produced by a direct upgrade.
@@ -50,7 +50,7 @@ All notable DevHarmonics changes are documented here.
 ### Fixed
 
 - A stale qualification no longer blocks a provider's default model from being scheduled.
-- Cross-repository architect proposals use each repository's own validator names.
+- Cross-repository architect proposals use each repository's own validator names, and plan validation rejects any task/check that is unavailable in one of its target repositories.
 - Plan-validation vocabulary errors surface the exact accepted values instead of a generic refusal.
 - Managed-fleet configuration reflects each connection's actual schedulable roles.
 - Reviewer-independence diagnosis reports the requirement an operation actually has rather than a proxy for it.

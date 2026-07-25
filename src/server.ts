@@ -4,7 +4,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { initializeProject, loadConfig, loadConfiguredValidatorSnapshot, saveConfig, devHarmonicsDirectory } from "./config.js";
+import { initializeProject, loadConfig, loadConfiguredValidatorSnapshot, saveConfig, devHarmonicsDirectory, ValidatorConfigSnapshotError } from "./config.js";
 import { inspectProviders } from "./doctor.js";
 import { catalogPricesPerMTokens } from "./routing.js";
 import { runCostCounterfactual } from "./model-performance.js";
@@ -111,6 +111,8 @@ export async function startDashboard(options: {
    * set in production paths.
    */
   reconciliationTimeoutMs?: number;
+  /** Test seam for proving validator preview expiry without a fifteen-minute wait. */
+  validatorPreviewTtlMs?: number;
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const defaultProject = path.resolve(options.projectPath);
   await initializeProject(defaultProject);
@@ -123,6 +125,7 @@ export async function startDashboard(options: {
   const delivery = new DeliveryService(ledger, options.deliveryRunner);
   const reconciliationRunner = options.deliveryRunner;
   const reconciliationTimeoutMs = options.reconciliationTimeoutMs;
+  const validatorPreviewTtlMs = options.validatorPreviewTtlMs ?? 15 * 60_000;
   const eventStreams = new Set<ServerResponse>();
   const validatorRescanPreviews = new Map<string, ValidatorRescanPreview>();
 
@@ -131,10 +134,10 @@ export async function startDashboard(options: {
 
   const server = createServer(async (request, response) => {
     try {
-      await route(request, response, { defaultProject, ledger, orchestrator, catalog, openRouter, delivery, reconciliationRunner, reconciliationTimeoutMs, eventStreams, validatorRescanPreviews });
+      await route(request, response, { defaultProject, ledger, orchestrator, catalog, openRouter, delivery, reconciliationRunner, reconciliationTimeoutMs, validatorPreviewTtlMs, eventStreams, validatorRescanPreviews });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(response, error instanceof ClientRequestError ? 400 : 500, { error: redactText(message) });
+      sendJson(response, error instanceof ValidatorConfigSnapshotError ? 422 : error instanceof ClientRequestError ? 400 : 500, { error: redactText(message) });
     }
   });
 
@@ -173,6 +176,7 @@ async function route(
     delivery: DeliveryService;
     reconciliationRunner: ConstructorParameters<typeof DeliveryService>[1];
     reconciliationTimeoutMs: number | undefined;
+    validatorPreviewTtlMs: number;
     eventStreams: Set<ServerResponse>;
     validatorRescanPreviews: Map<string, ValidatorRescanPreview>;
   },
@@ -797,6 +801,7 @@ async function route(
     const repositoryId = decodeURIComponent(repositoryValidatorActionMatch[2]);
     const name = decodeURIComponent(repositoryValidatorActionMatch[3]).trim();
     const action = repositoryValidatorActionMatch[4];
+    const body = await readJson(request) as Record<string, unknown>;
     const repository = context.ledger.getRepository(repositoryId);
     if (!repository || repository.productId !== productId) {
       sendJson(response, 404, { error: "Registered repository not found" });
@@ -806,24 +811,35 @@ async function route(
       sendJson(response, 400, { error: "Validator name must be between 1 and 100 characters" });
       return;
     }
+    const baseStateFingerprint = typeof body.baseStateFingerprint === "string"
+      ? body.baseStateFingerprint
+      : null;
+    const currentStateFingerprint = validatorStateFingerprint(
+      repository.validatorDiscovery,
+      repository.validatorLocalConfig,
+      repository.validators,
+      repository.validatorSuppressions,
+    );
+    if (baseStateFingerprint !== null && baseStateFingerprint !== currentStateFingerprint) {
+      sendJson(response, 409, { error: "The validator allowlist changed after it was loaded; review the latest state and retry" });
+      return;
+    }
     if (action === "override") {
       const validators = { ...repository.validators };
       if (request.method === "PUT") {
-        const parsed = repositoryValidatorSchema.safeParse(await readJson(request));
+        const parsed = repositoryValidatorSchema.safeParse(body.validator ?? body);
         if (!parsed.success) {
           sendJson(response, 400, { error: "Validator override is invalid", issues: parsed.error.issues });
           return;
         }
         validators[name] = parsed.data;
       } else {
-        await readJson(request);
         delete validators[name];
       }
       const updated = context.ledger.updateRepositoryValidatorState(repositoryId, { validators });
       sendJson(response, 200, validatorAllowlistResponse(updated));
       return;
     }
-    await readJson(request);
     const suppressions = new Set(repository.validatorSuppressions);
     if (request.method === "PUT") suppressions.add(name);
     else suppressions.delete(name);
@@ -887,7 +903,7 @@ async function route(
         expectedHeadSha: inspection.headSha,
         baseStateFingerprint,
         candidateFingerprint,
-        expiresAt: now + 15 * 60_000,
+        expiresAt: now + context.validatorPreviewTtlMs,
       };
       context.validatorRescanPreviews.set(previewToken, preview);
       sendJson(response, 200, {
@@ -902,6 +918,13 @@ async function route(
           validators: candidate.validators,
           localConfigValidators: candidateLocalConfig,
           signals: candidate.signals,
+          diagnostics: candidate.diagnostics,
+          ...effectiveValidatorAllowlist(
+            candidate,
+            candidateLocalConfig,
+            repository.validators,
+            repository.validatorSuppressions,
+          ),
         },
       });
       return;
@@ -1599,6 +1622,17 @@ async function route(
   // mean an unsupported method. Sub-paths keep their 404 (a malformed id and
   // a wrong method are indistinguishable at this point, and guessing 405
   // there would mislabel malformed-id requests).
+  const dynamicMethodContract = [
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators$/, allow: "GET" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators\/[^/]+\/(?:override|suppression)$/, allow: "PUT, DELETE" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators\/(?:rescan-preview|rescan-apply)$/, allow: "POST" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/refresh$/, allow: "POST" },
+  ].find((route) => route.pattern.test(url.pathname));
+  if (dynamicMethodContract) {
+    response.setHeader("Allow", dynamicMethodContract.allow);
+    sendJson(response, 405, { error: `Method ${request.method} is not supported for ${url.pathname}` });
+    return;
+  }
   const knownApiPathPattern = /^\/api\/(bootstrap|catalog\/refresh(es)?|config|connections|events|init|model-performance|models|objectives|openrouter\/(callback|catalog|connect|disconnect|models\/activate|status)|products|qualifications|resources|runs|workbench|workflows)$/;
   if (knownApiPathPattern.test(url.pathname)) {
     sendJson(response, 405, { error: `Method ${request.method} is not supported for ${url.pathname}` });
@@ -1648,15 +1682,26 @@ function validatorAllowlistResponse(repository: RepositoryRecord): Record<string
   );
   return {
     ...allowlist,
+    stateFingerprint: validatorStateFingerprint(
+      repository.validatorDiscovery,
+      repository.validatorLocalConfig,
+      repository.validators,
+      repository.validatorSuppressions,
+    ),
     discovery: repository.validatorDiscovery === null ? {
       status: "never_scanned",
     } : {
-      status: "scanned",
+      status: repository.validatorDiscovery.diagnostics === undefined
+        ? "scanned_legacy_unknown"
+        : repository.validatorDiscovery.diagnostics.length
+          ? "scanned_with_diagnostics"
+          : "scanned",
       headSha: repository.validatorDiscovery.headSha,
       scannedAt: repository.validatorDiscovery.scannedAt,
       fingerprint: repository.validatorDiscovery.fingerprint,
     },
     signals: repository.validatorDiscovery?.signals ?? [],
+    diagnostics: repository.validatorDiscovery?.diagnostics ?? [],
   };
 }
 
