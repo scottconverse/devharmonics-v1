@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,7 +14,7 @@ if (!corpusRoot) {
   process.exit(1);
 }
 
-const expectations = [
+const defaultExpectations = [
   ["civic311", "b65d21c7d19aa1b3f458e56333481bb75f6ef584", "0.1.1"],
   ["civicboards", "845e777f432ad512953ed49be994c366b87a6070", "0.1.1"],
   ["civicbudget", "731a6b4802cfd8593a00180c37ca3d76a7236de0", "0.1.2"],
@@ -41,6 +41,31 @@ const expectations = [
   ["civiczone", "1d37826d909a601eea5a10f4ebce0b31a605f5d0", "0.2.2"],
 ];
 
+function loadExpectations() {
+  const override = process.env.DEVHARMONICS_CORPUS_TEST_EXPECTATIONS;
+  if (override === undefined) return defaultExpectations;
+  if (process.env.DEVHARMONICS_CORPUS_TEST_SEAM !== "1") {
+    throw new Error("Corpus expectation overrides require DEVHARMONICS_CORPUS_TEST_SEAM=1");
+  }
+  const parsed = JSON.parse(override);
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.some((entry) =>
+      !Array.isArray(entry) ||
+      entry.length < 3 ||
+      typeof entry[0] !== "string" ||
+      !/^[0-9a-f]{40}$/.test(entry[1]) ||
+      (entry[2] !== null && typeof entry[2] !== "string") ||
+      (entry[3] !== undefined && typeof entry[3] !== "string"))
+  ) {
+    throw new Error("Corpus test expectations must be non-empty [name, 40-character OID, string|null, optional disposition] tuples");
+  }
+  return parsed;
+}
+
+const expectations = loadExpectations();
+
 async function git(cwd, args) {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
@@ -58,6 +83,30 @@ const delivery = new DeliveryService(ledger);
 const failures = [];
 
 try {
+  try {
+    const entries = await readdir(path.resolve(corpusRoot), { withFileTypes: true });
+    const discoveredRepositories = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(path.resolve(corpusRoot), entry.name);
+      try {
+        if (await git(candidate, ["rev-parse", "--is-inside-work-tree"]) === "true") {
+          discoveredRepositories.push(entry.name);
+        }
+      } catch {
+        // An ordinary non-Git directory is outside the corpus repository set.
+      }
+    }
+    const expectedNames = expectations.map(([name]) => name).sort();
+    discoveredRepositories.sort();
+    const missing = expectedNames.filter((name) => !discoveredRepositories.includes(name));
+    const unexpected = discoveredRepositories.filter((name) => !expectedNames.includes(name));
+    if (missing.length) failures.push(`missing top-level Git repositories: ${missing.join(", ")}`);
+    if (unexpected.length) failures.push(`unexpected top-level Git repositories: ${unexpected.join(", ")}`);
+  } catch (error) {
+    failures.push(`corpus repository census failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   for (const [name, oid, expected, disposition = "AUTHORITATIVE_ROOT_VERSION"] of expectations) {
     const repositoryPath = path.join(path.resolve(corpusRoot), name);
     try {
@@ -65,6 +114,8 @@ try {
       if (!info.isDirectory()) throw new Error("path is not a directory");
       const statusBefore = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all"]);
       if (statusBefore) throw new Error(`worktree is dirty before verification: ${JSON.stringify(statusBefore)}`);
+      const currentHead = await git(repositoryPath, ["rev-parse", "HEAD"]);
+      if (currentHead !== oid) throw new Error(`expected checkout HEAD ${oid}, but found ${currentHead}`);
       await git(repositoryPath, ["cat-file", "-e", `${oid}^{commit}`]);
 
       const actual = await delivery.declaredVersionAtCommit(repositoryPath, oid);
