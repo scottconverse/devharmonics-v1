@@ -1924,8 +1924,8 @@ function renderDelivery(run) {
 // returning `mergeVersionUnavailable: true` for a repository whose merged
 // version could not be re-resolved (transient GitHub/network failure), but
 // this caption logic never checked the flag — the `declaredVersion === null`
-// branch fired instead and told the owner the repository "declares no
-// version", which is false during an outage and directly contradicts the
+// branch fired instead and told the owner the repository made no release
+// version claim, which is false during an outage and directly contradicts the
 // CHANGELOG's promised retry copy. mergeVersionUnavailable is now checked
 // FIRST, before the generic null branch, and never prefills a tag in that
 // state. Pulled out as a pure function of the repository record so it can be
@@ -1946,7 +1946,7 @@ function deliveryTagCaption(repository) {
   if (repository.declaredVersion === null) {
     return {
       prefill: null,
-      help: "This repository declares no version in its own files. Enter a tag to create one, or leave empty to skip tagging.",
+      help: "This repository declares no authoritative release version in its root manifests. Enter a tag to create one, or leave empty to skip tagging.",
     };
   }
   // The field is absent entirely — a server built before version enrichment.

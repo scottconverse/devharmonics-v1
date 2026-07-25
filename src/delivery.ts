@@ -95,15 +95,17 @@ function pyprojectProjectVersion(text: string): string | null {
 }
 
 /**
- * Resolve the version a manifest declares, from its raw text: package.json
- * wins; pyproject only when package.json makes no usable claim. Pure so both
- * the immutable-commit lookup and its tests share one parser.
+ * Resolve the authoritative release version from raw root-manifest text. A
+ * usable package.json version wins unless the manifest explicitly declares
+ * boolean `private: true`; private npm package metadata is not a repository
+ * release claim, so resolution falls through to PEP 621 `[project].version`.
+ * Pure so both the immutable-commit lookup and its tests share one parser.
  */
 export function parseDeclaredVersion(packageJson: string | null, pyproject: string | null): string | null {
   if (packageJson) {
     try {
-      const parsed = JSON.parse(packageJson) as { version?: unknown };
-      if (typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
+      const parsed = JSON.parse(packageJson) as { version?: unknown; private?: unknown };
+      if (parsed.private !== true && typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
     } catch {
       // package.json present but unparsable — fall through to pyproject
     }
