@@ -97,7 +97,7 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
   await assert.doesNotReject(() => page.getByRole("button", { name: "Products", exact: true }).waitFor());
   await page.getByRole("button", { name: "Products", exact: true }).click();
-  const allowlist = page.locator(".validator-allowlist");
+  const allowlist = page.locator(`[data-validator-disclosure][data-repository-id="${repositoryId}"]`);
   const productList = page.locator("#product-list");
   const renderVersion = async () => Number(await productList.getAttribute("data-render-version") || 0);
   const waitForCompletedRender = async (before, action, name = null) => {
@@ -121,7 +121,11 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   };
   await assert.doesNotReject(() => allowlist.waitFor({ state: "visible" }));
   await openAllowlist();
-  await assert.doesNotReject(() => page.getByText("test", { exact: true }).waitFor());
+  const initialTestValidator = allowlist
+    .locator('.validator-entry:has([data-validator-name="test"])')
+    .getByText("test", { exact: true });
+  assert.equal(await initialTestValidator.count(), 1, "the initial test validator locator must be unique");
+  assert.equal(await initialTestValidator.isVisible(), true, "the initial test validator must be visible");
   await assert.doesNotReject(() => page.getByText("Detected from package.json").waitFor());
 
   let beforeRender = await renderVersion();
