@@ -96,10 +96,13 @@ test("validator allowlist works through the real dashboard at mobile and desktop
 
   await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
   await assert.doesNotReject(() => page.getByRole("button", { name: "Products", exact: true }).waitFor());
-  await page.getByRole("button", { name: "Products", exact: true }).click();
-  const allowlist = page.locator(`[data-validator-disclosure][data-repository-id="${repositoryId}"]`);
   const productList = page.locator("#product-list");
   const renderVersion = async () => Number(await productList.getAttribute("data-render-version") || 0);
+  await page.waitForFunction(() => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > 0);
+  let beforeRender = await renderVersion();
+  await page.getByRole("button", { name: "Products", exact: true }).click();
+  await page.waitForFunction((before) => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > before, beforeRender);
+  const allowlist = page.locator(`[data-validator-disclosure][data-repository-id="${repositoryId}"]`);
   const waitForCompletedRender = async (before, action, name = null) => {
     await page.waitForFunction(
       ({ before, repositoryId, action, name }) => {
@@ -119,6 +122,11 @@ test("validator allowlist works through the real dashboard at mobile and desktop
       details.open = true;
     });
   };
+  const manualEditorForRepository = async () => {
+    const editor = allowlist.locator("[data-validator-editor]");
+    assert.equal(await editor.count(), 1, "the manual validator editor must be unique within the target repository allowlist");
+    return editor;
+  };
   await assert.doesNotReject(() => allowlist.waitFor({ state: "visible" }));
   await openAllowlist();
   const initialTestValidator = allowlist
@@ -128,10 +136,10 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   assert.equal(await initialTestValidator.isVisible(), true, "the initial test validator must be visible");
   await assert.doesNotReject(() => page.getByText("Detected from package.json").waitFor());
 
-  let beforeRender = await renderVersion();
+  beforeRender = await renderVersion();
   await page.getByRole("button", { name: "Add manual validator" }).click();
   await waitForCompletedRender(beforeRender, "save-editor");
-  let manualEditor = page.locator("[data-validator-editor]");
+  let manualEditor = await manualEditorForRepository();
   await manualEditor.locator("[data-validator-editor-name]").fill("manual-check");
   await manualEditor.locator("[data-validator-editor-command]").fill("node");
   await manualEditor.locator("[data-validator-argument]").nth(0).fill("manual.js");
@@ -147,7 +155,7 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   beforeRender = await renderVersion();
   await page.getByRole("button", { name: "Edit manual validator manual-check" }).click();
   await waitForCompletedRender(beforeRender, "save-editor");
-  manualEditor = page.locator("[data-validator-editor]");
+  manualEditor = await manualEditorForRepository();
   assert.equal(await manualEditor.locator("[data-validator-editor-name]").inputValue(), "manual-check");
   assert.equal(await manualEditor.locator("[data-validator-editor-command]").inputValue(), "node");
   assert.equal(await manualEditor.locator("[data-validator-argument]").nth(0).inputValue(), "manual.js");
@@ -163,16 +171,57 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   beforeRender = await renderVersion();
   await page.getByRole("button", { name: "Edit manual validator manual-check" }).click();
   await waitForCompletedRender(beforeRender, "save-editor");
-  manualEditor = page.locator("[data-validator-editor]");
+  manualEditor = await manualEditorForRepository();
   await manualEditor.locator("[data-validator-editor-command]").fill("node");
+  let releaseValidatorGet;
+  const validatorGetHeld = new Promise((resolve) => {
+    releaseValidatorGet = resolve;
+  });
+  let validatorGetReached;
+  const validatorGetReachedPromise = new Promise((resolve) => {
+    validatorGetReached = resolve;
+  });
+  let gateValidatorGet = true;
+  const validatorGetRoute = async (route) => {
+    if (gateValidatorGet && route.request().method() === "GET") {
+      validatorGetReached();
+      await validatorGetHeld;
+    }
+    await route.continue();
+  };
+  await page.route(validatorUrl, validatorGetRoute);
+  beforeRender = await renderVersion();
+  const refreshPortfolio = page.getByRole("button", { name: "Products", exact: true }).click();
+  await validatorGetReachedPromise;
   await manualEditor.locator("[data-validator-argument]").nth(0).fill("manual-updated.js");
   await manualEditor.locator("[data-validator-editor-timeout]").fill("45");
+  releaseValidatorGet();
+  await refreshPortfolio;
+  await page.waitForFunction((before) => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > before, beforeRender);
+  gateValidatorGet = false;
+  await page.unroute(validatorUrl, validatorGetRoute);
+  manualEditor = await manualEditorForRepository();
+  assert.equal(await manualEditor.locator("[data-validator-editor-name]").inputValue(), "manual-check", "the validator name draft must survive refresh");
+  assert.equal(await manualEditor.locator("[data-validator-editor-command]").inputValue(), "node", "the validator command draft must survive refresh");
+  assert.equal(await manualEditor.locator("[data-validator-argument]").nth(0).inputValue(), "manual-updated.js", "the validator argument draft must survive refresh");
+  assert.equal(await manualEditor.locator("[data-validator-editor-timeout]").inputValue(), "45", "the validator timeout draft must survive refresh");
+  assert.equal(await manualEditor.locator("[data-validator-editor-cwd]").inputValue(), "tools", "the validator cwd draft must survive refresh");
   beforeRender = await renderVersion();
-  await Promise.all([
+  const [secondManualPut] = await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/manual-check/override") && response.request().method() === "PUT"),
     manualEditor.getByRole("button", { name: "Save manual validator" }).click(),
   ]);
+  const secondManualPutBody = secondManualPut.request().postDataJSON();
+  const secondManualPutResponse = await json(secondManualPut);
   await waitForCompletedRender(beforeRender, "edit-override", "manual-check");
+  assert.match(secondManualPutBody.baseStateFingerprint, /^[a-f0-9]{64}$/);
+  assert.deepEqual(secondManualPutBody.validator, {
+    command: "node",
+    args: ["manual-updated.js"],
+    timeoutMs: 45_000,
+    cwd: "tools",
+  });
+  assert.deepEqual(secondManualPutResponse.effectiveValidators["manual-check"], secondManualPutBody.validator);
   const afterEdit = await (await context.request.get(validatorUrl)).json();
   assert.deepEqual(afterEdit.effectiveValidators["manual-check"], {
     command: "node",
@@ -182,8 +231,9 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   });
 
   await page.getByRole("button", { name: "Override validator test" }).click();
-  const editor = page.locator("[data-validator-editor]");
+  const editor = allowlist.locator("[data-validator-editor]");
   await assert.doesNotReject(() => editor.waitFor({ state: "visible" }));
+  assert.equal(await editor.count(), 1, "the test validator editor must be unique within the target repository allowlist");
   await editor.locator("[data-validator-editor-command]").fill("node");
   await editor.locator("[data-validator-argument]").nth(0).fill("--test");
   await editor.locator("[data-validator-argument]").nth(1).fill("--watch");
