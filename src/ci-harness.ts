@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { parseDocument } from "yaml";
 import type { ProcessResult } from "./process.js";
 
 export const REVIEWED_ACTION_SHAS = {
@@ -123,160 +124,112 @@ export function countDeclaredNodeTests(source: string, fileName: string): number
 
 export function validateWorkflowPolicy(workflow: string): string[] {
   const failures: string[] = [];
-  if (workflow.includes("\t")) failures.push("workflow must not contain ambiguous tab indentation");
-  const lines = workflow.split(/\r?\n/);
-  const jobsHeaders = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => /^jobs:\s*(?:#.*)?$/.test(line));
-  const jobs: Array<{ name: string; lineIndex: number }> = [];
-  if (jobsHeaders.length !== 1) {
-    failures.push("workflow must expose at least one top-level job");
-  } else {
-    const start = jobsHeaders[0]!.index + 1;
-    let end = lines.length;
-    for (let index = start; index < lines.length; index += 1) {
-      const line = lines[index]!;
-      if (line.trim() && !line.trim().startsWith("#") && !/^\s/.test(line)) {
-        end = index;
-        break;
-      }
-    }
-    const seenJobs = new Set<string>();
-    for (let index = start; index < end; index += 1) {
-      const line = lines[index]!;
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const indent = line.match(/^\s*/)?.[0].length ?? 0;
-      if (indent !== 2) continue;
-      const match = line.match(/^  (?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+)):\s*(?:#.*)?$/);
-      if (!match) {
-        failures.push(`line ${index + 1}: unrecognized job declaration must not bypass policy: ${trimmed}`);
-        continue;
-      }
-      const name = (match[1] ?? match[2] ?? match[3])!;
-      if (seenJobs.has(name)) failures.push(`line ${index + 1}: duplicate job declaration is not allowed: ${name}`);
-      seenJobs.add(name);
-      jobs.push({ name, lineIndex: index });
-    }
-    if (jobs.length === 0) failures.push("workflow must expose at least one top-level job");
-
-    for (const [index, job] of jobs.entries()) {
-      const blockEnd = index + 1 < jobs.length ? jobs[index + 1]!.lineIndex : end;
-      const block = lines.slice(job.lineIndex, blockEnd).join("\n");
-      const timeouts = [...block.matchAll(/^\s{4}(?:"timeout-minutes"|'timeout-minutes'|timeout-minutes)\s*:\s*(\d+)\s*$/gm)];
-      if (
-        timeouts.length !== 1 ||
-        Number(timeouts[0]?.[1]) < 1 ||
-        Number(timeouts[0]?.[1]) > 30
-      ) {
-        failures.push(`${job.name}: expected exactly one timeout-minutes value in the range 1..30`);
-      }
-      if (/^\s{4}(?:"permissions"|'permissions'|permissions)\s*:/m.test(block)) {
-        failures.push(`${job.name}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
-      }
-    }
+  let root: unknown;
+  try {
+    const document = parseDocument(workflow, {
+      version: "1.2",
+      strict: true,
+      uniqueKeys: true,
+      merge: true,
+    });
+    failures.push(
+      ...document.errors.map(
+        (error) => `workflow YAML must reject every duplicate or non-unique key: ${error.message}`,
+      ),
+    );
+    root = document.toJS({ maxAliasCount: 100 });
+  } catch (error) {
+    return [`workflow YAML must parse safely: ${error instanceof Error ? error.message : String(error)}`];
   }
 
-  const permissionHeaders = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => /^(?:"permissions"|'permissions'|permissions)\s*:/.test(line));
-  let permissionsAreReadOnly =
-    permissionHeaders.length === 1 &&
-    /^(?:"permissions"|'permissions'|permissions)\s*:\s*$/.test(permissionHeaders[0]!.line);
-  if (permissionsAreReadOnly) {
-    const start = permissionHeaders[0]!.index + 1;
-    const block: string[] = [];
-    for (let index = start; index < lines.length; index += 1) {
-      const line = lines[index]!;
-      if (line && !/^\s/.test(line)) break;
-      if (line.trim() && !line.trim().startsWith("#")) block.push(line.trim());
-    }
-    permissionsAreReadOnly =
-      block.length === 1 &&
-      /^(?:"contents"|'contents'|contents)\s*:\s*read\s*$/.test(block[0]!);
-  }
-  if (!permissionsAreReadOnly) {
+  if (!isStringRecord(root)) return ["workflow root must be a YAML mapping"];
+
+  const permissions = root.permissions;
+  if (
+    !isStringRecord(permissions) ||
+    Object.keys(permissions).length !== 1 ||
+    permissions.contents !== "read"
+  ) {
     failures.push("workflow permissions must remain contents: read");
   }
 
-  lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) return;
-    const usesMatch = trimmed.match(/^(?:-\s*)?(?:"uses"|'uses'|uses)\s*:\s*(.+?)\s*$/);
-    if (!usesMatch) {
-      if (
-        /(?:^|[\s{,])(?:"uses"|'uses'|uses)\s*:/.test(trimmed) ||
-        /^(?:-\s*)?\?\s*(?:"uses"|'uses'|uses)\s*$/.test(trimmed)
-      ) {
-        failures.push(`line ${index + 1}: ambiguous uses syntax is not allowed: ${trimmed}`);
-      }
+  const jobs = root.jobs;
+  if (!isStringRecord(jobs) || Object.keys(jobs).length === 0) {
+    failures.push("workflow must expose at least one top-level job");
+    return failures;
+  }
+
+  const reviewedActions = new Set<keyof typeof REVIEWED_ACTION_SHAS>();
+  const validateUses = (value: unknown, location: string, step?: Record<string, unknown>): void => {
+    if (typeof value !== "string") {
+      failures.push(`${location}: uses must resolve to a string`);
       return;
     }
-    let reference = usesMatch[1]!.replace(/\s+#.*$/, "").trim();
-    if (
-      (reference.startsWith('"') && reference.endsWith('"')) ||
-      (reference.startsWith("'") && reference.endsWith("'"))
-    ) {
-      reference = reference.slice(1, -1);
-    }
-    if (reference.startsWith("./")) return;
-    const match = reference.match(/^([^@\s]+)@([0-9a-fA-F]{40})$/);
+    if (value.startsWith("./")) return;
+    const match = value.match(/^([^@\s]+)@([0-9a-fA-F]{40})$/);
     if (!match) {
-      failures.push(`line ${index + 1}: remote action must use an immutable 40-hex SHA: ${trimmed}`);
+      failures.push(`${location}: remote action must use an immutable 40-hex SHA: ${value}`);
       return;
     }
     const action = match[1]!;
-    const sha = match[2]!;
-    if (action in REVIEWED_ACTION_SHAS) {
-      const expected = REVIEWED_ACTION_SHAS[action as keyof typeof REVIEWED_ACTION_SHAS];
-      if (sha.toLowerCase() !== expected) failures.push(`line ${index + 1}: ${action} must use reviewed SHA ${expected}`);
-      if (!/\s+#\s*v6\s*$/.test(trimmed)) failures.push(`line ${index + 1}: ${action} must retain the readable # v6 comment`);
-      if (action === "actions/checkout") {
-        const stepIndent = line.match(/^\s*/)?.[0].length ?? 0;
-        const usesKeyIndent = stepIndent + (trimmed.match(/^-\s*/)?.[0].length ?? 0);
-        const following = lines.slice(index + 1).findIndex((candidate) => {
-          const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
-          return candidate.trim().startsWith("- ") && indent <= stepIndent;
-        });
-        const end = following < 0 ? lines.length : index + 1 + following;
-        const stepLines = lines.slice(index + 1, end);
-        const withHeaders = stepLines
-          .map((candidate, stepIndex) => ({
-            line: candidate,
-            stepIndex,
-            indent: candidate.match(/^\s*/)?.[0].length ?? 0,
-          }))
-          .filter(({ line: candidate, indent }) =>
-            indent === usesKeyIndent &&
-            /^(?:"with"|'with'|with)\s*:\s*(?:#.*)?$/.test(candidate.trim()),
-          );
-        let persistsNoCredentials = false;
-        if (withHeaders.length === 1) {
-          const withHeader = withHeaders[0]!;
-          const withBody: string[] = [];
-          for (let stepIndex = withHeader.stepIndex + 1; stepIndex < stepLines.length; stepIndex += 1) {
-            const candidate = stepLines[stepIndex]!;
-            const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
-            if (candidate.trim() && indent <= withHeader.indent) break;
-            if (candidate.trim() && !candidate.trim().startsWith("#")) withBody.push(candidate);
-          }
-          persistsNoCredentials = withBody.some((candidate) => {
-            const indent = candidate.match(/^\s*/)?.[0].length ?? 0;
-            return (
-              indent > withHeader.indent &&
-              /^(?:"persist-credentials"|'persist-credentials'|persist-credentials)\s*:\s*(?:false|"false"|'false')\s*(?:#.*)?$/.test(
-                candidate.trim(),
-              )
-            );
-          });
-        }
-        if (!persistsNoCredentials) {
-          failures.push(`line ${index + 1}: actions/checkout must set persist-credentials: false`);
-        }
+    const sha = match[2]!.toLowerCase();
+    const normalizedAction = action.toLowerCase();
+    if (!(normalizedAction in REVIEWED_ACTION_SHAS)) return;
+    const reviewed = normalizedAction as keyof typeof REVIEWED_ACTION_SHAS;
+    reviewedActions.add(reviewed);
+    const expected = REVIEWED_ACTION_SHAS[reviewed];
+    if (sha !== expected) failures.push(`${location}: ${action} must use reviewed SHA ${expected}`);
+    if (reviewed === "actions/checkout" && step) {
+      const withValue = step.with;
+      const persistCredentials = isStringRecord(withValue) ? withValue["persist-credentials"] : undefined;
+      if (persistCredentials !== false && persistCredentials !== "false") {
+        failures.push(`${location}: actions/checkout must set persist-credentials: false`);
       }
     }
-  });
+  };
+
+  for (const [jobName, jobValue] of Object.entries(jobs)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(jobName) || !isStringRecord(jobValue)) {
+      failures.push(`${jobName || "<empty>"}: every job must be a named YAML mapping`);
+      continue;
+    }
+    const timeout = jobValue["timeout-minutes"];
+    if (!Number.isInteger(timeout) || (timeout as number) < 1 || (timeout as number) > 30) {
+      failures.push(`${jobName}: expected exactly one timeout-minutes value in the range 1..30`);
+    }
+    if (Object.hasOwn(jobValue, "permissions")) {
+      failures.push(`${jobName}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
+    }
+    if (Object.hasOwn(jobValue, "uses")) validateUses(jobValue.uses, `${jobName} job`);
+    if (Object.hasOwn(jobValue, "steps")) {
+      if (!Array.isArray(jobValue.steps)) {
+        failures.push(`${jobName}: steps must resolve to a YAML sequence`);
+      } else {
+        jobValue.steps.forEach((step, index) => {
+          if (!isStringRecord(step)) {
+            failures.push(`${jobName} step ${index + 1}: every step must resolve to a YAML mapping`);
+          } else if (Object.hasOwn(step, "uses")) {
+            validateUses(step.uses, `${jobName} step ${index + 1}`, step);
+          }
+        });
+      }
+    }
+  }
+
+  for (const action of reviewedActions) {
+    const expected = REVIEWED_ACTION_SHAS[action];
+    const escapedAction = action.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const readablePin = new RegExp(
+      `\\b${escapedAction}@${expected}\\b[^\\r\\n]*#\\s*v6\\s*$`,
+      "mi",
+    );
+    if (!readablePin.test(workflow)) failures.push(`${action} must retain the readable # v6 comment`);
+  }
   return failures;
+}
+
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function validateReadmeReleaseScope(

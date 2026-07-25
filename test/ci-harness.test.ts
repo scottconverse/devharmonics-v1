@@ -115,6 +115,21 @@ ${body}
 `;
     assert.match(validateWorkflowPolicy(workflow).join("\n"), /immutable 40-hex SHA/i, body);
   }
+
+  const caseVariantReviewedAction = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: Actions/Checkout@${"a".repeat(40)} # v6
+        with:
+          persist-credentials: false
+`;
+  assert.match(validateWorkflowPolicy(caseVariantReviewedAction).join("\n"), /must use reviewed SHA/i);
 });
 
 test("workflow policy fails closed on ambiguous uses syntax and malformed job topology", () => {
@@ -165,13 +180,52 @@ jobs:
       - run: echo safe
   bypass: { runs-on: ubuntu-latest, permissions: write-all, steps: [{ run: sleep-forever }] }
 `;
+  const escapedUses = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - "us\\u0065s": third-party/action@v1
+`;
+  const explicitPermissions = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    ? permissions
+    : write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
+`;
+  const duplicateKey = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
+`;
   assert.notDeepEqual(validateWorkflowPolicy(ambiguous), []);
   assert.notDeepEqual(validateWorkflowPolicy(malformed), []);
   assert.notDeepEqual(validateWorkflowPolicy(multilineKey), []);
   assert.match(
     validateWorkflowPolicy(flowStyleJob).join("\n"),
-    /bypass.*unrecognized job declaration|unrecognized job declaration.*bypass/i,
+    /bypass.*(?:timeout-minutes|job-level permissions)/i,
   );
+  assert.match(validateWorkflowPolicy(escapedUses).join("\n"), /immutable 40-hex SHA/i);
+  assert.match(validateWorkflowPolicy(explicitPermissions).join("\n"), /permissions.*contents: read/i);
+  assert.match(validateWorkflowPolicy(duplicateKey).join("\n"), /duplicate|unique key/i);
 });
 
 test("workflow policy allows local actions and pinned remote actions in canonical step forms", () => {
@@ -192,6 +246,23 @@ jobs:
           persist-credentials: false
 `;
   assert.deepEqual(validateWorkflowPolicy(workflow), []);
+
+  const anchoredCheckout = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - &checkout
+        uses: actions/checkout@${REVIEWED_ACTION_SHAS["actions/checkout"]} # v6
+        with:
+          persist-credentials: false
+      - *checkout
+`;
+  assert.deepEqual(validateWorkflowPolicy(anchoredCheckout), []);
 });
 
 test("workflow policy rejects duplicate or widened top-level permissions", () => {
@@ -224,6 +295,22 @@ jobs:
       - run: echo ok
 `;
   assert.match(validateWorkflowPolicy(workflow).join("\n"), /fixture.*permissions must remain contents: read/i);
+
+  const mergedPermissions = `name: fixture
+on: push
+permissions:
+  contents: read
+unsafe-job-policy: &unsafe-job-policy
+  permissions: write-all
+jobs:
+  fixture:
+    <<: *unsafe-job-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
+`;
+  assert.match(validateWorkflowPolicy(mergedPermissions).join("\n"), /fixture.*permissions must remain contents: read/i);
 });
 
 test("checkout credentials cannot be satisfied by a later unnamed step", () => {
@@ -268,6 +355,22 @@ ${body}
       body,
     );
   }
+
+  const caseVariantCheckout = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: Actions/Checkout@${REVIEWED_ACTION_SHAS["actions/checkout"]} # v6
+`;
+  assert.match(
+    validateWorkflowPolicy(caseVariantCheckout).join("\n"),
+    /checkout must set persist-credentials: false/i,
+  );
 });
 
 test("randomized and mutation runners use bounded contextual child execution", async () => {
