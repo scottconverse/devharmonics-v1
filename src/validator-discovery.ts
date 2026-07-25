@@ -4,6 +4,7 @@ import { lstat, open, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { parseDocument } from "yaml";
 import type { ValidatorConfig } from "./types.js";
+import { isTomlRecord, ownTomlValue, parseTomlRecord } from "./toml.js";
 
 const MANIFEST_LIMIT = 1024 * 1024;
 const WORKFLOW_FILE_LIMIT = 512 * 1024;
@@ -178,21 +179,12 @@ function packageCandidates(text: string): Candidate[] {
 }
 
 function pyprojectCandidates(text: string): Candidate[] {
-  let pytest = false;
-  let ruff = false;
-  let multiline: "\"\"\"" | "'''" | null = null;
-  for (const line of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
-    if (multiline) {
-      multiline = tomlMultilineStateAfter(line, multiline);
-      continue;
-    }
-    const trimmed = line.trim();
-    if (trimmed.startsWith("[") && !trimmed.startsWith("#")) {
-      if (/^\[tool\.pytest\.ini_options\](?:\s*#.*)?$/.test(trimmed)) pytest = true;
-      if (/^\[tool\.ruff(?:\.[A-Za-z0-9_-]+)*\](?:\s*#.*)?$/.test(trimmed)) ruff = true;
-    }
-    multiline = tomlMultilineStateAfter(line, null);
-  }
+  const document = parseTomlRecord("pyproject.toml", text);
+  const tool = ownTomlValue(document, "tool");
+  const pytestTable = isTomlRecord(tool) ? ownTomlValue(tool, "pytest") : undefined;
+  const ruffTable = isTomlRecord(tool) ? ownTomlValue(tool, "ruff") : undefined;
+  const pytest = isTomlRecord(pytestTable) && isTomlRecord(ownTomlValue(pytestTable, "ini_options"));
+  const ruff = isTomlRecord(ruffTable);
   return [
     ...(pytest
       ? [candidate("pytest", { id: "pytest" }, "pyproject_table", "pyproject.toml", "tool.pytest.ini_options")]
@@ -201,56 +193,6 @@ function pyprojectCandidates(text: string): Candidate[] {
       ? [candidate("ruff", { id: "ruff" }, "pyproject_table", "pyproject.toml", "tool.ruff")]
       : []),
   ];
-}
-
-function tomlMultilineStateAfter(
-  line: string,
-  initial: "\"\"\"" | "'''" | null,
-): "\"\"\"" | "'''" | null {
-  let multiline = initial;
-  let quoted: "\"" | "'" | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    if (multiline) {
-      if (line.startsWith(multiline, index) && (
-        multiline === "'''" || !isEscaped(line, index)
-      )) {
-        index += 2;
-        multiline = null;
-      }
-      continue;
-    }
-    if (quoted === "\"") {
-      if (line[index] === "\\" && index + 1 < line.length) {
-        index += 1;
-      } else if (line[index] === "\"") {
-        quoted = null;
-      }
-      continue;
-    }
-    if (quoted === "'") {
-      if (line[index] === "'") quoted = null;
-      continue;
-    }
-    if (line[index] === "#") break;
-    if (line.startsWith('"""', index)) {
-      multiline = '"""';
-      index += 2;
-    } else if (line.startsWith("'''", index)) {
-      multiline = "'''";
-      index += 2;
-    } else if (line[index] === "\"") {
-      quoted = "\"";
-    } else if (line[index] === "'") {
-      quoted = "'";
-    }
-  }
-  return multiline;
-}
-
-function isEscaped(text: string, index: number): boolean {
-  let slashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) slashes += 1;
-  return slashes % 2 === 1;
 }
 
 function workflowCandidates(

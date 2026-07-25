@@ -2,6 +2,7 @@ import type { Ledger } from "./ledger.js";
 import { evaluateToolRequest, type ToolApprovalReceipt } from "./policy.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
 import type { DeliveryRepositoryRecord, DevHarmonicsConfig } from "./types.js";
+import { isTomlRecord, ownTomlValue, parseTomlRecord, TomlParseFailure } from "./toml.js";
 
 export type DeliveryAction = "push_branch" | "create_draft_pr" | "merge_pr" | "tag_release";
 type ProcessRunner = (request: ProcessRequest) => Promise<ProcessResult>;
@@ -24,6 +25,14 @@ export interface DeliveryExecutionInput {
 }
 
 const RELEASE_TAG_PATTERN = /^v?[0-9A-Za-z][0-9A-Za-z_.-]{0,63}$/;
+const MANIFEST_OUTPUT_LIMIT = 1024 * 1024;
+const TREE_OUTPUT_LIMIT = 4096;
+
+export type VersionAuthority =
+  | { state: "declared"; source: "package.json" | "pyproject.toml"; version: string }
+  | { state: "absent" }
+  | { state: "invalid"; source: "package.json" | "pyproject.toml"; detail: string }
+  | { state: "unavailable"; source: "package.json" | "pyproject.toml" | "root manifests"; detail: string };
 
 function githubRemote(value: string): { webUrl: string; repository: string } {
   const remote = value.trim();
@@ -69,29 +78,69 @@ export class VersionMismatchRefusal extends DeliveryRefusal {
   }
 }
 
-/**
- * Read ONLY the PEP 621 `[project].version` from pyproject text. A section-
- * scoped scan (gate finding, 2026-07-22): the previous whole-file regex took
- * the FIRST `version = "..."` anywhere, so a `[tool.something] version` before
- * `[project]` masqueraded as the project's own version. We walk table headers
- * and read `version` only while inside the exact `[project]` table, stopping at
- * the next table header. Hand-rolled — no TOML dependency.
- */
-function pyprojectProjectVersion(text: string): string | null {
-  let inProject = false;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/^\s+/, "");
-    if (line.startsWith("[")) {
-      // A table header. Only the exact `[project]` table carries the canonical
-      // version; `[project.scripts]`, `[tool.x]`, etc. do not.
-      inProject = /^\[project\]\s*(#.*)?$/.test(line);
-      continue;
-    }
-    if (!inProject) continue;
-    const match = line.match(/^version\s*=\s*["']([^"']+)["']/);
-    if (match?.[1]) return match[1].trim();
+export class VersionAuthorityRefusal extends DeliveryRefusal {
+  constructor(public readonly authority: Extract<VersionAuthority, { state: "invalid" | "unavailable" }>) {
+    super(authority.state === "invalid"
+      ? `Release tagging is disabled because ${authority.source} is invalid: ${authority.detail}`
+      : `Release tagging is disabled because ${authority.source} could not be read safely: ${authority.detail}`);
   }
-  return null;
+}
+
+function invalidAuthority(source: "package.json" | "pyproject.toml", detail: string): VersionAuthority {
+  return { state: "invalid", source, detail: detail.replace(/\s+/g, " ").trim().slice(0, 240) };
+}
+
+function packageAuthority(text: string): VersionAuthority {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return invalidAuthority("package.json", "JSON parser rejected the document");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return invalidAuthority("package.json", "document root must be an object");
+  }
+  const record = parsed as Record<string, unknown>;
+  const hasPrivate = Object.prototype.hasOwnProperty.call(record, "private");
+  const hasVersion = Object.prototype.hasOwnProperty.call(record, "version");
+  if (hasPrivate && typeof record.private !== "boolean") {
+    return invalidAuthority("package.json", "'private' must be a boolean when present");
+  }
+  if (hasVersion && (typeof record.version !== "string" || !record.version.trim())) {
+    return invalidAuthority("package.json", "'version' must be a non-empty string when present");
+  }
+  if (record.private !== true && hasVersion) {
+    return { state: "declared", source: "package.json", version: (record.version as string).trim() };
+  }
+  return { state: "absent" };
+}
+
+function pyprojectAuthority(text: string): VersionAuthority {
+  let document;
+  try {
+    document = parseTomlRecord("pyproject.toml", text);
+  } catch (error) {
+    const detail = error instanceof TomlParseFailure ? error.message : "TOML parser rejected the document";
+    return invalidAuthority("pyproject.toml", detail);
+  }
+  const project = ownTomlValue(document, "project");
+  if (project === undefined) return { state: "absent" };
+  if (!isTomlRecord(project)) return invalidAuthority("pyproject.toml", "'project' must be a table");
+  const version = ownTomlValue(project, "version");
+  if (version === undefined) return { state: "absent" };
+  if (typeof version !== "string" || !version.trim()) {
+    return invalidAuthority("pyproject.toml", "'project.version' must be a non-empty string when present");
+  }
+  return { state: "declared", source: "pyproject.toml", version: version.trim() };
+}
+
+export function parseVersionAuthority(packageJson: string | null, pyproject: string | null): VersionAuthority {
+  if (packageJson !== null) {
+    const authority = packageAuthority(packageJson);
+    if (authority.state !== "absent") return authority;
+  }
+  if (pyproject !== null) return pyprojectAuthority(pyproject);
+  return { state: "absent" };
 }
 
 /**
@@ -102,19 +151,80 @@ function pyprojectProjectVersion(text: string): string | null {
  * Pure so both the immutable-commit lookup and its tests share one parser.
  */
 export function parseDeclaredVersion(packageJson: string | null, pyproject: string | null): string | null {
-  if (packageJson) {
-    try {
-      const parsed = JSON.parse(packageJson) as { version?: unknown; private?: unknown };
-      if (parsed.private !== true && typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
-    } catch {
-      // package.json present but unparsable — fall through to pyproject
-    }
+  const authority = parseVersionAuthority(packageJson, pyproject);
+  return authority.state === "declared" ? authority.version : null;
+}
+
+function processReadUnavailable(result: ProcessResult): boolean {
+  return result.exitCode !== 0
+    || result.timedOut
+    || result.treeKillUnconfirmed === true
+    || result.stdoutTruncated === true
+    || result.stderrTruncated === true;
+}
+
+function unavailableAuthority(source: "package.json" | "pyproject.toml", detail: string): Extract<VersionAuthority, { state: "unavailable" }> {
+  return { state: "unavailable", source, detail };
+}
+
+type ManifestRead =
+  | { state: "present"; text: string }
+  | { state: "absent" }
+  | Extract<VersionAuthority, { state: "unavailable" }>;
+
+function parseTreeRecord(stdout: string, exactPath: string): { objectId: string } | null {
+  const records = stdout.split("\0");
+  if (records.length !== 2 || records[1] !== "") return null;
+  const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/.exec(records[0]!);
+  if (!match || match[3] !== exactPath) return null;
+  return { objectId: match[2]! };
+}
+
+function readFailureDetail(result: ProcessResult, operation: string): string {
+  if (result.timedOut) return `${operation} timed out`;
+  if (result.treeKillUnconfirmed) return `${operation} could not confirm process-tree termination`;
+  if (result.stdoutTruncated || result.stderrTruncated) return `${operation} exceeded its output limit`;
+  if (result.exitCode !== 0) return `${operation} exited nonzero`;
+  return `${operation} returned a malformed response`;
+}
+
+async function readManifestAtCommit(
+  runner: ProcessRunner,
+  localPath: string,
+  commitish: string,
+  source: "package.json" | "pyproject.toml",
+): Promise<ManifestRead> {
+  let tree: ProcessResult;
+  try {
+    tree = await runner({
+      command: "git",
+      args: ["ls-tree", "-z", "--full-tree", "--format=%(objectmode) %(objecttype) %(objectname)%x09%(path)", commitish, "--", source],
+      cwd: localPath,
+      timeoutMs: 30_000,
+      maxOutputBytes: TREE_OUTPUT_LIMIT,
+    });
+  } catch {
+    return unavailableAuthority(source, "git tree query could not be started");
   }
-  if (pyproject) {
-    const version = pyprojectProjectVersion(pyproject);
-    if (version) return version;
+  if (processReadUnavailable(tree)) return unavailableAuthority(source, readFailureDetail(tree, "git tree query"));
+  if (tree.stdout === "") return { state: "absent" };
+  const record = parseTreeRecord(tree.stdout, source);
+  if (!record) return unavailableAuthority(source, "git tree query returned an unexpected entry");
+
+  let blob: ProcessResult;
+  try {
+    blob = await runner({
+      command: "git",
+      args: ["show", record.objectId],
+      cwd: localPath,
+      timeoutMs: 30_000,
+      maxOutputBytes: MANIFEST_OUTPUT_LIMIT,
+    });
+  } catch {
+    return unavailableAuthority(source, "git blob read could not be started");
   }
-  return null;
+  if (processReadUnavailable(blob)) return unavailableAuthority(source, readFailureDetail(blob, "git blob read"));
+  return { state: "present", text: blob.stdout };
 }
 
 /** "v1.2.1" and "1.2.1" are the same claim; case and a leading v are presentation, not identity. */
@@ -128,19 +238,29 @@ export class DeliveryService {
 
   /**
    * The version an IMMUTABLE commit declares about itself, read from that
-   * commit's own blobs via `git show <commitish>:<manifest>` — never from the
-   * mutable working tree (CRITICAL gate finding, 2026-07-22). A stale or
+   * commit's own regular blobs through a closed `git ls-tree -z` query followed
+   * by a bounded object read — never from the mutable working tree. A stale or
    * locally edited checkout must not be able to falsely refuse a correct tag or
    * authorize a tag the merged artifact contradicts. Bounded and read-only.
    */
   async declaredVersionAtCommit(localPath: string, commitish: string): Promise<string | null> {
-    const show = async (file: string): Promise<string | null> => {
-      const result = await this.runner({ command: "git", args: ["show", `${commitish}:${file}`], cwd: localPath, timeoutMs: 30_000 });
-      return result.exitCode === 0 ? result.stdout : null;
-    };
-    const packageJson = await show("package.json");
-    const pyproject = await show("pyproject.toml");
-    return parseDeclaredVersion(packageJson, pyproject);
+    const authority = await this.versionAuthorityAtCommit(localPath, commitish);
+    return authority.state === "declared" ? authority.version : null;
+  }
+
+  async versionAuthorityAtCommit(localPath: string, commitish: string): Promise<VersionAuthority> {
+    const packageRead = await readManifestAtCommit(this.runner, localPath, commitish, "package.json");
+    if (packageRead.state === "unavailable") return packageRead;
+    if (packageRead.state === "present") {
+      const authority = packageAuthority(packageRead.text);
+      if (authority.state !== "absent") return authority;
+    }
+    const pyprojectRead = await readManifestAtCommit(this.runner, localPath, commitish, "pyproject.toml");
+    if (pyprojectRead.state === "unavailable") return pyprojectRead;
+    return parseVersionAuthority(
+      packageRead.state === "present" ? packageRead.text : null,
+      pyprojectRead.state === "present" ? pyprojectRead.text : null,
+    );
   }
 
   /** Is the object for `oid` present in the local object store? Bounded, read-only. */
@@ -185,11 +305,22 @@ export class DeliveryService {
    * render as "merge version temporarily unavailable — retry". It never
    * substitutes the reviewed head for a merged repository.
    */
-  async resolveDeliveryVersion(delivery: DeliveryRepositoryRecord): Promise<{ declaredVersion: string | null; mergeVersionUnavailable: boolean; mergeCommitOid: string | null }> {
+  async resolveDeliveryVersion(delivery: DeliveryRepositoryRecord): Promise<{
+    authority: VersionAuthority;
+    declaredVersion: string | null;
+    mergeVersionUnavailable: boolean;
+    mergeCommitOid: string | null;
+  }> {
     const merged = delivery.status === "merged" || delivery.status === "tagged";
     if (!merged) {
       // Before a merge commit exists, the reviewed head is the only truth.
-      return { declaredVersion: await this.declaredVersionAtCommit(delivery.localPath, delivery.headCommit), mergeVersionUnavailable: false, mergeCommitOid: delivery.mergeCommitOid };
+      const authority = await this.versionAuthorityAtCommit(delivery.localPath, delivery.headCommit);
+      return {
+        authority,
+        declaredVersion: authority.state === "declared" ? authority.version : null,
+        mergeVersionUnavailable: authority.state === "unavailable",
+        mergeCommitOid: delivery.mergeCommitOid,
+      };
     }
     let mergeOid = delivery.mergeCommitOid;
     if (!mergeOid) {
@@ -201,16 +332,24 @@ export class DeliveryService {
       }
     }
     if (!mergeOid) {
-      return { declaredVersion: null, mergeVersionUnavailable: true, mergeCommitOid: null };
+      const authority: VersionAuthority = { state: "unavailable", source: "root manifests", detail: "merge commit could not be resolved" };
+      return { authority, declaredVersion: null, mergeVersionUnavailable: true, mergeCommitOid: null };
     }
     // Failure path 2: ensure the merge commit's object is local, fetching once.
     if (!(await this.commitObjectPresent(delivery.localPath, mergeOid))) {
       await this.runner({ command: "git", args: ["fetch", "origin", delivery.baseBranch], cwd: delivery.localPath, timeoutMs: 120_000 });
       if (!(await this.commitObjectPresent(delivery.localPath, mergeOid))) {
-        return { declaredVersion: null, mergeVersionUnavailable: true, mergeCommitOid: mergeOid };
+        const authority: VersionAuthority = { state: "unavailable", source: "root manifests", detail: "merge commit could not be fetched" };
+        return { authority, declaredVersion: null, mergeVersionUnavailable: true, mergeCommitOid: mergeOid };
       }
     }
-    return { declaredVersion: await this.declaredVersionAtCommit(delivery.localPath, mergeOid), mergeVersionUnavailable: false, mergeCommitOid: mergeOid };
+    const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergeOid);
+    return {
+      authority,
+      declaredVersion: authority.state === "declared" ? authority.version : null,
+      mergeVersionUnavailable: authority.state === "unavailable",
+      mergeCommitOid: mergeOid,
+    };
   }
 
   async execute(input: DeliveryExecutionInput): Promise<DeliveryRepositoryRecord> {
@@ -410,16 +549,17 @@ export class DeliveryService {
       const fetch = await this.runner({ command: "git", args: ["fetch", "origin", delivery.baseBranch], cwd: delivery.localPath, timeoutMs: 120_000 });
       if (fetch.exitCode !== 0) throw new Error(failureMessage(fetch, "Could not fetch the merged base branch"));
       // Tag-truth gate: resolve the declared version from the exact merge commit
-      // that will be tagged, not the checkout. This MUST run after the fetch —
-      // the merge commit was just created on GitHub, and before the fetch it
-      // does not exist locally, so `git show` would fail and the gate would
-      // silently no-op on the most common real path (boss-review finding on
-      // the audit fix, 2026-07-22). When the merged artifact's own files
+      // that will be tagged, not the checkout. This MUST run after the fetch:
+      // the merge commit was just created on GitHub, so its tree and blobs do
+      // not exist locally beforehand. When the merged artifact's own files
       // contradict the requested tag, refuse with both values unless the owner
       // explicitly confirmed the mismatch.
-      const declaredVersion = await this.declaredVersionAtCommit(delivery.localPath, mergedState.mergeCommit.oid);
-      if (declaredVersion && !versionsAgree(input.tag!, declaredVersion) && !input.confirmVersionMismatch) {
-        throw new VersionMismatchRefusal(declaredVersion, input.tag!);
+      const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergedState.mergeCommit.oid);
+      if (authority.state === "invalid" || authority.state === "unavailable") {
+        throw new VersionAuthorityRefusal(authority);
+      }
+      if (authority.state === "declared" && !versionsAgree(input.tag!, authority.version) && !input.confirmVersionMismatch) {
+        throw new VersionMismatchRefusal(authority.version, input.tag!);
       }
       // A prior attempt may have created the local tag and failed only the
       // push (panel finding): reuse a local tag that points at the exact merge

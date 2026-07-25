@@ -92,6 +92,42 @@ test("pyproject discovery recognizes exact pytest and Ruff tables without prose 
   }
 });
 
+test("pyproject discovery uses standards TOML for quoted and dotted validator tables", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), [
+      "tool.ruff.lint.select = [\"E\"]",
+      '["tool"."pytest"."ini_options"]',
+      "testpaths = [\"test\"]",
+    ].join("\n"));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {
+      pytest: { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000 },
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000 },
+    });
+    assert.deepEqual(result.diagnostics, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed TOML reports malformed and yields no pyproject validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), [
+      'decoy = """',
+      "[tool.pytest.ini_options]",
+      '"""',
+      "[tool.ruff",
+    ].join("\n"));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.ok(result.diagnostics.some((item) => item.source === "pyproject.toml" && item.code === "malformed"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("source failures are isolated and release discovery refuses symlinks", async () => {
   const root = await fixture();
   const outside = await fixture();

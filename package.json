@@ -33,6 +33,7 @@
     "check": "npm run build && node scripts/check-version.mjs && npm run test:compiled"
   },
   "dependencies": {
+    "toml": "5.0.0",
     "yaml": "2.9.0",
     "zod": "^4.0.0"
   },

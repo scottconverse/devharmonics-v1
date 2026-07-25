@@ -590,19 +590,32 @@ test("version-authority corpus gate rejects a moved HEAD and an unexpected top-l
     return result.stdout.trim();
   };
 
-  const createRepository = async (root: string, name: string): Promise<{ path: string; oid: string }> => {
+  const createRepository = async (
+    root: string,
+    name: string,
+    packageText: string | null = JSON.stringify({ name, version: "1.0.0" }),
+  ): Promise<{ path: string; oid: string }> => {
     const repositoryPath = path.join(root, name);
     await mkdir(repositoryPath, { recursive: true });
     git(repositoryPath, ["init", "--initial-branch=main"]);
     git(repositoryPath, ["config", "user.email", "corpus-fixture@example.invalid"]);
     git(repositoryPath, ["config", "user.name", "Corpus Fixture"]);
-    await writeFile(path.join(repositoryPath, "package.json"), JSON.stringify({ name, version: "1.0.0" }), "utf8");
-    git(repositoryPath, ["add", "package.json"]);
+    const fixturePath = packageText === null ? "README.md" : "package.json";
+    await writeFile(path.join(repositoryPath, fixturePath), packageText ?? "# No release manifest\n", "utf8");
+    git(repositoryPath, ["add", fixturePath]);
     git(repositoryPath, ["commit", "-m", "initial fixture"]);
     return { path: repositoryPath, oid: git(repositoryPath, ["rev-parse", "HEAD"]) };
   };
 
-  const runGate = (root: string, expectations: Array<[string, string, string | null]>): ReturnType<typeof spawnSync> => {
+  const runGate = (
+    root: string,
+    expectations: Array<[string, string,
+      | { state: "declared"; source: "package.json" | "pyproject.toml"; version: string }
+      | { state: "absent" }
+      | { state: "invalid"; source: "package.json" | "pyproject.toml"; detail: string }
+      | { state: "unavailable"; source: "package.json" | "pyproject.toml" | "root manifests"; detail: string }
+    ]>,
+  ): ReturnType<typeof spawnSync> => {
     const { NODE_TEST_CONTEXT: _nodeTestContext, ...runnerEnvironment } = process.env;
     return spawnSync(process.execPath, ["scripts/verify-version-authority-corpus.mjs"], {
       cwd: process.cwd(),
@@ -625,7 +638,7 @@ test("version-authority corpus gate rejects a moved HEAD and an unexpected top-l
     git(moved.path, ["add", "README.md"]);
     git(moved.path, ["commit", "-m", "move checkout head"]);
 
-    const movedResult = runGate(movedRoot, [["expected", moved.oid, "1.0.0"]]);
+    const movedResult = runGate(movedRoot, [["expected", moved.oid, { state: "declared", source: "package.json", version: "1.0.0" }]]);
     const movedOutput = `${movedResult.stdout}\n${movedResult.stderr}`;
     assert.notEqual(movedResult.status, 0, movedOutput);
     assert.match(movedOutput, /expected checkout HEAD .* but found/i, "the stale pinned object must not hide a moved checkout HEAD");
@@ -635,10 +648,22 @@ test("version-authority corpus gate rejects a moved HEAD and an unexpected top-l
     const expected = await createRepository(unexpectedRoot, "expected");
     await createRepository(unexpectedRoot, "new-repository");
 
-    const unexpectedResult = runGate(unexpectedRoot, [["expected", expected.oid, "1.0.0"]]);
+    const unexpectedResult = runGate(unexpectedRoot, [["expected", expected.oid, { state: "declared", source: "package.json", version: "1.0.0" }]]);
     const unexpectedOutput = `${unexpectedResult.stdout}\n${unexpectedResult.stderr}`;
     assert.notEqual(unexpectedResult.status, 0, unexpectedOutput);
     assert.match(unexpectedOutput, /unexpected top-level Git repositories: new-repository/i, "a newly discovered repository must fail the closed-world corpus census");
+
+    const statesRoot = path.join(fixtureRoot, "states");
+    await mkdir(statesRoot, { recursive: true });
+    const declared = await createRepository(statesRoot, "declared");
+    const absent = await createRepository(statesRoot, "absent", null);
+    const invalid = await createRepository(statesRoot, "invalid", "{ malformed");
+    const stateResult = runGate(statesRoot, [
+      ["declared", declared.oid, { state: "declared", source: "package.json", version: "1.0.0" }],
+      ["absent", absent.oid, { state: "absent" }],
+      ["invalid", invalid.oid, { state: "invalid", source: "package.json", detail: "JSON parser rejected the document" }],
+    ]);
+    assert.equal(stateResult.status, 0, `${stateResult.stdout}\n${stateResult.stderr}`);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
@@ -906,7 +931,9 @@ test("CI provisions and verifies the frozen validator corpus in a dedicated unca
   assert.doesNotMatch(job, /cache:\s*npm/);
   assert.match(job, /node scripts\/provision-validator-discovery-corpus\.mjs\s+"?\$RUNNER_TEMP\/validator-discovery-corpus"?/);
   assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:validator-discovery-corpus/);
+  assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:version-authority-corpus/);
   assert.doesNotMatch(job, /DEVHARMONICS_VALIDATOR_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
+  assert.doesNotMatch(job, /DEVHARMONICS_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
 });
 
 test("validator corpus verifier shares the manifest and stays offline, read-only, and execution-free", async () => {
@@ -925,6 +952,14 @@ test("validator corpus verifier shares the manifest and stays offline, read-only
   for (const guard of ["GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE"]) {
     assert.match(provisioner, new RegExp(`\\b${guard}\\b`), guard);
   }
+});
+
+test("version authority verifier shares the frozen census and stays offline and read-only", async () => {
+  const verifier = await readFile("scripts/verify-version-authority-corpus.mjs", "utf8");
+  assert.match(verifier, /import\s+\{\s*versionAuthorityCorpusManifest\s*\}\s+from\s+"\.\/validator-discovery-corpus-manifest\.mjs"/);
+  assert.match(verifier, /versionAuthorityAtCommit\(repositoryPath,\s*oid\)/);
+  assert.doesNotMatch(verifier, /\["(?:clone|fetch|pull|push|ls-remote)"/);
+  assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename)\s*\(/);
 });
 
 test("declared test census follows node:test aliases and namespaces but ignores foreign and shadowed bindings", () => {

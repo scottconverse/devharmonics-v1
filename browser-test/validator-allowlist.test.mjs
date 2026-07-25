@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { chromium } from "playwright";
 
+import { defaultConfig, devHarmonicsDirectory, initializeProject } from "../dist/src/config.js";
+import { Ledger } from "../dist/src/ledger.js";
 import { startDashboard } from "../dist/src/server.js";
 
 const execFileAsync = promisify(execFile);
@@ -405,4 +407,76 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   assert.deepEqual(unexpectedConsoleErrors, []);
   assert.deepEqual(pageErrors, []);
   await context.close();
+});
+
+test("invalid immutable release authority is distinct and disables tagging in real Chromium", { timeout: 60_000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-release-authority-browser-"));
+  const repository = path.join(root, "fixture");
+  await execFileAsync("git", ["init", "--initial-branch=main", repository], { windowsHide: true });
+  await git(repository, "config", "user.email", "release-browser@example.invalid");
+  await git(repository, "config", "user.name", "Release Browser Test");
+  await writeFile(path.join(repository, "README.md"), "# Release fixture\n", "utf8");
+  await git(repository, "add", "README.md");
+  await git(repository, "commit", "-m", "Create release fixture");
+  await initializeProject(repository);
+  const config = structuredClone(defaultConfig);
+  config.runPolicy.allowExternalWrites = true;
+  await writeFile(path.join(devHarmonicsDirectory(repository), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const ledger = new Ledger(path.join(devHarmonicsDirectory(repository), "devharmonics.db"));
+  const runId = ledger.createRun("Show invalid release authority", repository);
+  ledger.setRunStatus(runId, "running");
+  ledger.setRunStatus(runId, "ready", "READY");
+  ledger.prepareDeliveryRepository({
+    runId,
+    repositoryId: "repo:release-browser",
+    localPath: repository,
+    baseBranch: "main",
+    baseCommit: "a".repeat(40),
+    headCommit: "b".repeat(40),
+    branch: "devharmonics/release-browser",
+  });
+  ledger.updateDeliveryRepository(runId, "repo:release-browser", {
+    status: "merged",
+    remoteUrl: "https://github.com/civicsuite/release-browser",
+    pullRequestUrl: "https://github.com/civicsuite/release-browser/pull/1",
+    mergeCommitOid: "c".repeat(40),
+  });
+  ledger.close();
+
+  const runner = async (request) => {
+    const result = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    if (request.command === "git" && request.args[0] === "cat-file") return result;
+    if (request.command === "git" && request.args[0] === "ls-tree") {
+      return { ...result, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
+    }
+    if (request.command === "git" && request.args.join(" ") === `show ${"d".repeat(40)}`) {
+      return { ...result, stdout: "{ malformed" };
+    }
+    return result;
+  };
+  const dashboard = await startDashboard({ projectPath: repository, port: 0, open: false, deliveryRunner: runner });
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => {
+    await browser.close();
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const page = await browser.newPage({ viewport: { width: 1024, height: 800 } });
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /Show invalid release authority/ }).click();
+  const tagInput = page.locator('[data-tag-for="repo:release-browser"]');
+  const tagButton = page.locator('[data-delivery-action="tag_release"][data-repository-id="repo:release-browser"]');
+  const help = page.locator('[data-tag-help-for="repo:release-browser"]');
+  await assert.doesNotReject(() => help.getByText(/package\.json is invalid/i).waitFor());
+  assert.equal(await tagInput.isDisabled(), true);
+  assert.equal(await tagInput.inputValue(), "");
+  assert.equal(await tagButton.isDisabled(), true);
+  assert.doesNotMatch(await help.textContent(), /no authoritative release version/i);
+  assert.deepEqual(consoleErrors, []);
 });

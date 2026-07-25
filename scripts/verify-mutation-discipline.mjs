@@ -57,3 +57,61 @@ assertCiChildResult(
 );
 
 console.log("Mutation discipline passed: asserted mutation → RED, restored guard → GREEN.");
+
+async function proveAdditionalMutation({
+  compiledPath,
+  testPath,
+  mutationTarget,
+  mutationReplacement,
+  sentinelName: additionalSentinelName,
+}) {
+  const clean = await readFile(compiledPath, "utf8");
+  const changed = replaceExactlyOnce(clean, mutationTarget, mutationReplacement);
+  const run = () => runProcess({
+    command: process.execPath,
+    args: [`--test-name-pattern=${additionalSentinelName}`, "--test", testPath],
+    cwd: root,
+    timeoutMs,
+    maxOutputBytes,
+  });
+  let expectedRed;
+  try {
+    await writeFile(compiledPath, changed, "utf8");
+    expectedRed = await run();
+  } finally {
+    await writeFile(compiledPath, clean, "utf8");
+  }
+  console.log(`Expected RED output (${additionalSentinelName}):`);
+  console.log(`${expectedRed.stdout}${expectedRed.stderr}`.trim());
+  assertCiChildResult(
+    expectedRed,
+    { operation: "mutation sentinel", sentinelName: additionalSentinelName, phase: "expected RED", timeoutMs },
+    { exit: "nonzero", outputIncludes: additionalSentinelName },
+  );
+  const restoredGreen = await run();
+  console.log(`Restored GREEN output (${additionalSentinelName}):`);
+  console.log(`${restoredGreen.stdout}${restoredGreen.stderr}`.trim());
+  assertCiChildResult(
+    restoredGreen,
+    { operation: "mutation sentinel", sentinelName: additionalSentinelName, phase: "restored GREEN", timeoutMs },
+    { exit: "zero" },
+  );
+}
+
+await proveAdditionalMutation({
+  compiledPath: path.join(root, "dist", "src", "delivery.js"),
+  testPath: path.join(root, "dist", "test", "core.test.js"),
+  mutationTarget: 'if (authority.state === "invalid" || authority.state === "unavailable") {',
+  mutationReplacement: 'if (false && (authority.state === "invalid" || authority.state === "unavailable")) {',
+  sentinelName: "invalid release authority refuses tagging even with mismatch confirmation and records no tag side effects",
+});
+
+await proveAdditionalMutation({
+  compiledPath: path.join(root, "dist", "src", "validator-discovery.js"),
+  testPath: path.join(root, "dist", "test", "validator-discovery.test.js"),
+  mutationTarget: 'const document = parseTomlRecord("pyproject.toml", text);',
+  mutationReplacement: "const document = {};",
+  sentinelName: "malformed TOML reports malformed and yields no pyproject validator candidate",
+});
+
+console.log("Additional release-authority and validator-malformed mutation sentinels passed.");
