@@ -132,6 +132,47 @@ jobs:
   assert.match(validateWorkflowPolicy(caseVariantReviewedAction).join("\n"), /must use reviewed SHA/i);
 });
 
+test("reviewed actions cannot bypass reviewed SHA or checkout safeguards through subpaths", () => {
+  const cases = [
+    { action: "actions/checkout/.", checkout: true },
+    { action: "Actions/Checkout//", checkout: true },
+    { action: "actions/checkout/../checkout", checkout: true },
+    { action: "actions/setup-node/.", checkout: false },
+  ];
+  for (const { action, checkout } of cases) {
+    const workflow = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: ${action}@${"a".repeat(40)} # v6
+`;
+    const failures = validateWorkflowPolicy(workflow).join("\n");
+    assert.match(failures, /reviewed action.*subpath/i, action);
+    assert.match(failures, /must use reviewed SHA/i, action);
+    if (checkout) assert.match(failures, /checkout must set persist-credentials: false/i, action);
+  }
+});
+
+test("unrelated actions retain their valid repository subpaths", () => {
+  const workflow = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: third-party/action/subdirectory@${"a".repeat(40)}
+`;
+  assert.deepEqual(validateWorkflowPolicy(workflow), []);
+});
+
 test("workflow policy fails closed on ambiguous uses syntax and malformed job topology", () => {
   const ambiguous = `name: fixture
 on: push
@@ -228,6 +269,21 @@ jobs:
   assert.match(validateWorkflowPolicy(duplicateKey).join("\n"), /duplicate|unique key/i);
 });
 
+test("workflow policy fails closed on YAML parser warnings", () => {
+  const workflow = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: !unsupported echo ok
+`;
+  assert.match(validateWorkflowPolicy(workflow).join("\n"), /warning.*unresolved tag/i);
+});
+
 test("workflow policy allows local actions and pinned remote actions in canonical step forms", () => {
   const sha = "a".repeat(40);
   const workflow = `name: fixture
@@ -263,6 +319,25 @@ jobs:
       - *checkout
 `;
   assert.deepEqual(validateWorkflowPolicy(anchoredCheckout), []);
+});
+
+test("each reviewed uses scalar must carry its own readable version comment", () => {
+  const sha = REVIEWED_ACTION_SHAS["actions/checkout"];
+  const workflow = `name: fixture
+on: push
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@${sha}
+        with:
+          persist-credentials: false
+      - run: echo actions/checkout@${sha} # v6
+`;
+  assert.match(validateWorkflowPolicy(workflow).join("\n"), /checkout must retain the readable # v6 comment/i);
 });
 
 test("workflow policy rejects duplicate or widened top-level permissions", () => {

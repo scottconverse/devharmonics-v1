@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { parseDocument } from "yaml";
+import { isAlias, isMap, isNode, isScalar, isSeq, parseDocument } from "yaml";
+import type { Node, Pair, YAMLMap } from "yaml";
 import type { ProcessResult } from "./process.js";
 
 export const REVIEWED_ACTION_SHAS = {
@@ -122,11 +123,98 @@ export function countDeclaredNodeTests(source: string, fileName: string): number
   return count;
 }
 
+type WorkflowDocument = ReturnType<typeof parseDocument>;
+
+function resolveWorkflowNode(
+  value: unknown,
+  document: WorkflowDocument,
+  seen = new Set<Node>(),
+): Node | undefined {
+  if (!isNode(value)) return undefined;
+  if (!isAlias(value)) return value;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  return resolveWorkflowNode(value.resolve(document), document, seen);
+}
+
+function pairKeyValue(pair: Pair): unknown {
+  return isScalar(pair.key) ? pair.key.value : undefined;
+}
+
+function isMergePair(pair: Pair): boolean {
+  const key = pairKeyValue(pair);
+  return key === "<<" || (typeof key === "symbol" && key.description === "<<");
+}
+
+function mergedWorkflowMaps(value: unknown, document: WorkflowDocument): YAMLMap[] {
+  const resolved = resolveWorkflowNode(value, document);
+  if (isMap(resolved)) return [resolved];
+  if (!isSeq(resolved)) return [];
+  return resolved.items.flatMap((item) => {
+    const map = resolveWorkflowNode(item, document);
+    return isMap(map) ? [map] : [];
+  });
+}
+
+function workflowMapValue(
+  map: YAMLMap,
+  key: string,
+  document: WorkflowDocument,
+  seen = new Set<YAMLMap>(),
+  resolveValue = true,
+): Node | undefined {
+  if (seen.has(map)) return undefined;
+  seen.add(map);
+  for (const pair of map.items) {
+    if (pairKeyValue(pair) === key) {
+      return resolveValue
+        ? resolveWorkflowNode(pair.value, document)
+        : isNode(pair.value)
+          ? pair.value
+          : undefined;
+    }
+  }
+  for (const pair of map.items) {
+    if (!isMergePair(pair)) continue;
+    for (const merged of mergedWorkflowMaps(pair.value, document)) {
+      const value = workflowMapValue(merged, key, document, new Set(seen), resolveValue);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function workflowUsesHasReadableComment(
+  document: WorkflowDocument,
+  jobName: string,
+  stepIndex?: number,
+): boolean {
+  const root = resolveWorkflowNode(document.contents, document);
+  if (!isMap(root)) return false;
+  const jobs = workflowMapValue(root, "jobs", document);
+  if (!isMap(jobs)) return false;
+  const job = workflowMapValue(jobs, jobName, document);
+  if (!isMap(job)) return false;
+
+  let target = job;
+  if (stepIndex !== undefined) {
+    const steps = workflowMapValue(job, "steps", document);
+    if (!isSeq(steps)) return false;
+    const step = resolveWorkflowNode(steps.items[stepIndex], document);
+    if (!isMap(step)) return false;
+    target = step;
+  }
+
+  const uses = workflowMapValue(target, "uses", document, new Set(), false);
+  return Boolean(uses && /^\s*v6\s*$/i.test(uses.comment ?? ""));
+}
+
 export function validateWorkflowPolicy(workflow: string): string[] {
   const failures: string[] = [];
   let root: unknown;
+  let document: WorkflowDocument;
   try {
-    const document = parseDocument(workflow, {
+    document = parseDocument(workflow, {
       version: "1.2",
       strict: true,
       uniqueKeys: true,
@@ -135,6 +223,11 @@ export function validateWorkflowPolicy(workflow: string): string[] {
     failures.push(
       ...document.errors.map(
         (error) => `workflow YAML must reject every duplicate or non-unique key: ${error.message}`,
+      ),
+    );
+    failures.push(
+      ...document.warnings.map(
+        (warning) => `workflow YAML parser warning must fail closed: ${warning.message}`,
       ),
     );
     root = document.toJS({ maxAliasCount: 100 });
@@ -159,8 +252,12 @@ export function validateWorkflowPolicy(workflow: string): string[] {
     return failures;
   }
 
-  const reviewedActions = new Set<keyof typeof REVIEWED_ACTION_SHAS>();
-  const validateUses = (value: unknown, location: string, step?: Record<string, unknown>): void => {
+  const validateUses = (
+    value: unknown,
+    location: string,
+    hasReadableComment: boolean,
+    step?: Record<string, unknown>,
+  ): void => {
     if (typeof value !== "string") {
       failures.push(`${location}: uses must resolve to a string`);
       return;
@@ -173,12 +270,17 @@ export function validateWorkflowPolicy(workflow: string): string[] {
     }
     const action = match[1]!;
     const sha = match[2]!.toLowerCase();
-    const normalizedAction = action.toLowerCase();
-    if (!(normalizedAction in REVIEWED_ACTION_SHAS)) return;
-    const reviewed = normalizedAction as keyof typeof REVIEWED_ACTION_SHAS;
-    reviewedActions.add(reviewed);
+    const segments = action.split("/");
+    if (segments.length < 2) return;
+    const normalizedRepository = `${segments[0]!.toLowerCase()}/${segments[1]!.toLowerCase()}`;
+    if (!(normalizedRepository in REVIEWED_ACTION_SHAS)) return;
+    const reviewed = normalizedRepository as keyof typeof REVIEWED_ACTION_SHAS;
+    if (segments.length !== 2) {
+      failures.push(`${location}: reviewed action ${normalizedRepository} must not use a subpath`);
+    }
     const expected = REVIEWED_ACTION_SHAS[reviewed];
     if (sha !== expected) failures.push(`${location}: ${action} must use reviewed SHA ${expected}`);
+    if (!hasReadableComment) failures.push(`${location}: ${normalizedRepository} must retain the readable # v6 comment`);
     if (reviewed === "actions/checkout" && step) {
       const withValue = step.with;
       const persistCredentials = isStringRecord(withValue) ? withValue["persist-credentials"] : undefined;
@@ -200,7 +302,13 @@ export function validateWorkflowPolicy(workflow: string): string[] {
     if (Object.hasOwn(jobValue, "permissions")) {
       failures.push(`${jobName}: job-level permissions are not allowed; workflow permissions must remain contents: read`);
     }
-    if (Object.hasOwn(jobValue, "uses")) validateUses(jobValue.uses, `${jobName} job`);
+    if (Object.hasOwn(jobValue, "uses")) {
+      validateUses(
+        jobValue.uses,
+        `${jobName} job`,
+        workflowUsesHasReadableComment(document, jobName),
+      );
+    }
     if (Object.hasOwn(jobValue, "steps")) {
       if (!Array.isArray(jobValue.steps)) {
         failures.push(`${jobName}: steps must resolve to a YAML sequence`);
@@ -209,21 +317,16 @@ export function validateWorkflowPolicy(workflow: string): string[] {
           if (!isStringRecord(step)) {
             failures.push(`${jobName} step ${index + 1}: every step must resolve to a YAML mapping`);
           } else if (Object.hasOwn(step, "uses")) {
-            validateUses(step.uses, `${jobName} step ${index + 1}`, step);
+            validateUses(
+              step.uses,
+              `${jobName} step ${index + 1}`,
+              workflowUsesHasReadableComment(document, jobName, index),
+              step,
+            );
           }
         });
       }
     }
-  }
-
-  for (const action of reviewedActions) {
-    const expected = REVIEWED_ACTION_SHAS[action];
-    const escapedAction = action.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const readablePin = new RegExp(
-      `\\b${escapedAction}@${expected}\\b[^\\r\\n]*#\\s*v6\\s*$`,
-      "mi",
-    );
-    if (!readablePin.test(workflow)) failures.push(`${action} must retain the readable # v6 comment`);
   }
   return failures;
 }
