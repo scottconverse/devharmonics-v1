@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { copyFile, lstat, mkdir, open, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { devHarmonicsConfigSchema, legacyDevHarmonicsConfigSchema } from "./schemas.js";
+import { discoverRepositoryValidators, discoveredValidatorMap } from "./validator-discovery.js";
 import { expandValidatorTokens } from "./validators.js";
-import type { ProviderName, DevHarmonicsConfig } from "./types.js";
+import type { ProviderName, DevHarmonicsConfig, ValidatorConfig } from "./types.js";
 
 export const defaultConfig: DevHarmonicsConfig = {
   version: 2,
@@ -40,13 +41,8 @@ export const defaultConfig: DevHarmonicsConfig = {
     workers: ["codex", "claude", "gemini"],
   },
   repository: {
-    validators: {
-      "diff-check": {
-        command: "git",
-        args: ["diff", "--check"],
-        timeoutMs: 60_000,
-      },
-    },
+    validators: {},
+    generatedValidators: {},
   },
   runPolicy: {
     autonomy: "supervised",
@@ -89,22 +85,9 @@ export async function initializeProject(projectPath: string): Promise<string> {
     await readFile(destination, "utf8");
   } catch {
     const config = structuredClone(defaultConfig);
-    try {
-      const packageJson = JSON.parse(
-        await readFile(path.join(projectPath, "package.json"), "utf8"),
-      ) as { scripts?: Record<string, string> };
-      for (const name of ["test", "lint", "build", "typecheck"]) {
-        if (packageJson.scripts?.[name]) {
-          config.repository.validators[name] = {
-            command: "npm",
-            args: ["run", name],
-            timeoutMs: 10 * 60_000,
-          };
-        }
-      }
-    } catch {
-      // Non-Node projects can add their validators directly to config.json.
-    }
+    const generated = discoveredValidatorMap(await discoverRepositoryValidators(projectPath));
+    config.repository.validators = generated;
+    config.repository.generatedValidators = structuredClone(generated);
     await writeFile(destination, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   }
 
@@ -160,7 +143,7 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
         reviewer: legacy.reviewer,
         workers: legacy.workers,
       },
-      repository: { validators: legacy.validators },
+      repository: { validators: legacy.validators, generatedValidators: {} },
       runPolicy: structuredClone(defaultConfig.runPolicy),
       reviewPolicy: structuredClone(defaultConfig.reviewPolicy),
       routing: structuredClone(defaultConfig.routing),
@@ -172,6 +155,140 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
 }
 
 /**
+ * Read only the validators already present in a repository's config.
+ *
+ * Repository attachment and rescan are observation operations: if a repository
+ * has no DevHarmonics config, they must not create one merely to discover that
+ * fact. Migration is likewise not performed here; the owner can open/save that
+ * repository normally when they want its config migrated.
+ */
+export class ValidatorConfigSnapshotError extends Error {}
+
+export async function loadConfiguredValidatorSnapshot(
+  projectPath: string,
+): Promise<Record<string, ValidatorConfig>> {
+  try {
+    return await loadConfiguredValidatorSnapshotUnchecked(projectPath);
+  } catch (error) {
+    if (error instanceof ValidatorConfigSnapshotError) throw error;
+    throw new ValidatorConfigSnapshotError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function loadConfiguredValidatorSnapshotUnchecked(
+  projectPath: string,
+): Promise<Record<string, ValidatorConfig>> {
+  const destination = configPath(projectPath);
+  const contents = await readBoundedValidatorConfig(projectPath, destination);
+  if (contents === null) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid configuration JSON in ${destination}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const version = typeof raw === "object" && raw !== null && "version" in raw
+    ? (raw as { version?: unknown }).version
+    : undefined;
+  const parsed = version === 1
+    ? { validators: parseConfig(legacyDevHarmonicsConfigSchema, raw, destination).validators, generatedValidators: {} }
+    : parseConfig(devHarmonicsConfigSchema, raw, destination).repository;
+  const ownerValidators = Object.fromEntries(Object.entries(parsed.validators).filter(([name, validator]) => (
+    JSON.stringify(validator) !== JSON.stringify(parsed.generatedValidators[name])
+  )));
+  return expandValidatorTokens(ownerValidators, path.resolve(projectPath));
+}
+
+const VALIDATOR_CONFIG_SNAPSHOT_LIMIT = 1024 * 1024;
+
+async function readBoundedValidatorConfig(
+  projectPath: string,
+  destination: string,
+): Promise<string | null> {
+  const root = await realpath(projectPath);
+  const directory = devHarmonicsDirectory(root);
+  let destinationStat;
+  try {
+    destinationStat = await lstat(destination);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code !== "ENOENT" && code !== "ENOTDIR") {
+      throw new Error(`Could not inspect validator configuration ${destination}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      const directoryStat = await lstat(directory);
+      if (directoryStat.isSymbolicLink()) {
+        throw new Error(`Unsafe validator configuration path ${destination}: .devharmonics is a symbolic link`);
+      }
+      const resolvedDirectory = await realpath(directory);
+      if (!isWithinRoot(root, resolvedDirectory)) {
+        throw new Error(`Unsafe validator configuration path ${destination}: .devharmonics resolves outside the repository`);
+      }
+    } catch (directoryError) {
+      const directoryCode = directoryError instanceof Error && "code" in directoryError
+        ? (directoryError as NodeJS.ErrnoException).code
+        : undefined;
+      if (directoryCode === "ENOENT" || directoryCode === "ENOTDIR") return null;
+      throw directoryError;
+    }
+    return null;
+  }
+  if (destinationStat.isSymbolicLink()) {
+    throw new Error(`Unsafe validator configuration path ${destination}: config.json is a symbolic link`);
+  }
+  const beforePath = await realpath(destination);
+  if (!isWithinRoot(root, beforePath)) {
+    throw new Error(`Unsafe validator configuration path ${destination}: config.json resolves outside the repository`);
+  }
+  const handle = await open(destination, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const beforeStat = await handle.stat();
+    if (!beforeStat.isFile()) {
+      throw new Error(`Unsafe validator configuration ${destination}: config.json must be a regular file`);
+    }
+    if (beforeStat.size > VALIDATOR_CONFIG_SNAPSHOT_LIMIT) {
+      throw new Error(`Validator configuration ${destination} is too large; size limit is ${VALIDATOR_CONFIG_SNAPSHOT_LIMIT} bytes`);
+    }
+    const chunks: Buffer[] = [];
+    let bytesRead = 0;
+    for (;;) {
+      const remaining = VALIDATOR_CONFIG_SNAPSHOT_LIMIT + 1 - bytesRead;
+      if (remaining <= 0) {
+        throw new Error(`Validator configuration ${destination} is too large; size limit is ${VALIDATOR_CONFIG_SNAPSHOT_LIMIT} bytes`);
+      }
+      const chunk = Buffer.alloc(Math.min(64 * 1024, remaining));
+      const read = await handle.read(chunk, 0, chunk.length, bytesRead);
+      if (read.bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, read.bytesRead));
+      bytesRead += read.bytesRead;
+    }
+    const afterStat = await handle.stat();
+    const afterPath = await realpath(destination);
+    if (
+      afterPath !== beforePath
+      || bytesRead !== beforeStat.size
+      || afterStat.size !== beforeStat.size
+      || afterStat.dev !== beforeStat.dev
+      || afterStat.ino !== beforeStat.ino
+      || afterStat.mtimeMs !== beforeStat.mtimeMs
+      || afterStat.ctimeMs !== beforeStat.ctimeMs
+    ) {
+      throw new Error(`Validator configuration ${destination} changed while it was being read`);
+    }
+    return Buffer.concat(chunks, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/**
  * `${repoRoot}` in a project's own validator commands means this project's root.
  * Expanded here, at the one place every consumer loads configuration through, so
  * a validator that needs the repository's own toolchain can be written portably
@@ -179,7 +296,13 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
  * ledger are expanded separately against that repository's local path.
  */
 function withExpandedValidators(config: DevHarmonicsConfig, projectPath: string): DevHarmonicsConfig {
-  return { ...config, repository: { validators: expandValidatorTokens(config.repository.validators, path.resolve(projectPath)) } };
+  return {
+    ...config,
+    repository: {
+      validators: expandValidatorTokens(config.repository.validators, path.resolve(projectPath)),
+      generatedValidators: config.repository.generatedValidators,
+    },
+  };
 }
 
 export async function saveConfig(projectPath: string, value: unknown): Promise<DevHarmonicsConfig> {

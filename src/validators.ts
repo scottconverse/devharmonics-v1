@@ -69,12 +69,29 @@ export async function runValidator(
   worktreePath: string,
 ): Promise<CheckResult> {
   const cwd = await resolveValidatorCwd(config, worktreePath);
-  const result = await runProcess({
-    command: config.command,
-    args: config.args,
-    cwd,
-    timeoutMs: config.timeoutMs,
-  });
+  const startedAt = Date.now();
+  let result;
+  try {
+    result = await runProcess({
+      command: config.command,
+      args: config.args,
+      cwd,
+      timeoutMs: config.timeoutMs,
+    });
+  } catch (error) {
+    const code = error instanceof Error && "code" in error
+      ? String((error as NodeJS.ErrnoException).code ?? "")
+      : "";
+    if (code !== "ENOENT") throw error;
+    return {
+      name,
+      passed: false,
+      exitCode: 127,
+      stdout: "",
+      stderr: `Validator '${name}' could not start: the configured tool is unavailable (ENOENT). Install the tool or remove this validator from the repository allowlist.`,
+      durationMs: Date.now() - startedAt,
+    };
+  }
   return {
     name,
     passed: result.exitCode === 0,

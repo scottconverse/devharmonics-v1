@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,11 +11,12 @@ import { initializeProject, loadConfig, devHarmonicsDirectory } from "../src/con
 import { inspectProviders } from "../src/doctor.js";
 import { Ledger } from "../src/ledger.js";
 import { profileMetadata } from "../src/model-intelligence.js";
-import { Orchestrator, repositoryTaskIds } from "../src/orchestrator.js";
+import { buildRepositoryContext, Orchestrator, repositoryTaskIds } from "../src/orchestrator.js";
 import { syncOllamaRuntimes } from "../src/ollama.js";
 import { runProcess } from "../src/process.js";
 import { startDashboard } from "../src/server.js";
 import { ModelCatalogCoordinator } from "../src/catalog.js";
+import { validatorStateFingerprint } from "../src/validator-discovery.js";
 
 async function git(cwd: string, args: string[]) {
   const result = await runProcess({
@@ -28,8 +29,8 @@ async function git(cwd: string, args: string[]) {
   return result;
 }
 
-async function createRepository(root: string): Promise<string> {
-  const project = path.join(root, "project");
+async function createRepository(root: string, repositoryName = "project"): Promise<string> {
+  const project = path.join(root, repositoryName);
   await import("node:fs/promises").then(({ mkdir }) => mkdir(project, { recursive: true }));
   await git(project, ["init", "-b", "main"]);
   await writeFile(path.join(project, "README.md"), "# Fixture\n", "utf8");
@@ -39,6 +40,16 @@ async function createRepository(root: string): Promise<string> {
   await git(project, ["add", "."]);
   await git(project, ["commit", "-m", "fixture"]);
   return project;
+}
+
+async function loadPlanningFixtureConfig(project: string) {
+  const config = await loadConfig(project);
+  config.repository.validators["diff-check"] = {
+    command: "git",
+    args: ["diff", "--check"],
+    timeoutMs: 30_000,
+  };
+  return config;
 }
 
 async function createFakeCli(root: string, authenticated = true): Promise<string> {
@@ -88,7 +99,7 @@ if (process.argv.includes("--version")) {
         integrationConditions:["The documentation must describe the behavior implemented in the core repository."],
         tasks:[
           {id:"core",title:"Implement the product change",description:"Update the core repository",dependencies:[],preferredProvider:"codex",checks:input.includes("automatic fixer")?["diff-check","defect-free"]:(input.includes("repo-only-lint")?["repo-only-lint"]:["diff-check"]),repositoryIds:["repo:core"]},
-          {id:"docs",title:"Document the product change",description:"Update the documentation repository",dependencies:["core"],preferredProvider:"codex",checks:["diff-check"],repositoryIds:["repo:docs"]}
+          {id:"docs",title:"Document the product change",description:"Update the documentation repository",dependencies:["core"],preferredProvider:"codex",checks:input.includes("repo-only-docs-check")?["repo-only-docs-check"]:["diff-check"],repositoryIds:["repo:docs"]}
         ]
       }
     // DH-647 S2 fixtures. "Decision context fixture" is for a PRODUCT-linked
@@ -376,7 +387,7 @@ test("signed-out providers are detected and blocked before a run starts", async 
   const project = await createRepository(root);
   const command = await createFakeCli(root, false);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   for (const provider of ["codex", "claude", "gemini"] as const) {
     config.connections[provider].command = command;
   }
@@ -421,6 +432,39 @@ test("signed-out providers are detected and blocked before a run starts", async 
   }
 });
 
+test("an empty validator allowlist fails before architect invocation with an actionable reason", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-zero-validator-preflight-"));
+  const project = await createRepository(root);
+  const command = await createFakeCli(root);
+  await initializeProject(project);
+  const config = await loadConfig(project);
+  assert.deepEqual(config.repository.validators, {});
+  for (const provider of ["codex", "claude", "gemini"] as const) {
+    config.connections[provider].command = command;
+  }
+  await writeFile(
+    path.join(devHarmonicsDirectory(project), "config.json"),
+    `${JSON.stringify(config, null, 2)}\n`,
+    "utf8",
+  );
+
+  const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+  try {
+    const runId = await new Orchestrator(ledger).run({
+      goal: "Do not ask an architect to invent a validator",
+      projectPath: project,
+      agents: 1,
+    });
+    const run = ledger.getRun(runId);
+    assert.equal(run?.status, "failed");
+    assert.match(run?.finalReview ?? "", /zero validators|no validators/i);
+    assert.equal(run?.events.some((event) => event.kind === "architect.started"), false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("orchestrator completes a verified run through fake subscription CLIs", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-e2e-"));
   const project = await createRepository(root);
@@ -434,7 +478,7 @@ test("orchestrator completes a verified run through fake subscription CLIs", asy
     process.platform === "win32" ? "junction" : "dir",
   );
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -525,7 +569,7 @@ test("high-risk orchestration requires two independent provider reviews", async 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -639,7 +683,7 @@ test("review fixer changes evidence, invalidates the rejected receipt, and requi
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -675,7 +719,7 @@ test("green validators cannot hide a verification-integrity shortcut", async () 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -704,7 +748,7 @@ test("qualified Ollama implementor completes a bounded receipted local-tool chan
   const command = await createFakeCli(root);
   const ollama = await startFakeOllama();
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -906,7 +950,7 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-delivery-http-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1614,7 +1658,7 @@ test("the tag prefill follows the MERGE commit's declared version once merged, n
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-divergent-prefill-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1706,7 +1750,7 @@ test("a transient merge-time gh mergeCommit failure is repaired lazily at read t
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-merge-oid-repair-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1804,7 +1848,7 @@ test("a persisted merge OID whose object is not local is fetched at read time, n
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-merge-fetch-repair-"));
   const project = await createRepository(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.runPolicy.allowExternalWrites = true;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -1914,7 +1958,7 @@ test("run provenance pins before execution and survives pause and resume", async
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   for (const provider of ["codex", "claude", "gemini"] as const) config.connections[provider].command = command;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
@@ -1974,7 +2018,7 @@ test("observe run completes from diagnostic reports without repository changes o
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2040,6 +2084,10 @@ test("dashboard serves its UI and bootstrap data on localhost", async () => {
     const appText = await fetch(`${dashboard.url}/app.js`).then((response) => response.text());
     assert.match(appText, /create_draft_pr/);
     assert.match(appText, /Approve &amp; push branch/);
+    assert.match(appText, /Fixed-recipe discovery never copies package, workflow, or release-script bodies/);
+    assert.match(appText, /commands an owner adds or changes in <code>\.devharmonics\/config\.json<\/code> are snapshotted separately/i);
+    assert.doesNotMatch(appText, /window\.prompt/);
+    assert.match(appText, /data-validator-editor/);
     // Slice A: "PR" was unexplained shorthand — the button now spells out
     // "pull request" to match the rest of the delivery panel's wording.
     assert.match(appText, /Approve &amp; create draft pull request/);
@@ -2275,7 +2323,7 @@ test("objective preview creates no run and exact approved revision executes with
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2363,7 +2411,7 @@ test("objective planning context injects prior decisions scoped to the objective
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2395,6 +2443,15 @@ test("objective planning context injects prior decisions scoped to the objective
         intelligence: {},
       }],
     });
+    const decisionRepository = seedLedger.getRepository("repo:decisions")!;
+    seedLedger.updateRepositoryValidatorState("repo:decisions", {
+      validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
+    }, validatorStateFingerprint(
+      decisionRepository.validatorDiscovery,
+      decisionRepository.validatorLocalConfig,
+      decisionRepository.validators,
+      decisionRepository.validatorSuppressions,
+    ));
 
     const objectiveBody = {
       outcome: "Decision context fixture: standardize the container runtime and editor choice for local development",
@@ -2537,7 +2594,7 @@ test("objective planning context caps prior decisions at 8 and the header names 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2602,7 +2659,7 @@ test("plan decisions[] are persisted as durable DecisionRecords only on approval
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2694,7 +2751,7 @@ test("M1: an ordinary approved run persists its architect plan decisions on appr
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2758,7 +2815,7 @@ test("M3: a duplicate objective start returns the existing run and persists deci
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -2830,7 +2887,7 @@ test("an architect plan decision missing a rejection reason is refused by plan-s
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3058,7 +3115,7 @@ test("a run whose subscription worker is exhausted falls back to a qualified loc
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3125,7 +3182,7 @@ test("one signed-out provider does not block planning that a healthy architect c
   const healthy = await createFakeCli(root);
   const signedOut = await createFakeCli(await mkdtemp(path.join(os.tmpdir(), "devharmonics-signedout-cli-")), false);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   // codex is a configured worker, but signed out. claude can architect and work.
@@ -3189,7 +3246,7 @@ test("a run starts when its reviewer is not yet qualified but can be", async () 
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3245,7 +3302,7 @@ test("a write task that changes nothing does not pass", async () => {
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3301,7 +3358,7 @@ test("a task no model can route settles the task instead of crashing the run", a
   assert.ok(address && typeof address === "object");
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3359,7 +3416,7 @@ test("a diagnostic whose citations do not resolve is rejected by the run, not ju
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3411,7 +3468,7 @@ test("a cross-repository architect is told the validators its repositories actua
   await git(docs, ["remote", "add", "origin", "https://github.com/vocab-product/docs.git"]);
   const command = await createFakeCli(root);
   await initializeProject(core);
-  const config = await loadConfig(core);
+  const config = await loadPlanningFixtureConfig(core);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3478,7 +3535,7 @@ test("a cross-repository architect is told the validators its repositories actua
     const allowlist = /Allowlisted validators: (.+)/.exec(prompt)?.[1] ?? "";
     assert.match(allowlist, /repo-only-lint/, "the architect is offered the validators the affected repositories register");
     assert.match(allowlist, /repo-only-docs-check/, "including every affected repository, not just the first");
-    assert.match(allowlist, /diff-check/, "and the project's own validators remain available");
+    assert.match(allowlist, /diff-check/, "the core repository's snapshotted local config remains visible as repository-local evidence");
 
     // BOTH SIDES of the contract. Offering a vocabulary the plan validator then
     // rejects is the same drift twice: the architect was told to choose from the
@@ -3489,6 +3546,11 @@ test("a cross-repository architect is told the validators its repositories actua
     assert.ok(
       planned.some((check) => check === "repo-only-lint" || check === "repo-only-docs-check"),
       `the accepted plan uses a repository-registered validator: ${JSON.stringify(revision.revision.plan.tasks.map((t) => ({ id: t.id, checks: t.checks })))}`,
+    );
+    assert.deepEqual(
+      revision.revision.plan.tasks.map((task) => [task.id, task.checks]),
+      [["core", ["repo-only-lint"]], ["docs", ["repo-only-docs-check"]]],
+      "each task uses a validator effective in its own repository rather than borrowing a sibling's validator",
     );
   } finally {
     delete process.env.DH_CAPTURE_ARCHITECT_PROMPT;
@@ -3502,7 +3564,7 @@ test("cross-repository objective planning maps impact without starting an unsupp
   const project = await createRepository(root);
   const command = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   for (const provider of ["codex", "claude", "gemini"] as const) config.connections[provider].command = command;
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -3550,6 +3612,22 @@ test("cross-repository objective planning maps impact without starting an unsupp
       }),
     });
     assert.equal(productResponse.status, 201, await productResponse.clone().text());
+    const fixtureLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    try {
+      for (const repositoryId of ["repo:core", "repo:docs"]) {
+        const repository = fixtureLedger.getRepository(repositoryId)!;
+        fixtureLedger.updateRepositoryValidatorState(repositoryId, {
+          validators: { "diff-check": { command: "git", args: ["diff", "--check"], timeoutMs: 30_000 } },
+        }, validatorStateFingerprint(
+          repository.validatorDiscovery,
+          repository.validatorLocalConfig,
+          repository.validators,
+          repository.validatorSuppressions,
+        ));
+      }
+    } finally {
+      fixtureLedger.close();
+    }
 
     const objectiveResponse = await fetch(`${dashboard.url}/api/objectives`, {
       method: "POST",
@@ -3830,9 +3908,236 @@ test("Workbench creates a durable read-only discussion and converts it to an obj
   }
 });
 
+test("failed first-attachment validator snapshot leaves no registered repository state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-unsafe-config-"));
+  const host = await createRepository(path.join(root, "host"));
+  const candidate = await createRepository(path.join(root, "candidate"));
+  await initializeProject(host);
+  await mkdir(path.join(candidate, ".devharmonics"), { recursive: true });
+  await writeFile(path.join(candidate, ".devharmonics", "config.json"), "x".repeat(1_048_577));
+  const dashboard = await startDashboard({ projectPath: host, port: 0, open: false });
+  try {
+    const productResponse = await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "unsafe-snapshot",
+        name: "Unsafe Snapshot",
+        organizationUrl: "https://github.com/example",
+        description: "Unsafe snapshot fixture",
+        repositories: [],
+      }),
+    });
+    assert.equal(productResponse.status, 201);
+
+    const repositoryResponse = await fetch(`${dashboard.url}/api/products/unsafe-snapshot/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: candidate, role: "service" }),
+    });
+    assert.equal(repositoryResponse.status, 422);
+    assert.match(await repositoryResponse.text(), /too large|size limit/i);
+
+    const products = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
+      products: Array<{ id: string; repositories: unknown[] }>;
+    };
+    assert.deepEqual(
+      products.products.find((product) => product.id === "unsafe-snapshot")?.repositories,
+      [],
+      "a rejected initial snapshot must not leave a repository row with misleading validator state",
+    );
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed discovery evidence persists as an actionable degraded validator state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-diagnostics-"));
+  const host = await createRepository(path.join(root, "host"));
+  const candidate = await createRepository(path.join(root, "candidate"));
+  await initializeProject(host);
+  await writeFile(path.join(candidate, "package.json"), "{ definitely-not-json", "utf8");
+  await git(candidate, ["add", "package.json"]);
+  await git(candidate, ["commit", "-m", "malformed discovery evidence"]);
+  const dashboard = await startDashboard({ projectPath: host, port: 0, open: false });
+  try {
+    assert.equal((await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "diagnostics",
+        name: "Diagnostics",
+        organizationUrl: "https://github.com/example",
+        description: "Diagnostics fixture",
+        repositories: [],
+      }),
+    })).status, 201);
+    const attached = await fetch(`${dashboard.url}/api/products/diagnostics/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: candidate }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repositoryId = ((await attached.json()) as { repository: { id: string } }).repository.id;
+    const response = await fetch(
+      `${dashboard.url}/api/products/diagnostics/repositories/${encodeURIComponent(repositoryId)}/validators`,
+    );
+    assert.equal(response.status, 200);
+    const allowlist = await response.json() as {
+      effectiveValidators: Record<string, unknown>;
+      discovery: { status: string };
+      diagnostics: Array<{ source: string; code: string }>;
+    };
+    assert.deepEqual(allowlist.effectiveValidators, {});
+    assert.equal(allowlist.discovery.status, "scanned_with_diagnostics");
+    assert.deepEqual(allowlist.diagnostics, [{ source: "package.json", code: "malformed" }]);
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator rescan previews expire under the server-owned TTL", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-preview-expiry-"));
+  const project = await createRepository(root);
+  const dashboard = await startDashboard({
+    projectPath: project,
+    port: 0,
+    open: false,
+    validatorPreviewTtlMs: 1,
+  });
+  try {
+    assert.equal((await fetch(`${dashboard.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "expiry", name: "Expiry", organizationUrl: "https://github.com/expiry", repositories: [] }),
+    })).status, 201);
+    const attached = await fetch(`${dashboard.url}/api/products/expiry/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "other", validators: {} }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repository = (await attached.json()) as { repository: { id: string } };
+    const base = `${dashboard.url}/api/products/expiry/repositories/${encodeURIComponent(repository.repository.id)}/validators`;
+    const preview = await fetch(`${base}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    const body = await preview.json();
+    await delay(10);
+    const expired = await fetch(`${base}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(expired.status, 409);
+    assert.match(await expired.text(), /preview is stale/i);
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two dashboard owners cannot lose validator mutations across a shared ledger", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-two-server-cas-"));
+  const project = await createRepository(root);
+  const first = await startDashboard({ projectPath: project, port: 0, open: false });
+  const second = await startDashboard({ projectPath: project, port: 0, open: false });
+  try {
+    assert.equal((await fetch(`${first.url}/api/products`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "shared", name: "Shared", organizationUrl: "https://example.invalid/shared", repositories: [] }),
+    })).status, 201);
+    const attached = await fetch(`${first.url}/api/products/shared/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "other", validators: {} }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repositoryId = ((await attached.json()) as { repository: { id: string } }).repository.id;
+    const pathSuffix = `/api/products/shared/repositories/${encodeURIComponent(repositoryId)}/validators`;
+    const state = async () => fetch(`${first.url}${pathSuffix}`).then((response) => response.json()) as Promise<{
+      stateFingerprint: string;
+      effectiveValidators: Record<string, unknown>;
+      validatorSuppressions: string[];
+    }>;
+    const ownerRequest = (
+      dashboardUrl: string,
+      suffix: string,
+      method: "PUT" | "DELETE" | "POST",
+      body: Record<string, unknown>,
+    ) => fetch(`${dashboardUrl}${pathSuffix}/${suffix}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const overrideBase = (await state()).stateFingerprint;
+    const overrideResults = await Promise.all([
+      ownerRequest(first.url, "alpha/override", "PUT", {
+        baseStateFingerprint: overrideBase,
+        validator: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 },
+      }),
+      ownerRequest(second.url, "beta/override", "PUT", {
+        baseStateFingerprint: overrideBase,
+        validator: { command: "node", args: ["beta.js"], timeoutMs: 1_000 },
+      }),
+    ]);
+    assert.deepEqual(overrideResults.map((response) => response.status).sort(), [200, 409]);
+    const afterOverrides = await state();
+    assert.equal(Number("alpha" in afterOverrides.effectiveValidators) + Number("beta" in afterOverrides.effectiveValidators), 1);
+
+    const mixedBase = afterOverrides.stateFingerprint;
+    const mixedResults = await Promise.all([
+      ownerRequest(first.url, "gamma/override", "PUT", {
+        baseStateFingerprint: mixedBase,
+        validator: { command: "node", args: ["gamma.js"], timeoutMs: 1_000 },
+      }),
+      ownerRequest(second.url, "test/suppression", "PUT", { baseStateFingerprint: mixedBase }),
+    ]);
+    assert.deepEqual(mixedResults.map((response) => response.status).sort(), [200, 409]);
+
+    const previewResponse = await ownerRequest(first.url, "rescan-preview", "POST", {});
+    assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
+    const preview = await previewResponse.json() as Record<string, unknown> & { baseStateFingerprint: string };
+    const rescanRace = await Promise.all([
+      ownerRequest(first.url, "rescan-apply", "POST", preview),
+      ownerRequest(second.url, "delta/override", "PUT", {
+        baseStateFingerprint: preview.baseStateFingerprint,
+        validator: { command: "node", args: ["delta.js"], timeoutMs: 1_000 },
+      }),
+    ]);
+    assert.deepEqual(rescanRace.map((response) => response.status).sort(), [200, 409]);
+  } finally {
+    await second.close();
+    await first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("product registry inspects and retains a local repository without changing or running it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-registry-api-"));
   const project = await createRepository(root);
+  await initializeProject(project);
+  const projectConfig = await loadConfig(project);
+  projectConfig.repository.validators["local-config-check"] = {
+    command: process.execPath,
+    args: ["-e", "process.exit(0)"],
+    timeoutMs: 30_000,
+  };
+  await writeFile(
+    path.join(devHarmonicsDirectory(project), "config.json"),
+    `${JSON.stringify(projectConfig, null, 2)}\n`,
+    "utf8",
+  );
+  await mkdir(path.join(project, "scripts"), { recursive: true });
+  await writeFile(path.join(project, "pyproject.toml"), "[tool.pytest.ini_options]\n", "utf8");
+  await writeFile(path.join(project, "scripts", "verify-release.sh"), "#!/bin/sh\n", "utf8");
   await writeFile(path.join(project, "local-note.txt"), "uncommitted\n", "utf8");
   const dashboard = await startDashboard({ projectPath: project, port: 0, open: false });
   try {
@@ -3857,15 +4162,368 @@ test("product registry inspects and retains a local repository without changing 
       }),
     });
     assert.equal(repositoryResponse.status, 201);
-    const registered = await repositoryResponse.json() as { repository: { role: string; localPath: string; inspection: { dirty: boolean; currentBranch: string } } };
+    const registered = await repositoryResponse.json() as { repository: { id: string; role: string; localPath: string; validatorDiscovery: { validators: Record<string, unknown> }; inspection: { dirty: boolean; currentBranch: string } } };
     assert.equal(registered.repository.role, "umbrella");
     assert.equal(registered.repository.localPath, path.resolve(project));
     assert.equal(registered.repository.inspection.dirty, true);
     assert.equal(registered.repository.inspection.currentBranch, "main");
+    assert.ok(registered.repository.validatorDiscovery, "first attachment must persist a discovery snapshot");
+    assert.deepEqual(Object.keys(registered.repository.validatorDiscovery.validators), ["pytest", "verify-release"]);
 
-    const portfolio = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as { products: Array<{ repositories: Array<{ owners: string[]; validators: Record<string, { command: string }> }> }> };
-    assert.deepEqual(portfolio.products[0]?.repositories[0]?.owners, ["product-platform"]);
-    assert.equal(portfolio.products[0]?.repositories[0]?.validators.test?.command, "npm");
+    const validatorResponse = await fetch(
+      `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`,
+    );
+    assert.equal(validatorResponse.status, 200, await validatorResponse.clone().text());
+    const allowlist = await validatorResponse.json() as {
+      effectiveValidators: Record<string, { command: string; args: string[] }>;
+      entries: Array<{ name: string; effectiveOrigin: string; discovered: { sources: Array<{ path: string }> } | null }>;
+    };
+    assert.deepEqual(Object.keys(allowlist.effectiveValidators), ["local-config-check", "pytest", "test", "verify-release"]);
+    assert.equal(allowlist.entries.find((entry) => entry.name === "local-config-check")?.effectiveOrigin, "local_config");
+    assert.equal(allowlist.effectiveValidators.test?.command, "npm");
+    assert.equal(allowlist.effectiveValidators.pytest?.command, "python");
+    assert.equal(allowlist.entries.find((entry) => entry.name === "pytest")?.effectiveOrigin, "discovered");
+    assert.deepEqual(
+      allowlist.entries.find((entry) => entry.name === "verify-release")?.discovered?.sources.map((source) => source.path),
+      ["scripts/verify-release.sh"],
+    );
+    const otherProject = path.join(root, "other-project");
+    await git(root, ["clone", "--no-local", project, otherProject]);
+    await mkdir(path.join(otherProject, "scripts"), { recursive: true });
+    await copyFile(path.join(project, "pyproject.toml"), path.join(otherProject, "pyproject.toml"));
+    await copyFile(path.join(project, "scripts", "verify-release.sh"), path.join(otherProject, "scripts", "verify-release.sh"));
+    await initializeProject(otherProject);
+    await writeFile(
+      path.join(devHarmonicsDirectory(otherProject), "config.json"),
+      `${JSON.stringify(projectConfig, null, 2)}\n`,
+      "utf8",
+    );
+    const otherAttachment = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: otherProject, role: "module", validators: { test: "npm test" } }),
+    });
+    assert.equal(otherAttachment.status, 201, await otherAttachment.clone().text());
+    const otherRepositoryId = ((await otherAttachment.json()) as { repository: { id: string } }).repository.id;
+    assert.notEqual(otherRepositoryId, registered.repository.id);
+    const validatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`;
+    const unsupported = await fetch(validatorBase, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(unsupported.status, 405);
+    assert.equal(unsupported.headers.get("allow"), "GET");
+    for (const [pathname, method, allow] of [
+      [`${validatorBase}/test/override`, "POST", "PUT, DELETE"],
+      [`${validatorBase}/test/suppression`, "POST", "PUT, DELETE"],
+      [`${validatorBase}/rescan-preview`, "GET", "POST"],
+      [`${validatorBase}/rescan-apply`, "GET", "POST"],
+      [`${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/refresh`, "GET", "POST"],
+    ] as const) {
+      const wrongMethod = await fetch(pathname, { method });
+      assert.equal(wrongMethod.status, 405, `${method} ${pathname}`);
+      assert.equal(wrongMethod.headers.get("allow"), allow, `${method} ${pathname}`);
+    }
+    const observedState = await fetch(validatorBase).then((response) => response.json()) as {
+      stateFingerprint: string;
+    };
+    assert.match(observedState.stateFingerprint, /^[a-f0-9]{64}$/);
+    const missingPrecondition = await fetch(`${validatorBase}/missing/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ validator: { command: "node", args: ["missing.js"], timeoutMs: 1_000 } }),
+    });
+    assert.equal(missingPrecondition.status, 428);
+    assert.match(await missingPrecondition.text(), /fingerprint precondition is required/i);
+    const mutateValidator = async (
+      suffix: string,
+      method: "PUT" | "DELETE",
+      body: Record<string, unknown> = {},
+    ) => {
+      const current = await fetch(validatorBase).then((response) => response.json()) as { stateFingerprint: string };
+      return fetch(`${validatorBase}/${suffix}`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, baseStateFingerprint: current.stateFingerprint }),
+      });
+    };
+    const guardedOverride = (name: string, baseStateFingerprint: string) => fetch(`${validatorBase}/${name}/override`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        baseStateFingerprint,
+        validator: { command: "node", args: [`${name}.js`], timeoutMs: 1_000 },
+      }),
+    });
+    assert.equal((await guardedOverride("alpha", observedState.stateFingerprint)).status, 200);
+    const bypassAttempt = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project, role: "umbrella", validators: {} }),
+    });
+    assert.equal(bypassAttempt.status, 428, "reattachment cannot mutate validators without a state precondition");
+    assert.ok(
+      ((await fetch(validatorBase).then((response) => response.json())) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.alpha,
+      "a rejected reattachment cannot erase an accepted override",
+    );
+    const metadataOnlyReattachment = await fetch(`${dashboard.url}/api/products/civicsuite/repositories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        localPath: project,
+        role: "umbrella",
+        expectedBranch: "main",
+        owners: ["product-platform"],
+        dependencyRepositoryIds: [],
+        governanceSources: ["README.md"],
+      }),
+    });
+    assert.equal(metadataOnlyReattachment.status, 201, await metadataOnlyReattachment.clone().text());
+    assert.ok(
+      ((await fetch(validatorBase).then((response) => response.json())) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.alpha,
+      "metadata-only reattachment preserves validator state",
+    );
+    const stale = await guardedOverride("beta", observedState.stateFingerprint);
+    assert.equal(stale.status, 409);
+    assert.match(await stale.text(), /validator allowlist changed/i);
+    const afterGuard = await fetch(validatorBase).then((response) => response.json()) as {
+      effectiveValidators: Record<string, unknown>;
+      stateFingerprint: string;
+    };
+    assert.ok(afterGuard.effectiveValidators.alpha, "the accepted override survives");
+    assert.equal(afterGuard.effectiveValidators.beta, undefined, "the stale request cannot overwrite current state");
+    assert.equal((await guardedOverride("beta", afterGuard.stateFingerprint)).status, 200);
+    for (const name of ["alpha", "beta"]) {
+      assert.equal((await mutateValidator(`${name}/override`, "DELETE")).status, 200);
+    }
+    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+      const removed = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "PUT");
+      assert.equal(removed.status, 200, await removed.clone().text());
+    }
+    const removeManual = await mutateValidator("test/override", "DELETE");
+    assert.equal(removeManual.status, 200, await removeManual.clone().text());
+    const zeroAllowlist = await fetch(validatorBase).then((response) => response.json()) as {
+      effectiveValidators: Record<string, unknown>;
+    };
+    assert.deepEqual(zeroAllowlist.effectiveValidators, {});
+    const zeroRepositories = (await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as {
+      products: Array<{ repositories: Array<Parameters<typeof buildRepositoryContext>[1] & { id: string }> }>;
+    }).products[0]!.repositories;
+    const zeroRepository = zeroRepositories.find((repository) => repository.id === registered.repository.id)!;
+    const zeroRuntimeContext = await buildRepositoryContext(await loadConfig(project), zeroRepository);
+    assert.deepEqual(zeroRuntimeContext.config.repository.validators, {}, "ZERO in the API must mean execution has zero validators");
+
+    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+      const restored = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "DELETE");
+      assert.equal(restored.status, 200, await restored.clone().text());
+    }
+    const restoreManual = await mutateValidator("test/override", "PUT", {
+      validator: { command: "npm", args: ["test"], timeoutMs: 120_000 },
+    });
+    assert.equal(restoreManual.status, 200, await restoreManual.clone().text());
+
+    const suppress = await mutateValidator("pytest/suppression", "PUT");
+    assert.equal(suppress.status, 200, await suppress.clone().text());
+    assert.equal(((await suppress.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
+
+    const override = await mutateValidator("pytest/override", "PUT", {
+      validator: { command: "python", args: ["-m", "pytest", "-q"], timeoutMs: 30_000 },
+    });
+    assert.equal(override.status, 200, await override.clone().text());
+    assert.deepEqual(
+      ((await override.json()) as { effectiveValidators: Record<string, { args: string[] }> }).effectiveValidators.pytest?.args,
+      ["-m", "pytest", "-q"],
+    );
+
+    const removeOverride = await mutateValidator("pytest/override", "DELETE");
+    assert.equal(removeOverride.status, 200, await removeOverride.clone().text());
+    assert.equal(((await removeOverride.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest, undefined);
+
+    const restore = await mutateValidator("pytest/suppression", "DELETE");
+    assert.equal(restore.status, 200, await restore.clone().text());
+    assert.ok(((await restore.json()) as { effectiveValidators: Record<string, unknown> }).effectiveValidators.pytest);
+
+    const changedLocalConfig = await loadConfig(project);
+    changedLocalConfig.repository.validators["local-config-check"] = {
+      command: process.execPath,
+      args: ["-e", "process.exit(1)"],
+      timeoutMs: 30_000,
+    };
+    changedLocalConfig.repository.validators["local-config-new"] = {
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      timeoutMs: 30_000,
+    };
+    await writeFile(
+      path.join(devHarmonicsDirectory(project), "config.json"),
+      `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(path.join(project, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await writeFile(
+      path.join(devHarmonicsDirectory(otherProject), "config.json"),
+      `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(path.join(otherProject, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    const alignmentLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    try {
+      const sourceState = alignmentLedger.getRepository(registered.repository.id)!;
+      const targetState = alignmentLedger.getRepository(otherRepositoryId)!;
+      alignmentLedger.updateRepositoryValidatorState(otherRepositoryId, {
+        validators: sourceState.validators,
+        validatorDiscovery: sourceState.validatorDiscovery,
+        validatorLocalConfig: sourceState.validatorLocalConfig,
+        validatorSuppressions: sourceState.validatorSuppressions,
+      }, validatorStateFingerprint(
+        targetState.validatorDiscovery,
+        targetState.validatorLocalConfig,
+        targetState.validators,
+        targetState.validatorSuppressions,
+      ));
+    } finally {
+      alignmentLedger.close();
+    }
+    const preview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    const previewBody = await preview.json() as {
+      previewToken: string;
+      expectedHeadSha: string;
+      baseStateFingerprint: string;
+      candidateFingerprint: string;
+      diff: { added: string[]; removed: string[] };
+      localConfigDiff: { added: string[]; changed: string[]; removed: string[] };
+    };
+    assert.deepEqual(previewBody.diff.added, ["ruff"]);
+    assert.deepEqual(previewBody.diff.removed, ["pytest"]);
+    assert.deepEqual(previewBody.localConfigDiff.added, ["local-config-new"]);
+    assert.deepEqual(previewBody.localConfigDiff.changed, ["local-config-check"]);
+    assert.deepEqual(previewBody.localConfigDiff.removed, []);
+    const beforeApply = await fetch(validatorBase).then((response) => response.json()) as { effectiveValidators: Record<string, unknown> };
+    assert.ok(beforeApply.effectiveValidators.pytest, "preview is read-only");
+    assert.equal(beforeApply.effectiveValidators.ruff, undefined, "preview never silently refreshes the allowlist");
+
+    const wrongTokenApply = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...previewBody, previewToken: "not-the-issued-token" }),
+    });
+    assert.equal(wrongTokenApply.status, 409, "a wrong preview token is independently stale");
+    for (const [field, value] of [
+      ["expectedHeadSha", "f".repeat(40)],
+      ["baseStateFingerprint", "e".repeat(64)],
+      ["candidateFingerprint", "d".repeat(64)],
+    ] as const) {
+      const alteredEcho = await fetch(`${validatorBase}/rescan-apply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...previewBody, [field]: value }),
+      });
+      assert.equal(alteredEcho.status, 409, `a valid token cannot authorize an altered ${field}`);
+    }
+    const otherValidatorBase = `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(otherRepositoryId)}/validators`;
+    const otherPreview = await fetch(`${otherValidatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    assert.deepEqual(
+      {
+        expectedHeadSha: otherPreview.expectedHeadSha,
+        baseStateFingerprint: otherPreview.baseStateFingerprint,
+        candidateFingerprint: otherPreview.candidateFingerprint,
+      },
+      {
+        expectedHeadSha: previewBody.expectedHeadSha,
+        baseStateFingerprint: previewBody.baseStateFingerprint,
+        candidateFingerprint: previewBody.candidateFingerprint,
+      },
+      "repo B is deliberately aligned so only preview-token repository binding can reject repo A's token",
+    );
+    const crossRepositoryApply = await fetch(
+      `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(otherRepositoryId)}/validators/rescan-apply`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(previewBody),
+      },
+    );
+    assert.equal(crossRepositoryApply.status, 409, "a valid repo-A preview token cannot authorize repo B");
+
+    await writeFile(path.join(project, "README.md"), "# Fixture\n\nHEAD-only change\n", "utf8");
+    await git(project, ["add", "README.md"]);
+    await git(project, ["commit", "-m", "test: advance HEAD without changing validator evidence"]);
+    const headOnlyStale = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(previewBody),
+    });
+    assert.equal(headOnlyStale.status, 409, "a HEAD-only change is independently stale");
+
+    const statePreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    assert.equal((await mutateValidator("state-race/override", "PUT", {
+      validator: { command: "node", args: ["state-race.js"], timeoutMs: 1_000 },
+    })).status, 200);
+    const stateOnlyStale = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(statePreview),
+    });
+    assert.equal(stateOnlyStale.status, 409, "an allowlist-state-only change is independently stale");
+    assert.equal((await mutateValidator("state-race/override", "DELETE")).status, 200);
+
+    const candidatePreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    await writeFile(path.join(project, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }), "utf8");
+    const staleApply = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(candidatePreview),
+    });
+    assert.equal(staleApply.status, 409, `a candidate-only change is independently stale: ${await staleApply.clone().text()}`);
+
+    const freshPreview = await fetch(`${validatorBase}/rescan-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then(async (response) => {
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json() as Promise<typeof previewBody>;
+    });
+    const applied = await fetch(`${validatorBase}/rescan-apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(freshPreview),
+    });
+    assert.equal(applied.status, 200, await applied.clone().text());
+    const appliedBody = await applied.json() as { effectiveValidators: Record<string, unknown> };
+    assert.deepEqual(Object.keys(appliedBody.effectiveValidators), ["build", "local-config-check", "local-config-new", "ruff", "test", "verify-release"]);
+
+    const portfolio = await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as { products: Array<{ repositories: Array<{ id: string; owners: string[]; validators: Record<string, { command: string }> }> }> };
+    const registeredPortfolioRepository = portfolio.products[0]?.repositories.find((repository) => repository.id === registered.repository.id);
+    assert.deepEqual(registeredPortfolioRepository?.owners, ["product-platform"]);
+    assert.equal(registeredPortfolioRepository?.validators.test?.command, "npm");
     const runs = await fetch(`${dashboard.url}/api/runs`).then((response) => response.json()) as { runs: unknown[] };
     assert.equal(runs.runs.length, 0);
   } finally {
@@ -3879,7 +4537,7 @@ test("cancel during planning does not save a late plan or restart the run", asyn
   const project = await createRepository(root);
   const command = await createSlowArchitectCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -3949,7 +4607,7 @@ test("cancel stops the scheduler and marks the run and in-flight task cancelled"
   const project = await createRepository(root);
   const command = await createHangingCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4162,7 +4820,7 @@ test("cancel during planning terminates the architect child process", async () =
   const completedFile = path.join(root, "completed.marker");
   const command = await createPlanningHangingCli(root, startedFile, completedFile);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4244,7 +4902,7 @@ test("cancel during validator verification marks task cancelled and avoids merge
   const command = await createValidatorTestCli(root);
   const slowCheckCommand = await createSlowCheckScript(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4337,7 +4995,7 @@ test("owner steering interrupts a live attempt and hands off to an attributed co
   const hanging = await createHangingCli(root);
   const fixture = await createFakeCli(root);
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];
@@ -4532,7 +5190,7 @@ process.exit(0);
   const fixture = await createFakeCli(root);
 
   await initializeProject(project);
-  const config = await loadConfig(project);
+  const config = await loadPlanningFixtureConfig(project);
   config.product.architect = "claude";
   config.product.reviewer = "gemini";
   config.product.workers = ["codex"];

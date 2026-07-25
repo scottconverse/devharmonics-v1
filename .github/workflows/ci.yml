@@ -82,3 +82,49 @@ jobs:
         run: npm ci
       - name: Prove the verification-integrity sentinel can fail
         run: npm run test:mutation
+
+  validator-discovery-corpus:
+    name: Frozen validator-discovery corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Provision exact detached corpus checkouts
+        run: node scripts/provision-validator-discovery-corpus.mjs "$RUNNER_TEMP/validator-discovery-corpus"
+      - name: Run the default frozen-corpus verifier
+        run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:validator-discovery-corpus
+
+  validator-browser:
+    name: Validator allowlist browser journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install the pinned Chromium browser
+        run: npx playwright install --with-deps chromium
+      - name: Build the dashboard
+        run: npm run build
+      - name: Exercise the validator allowlist in Chromium
+        run: npm run test:browser
+      - name: Prove validator discovery imports in a production-pruned install
+        run: |
+          npm prune --omit=dev
+          node -e "import('./dist/src/validator-discovery.js').then(m => { if (typeof m.discoverRepositoryValidators !== 'function') process.exit(1) })"

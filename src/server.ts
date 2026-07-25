@@ -4,12 +4,19 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { initializeProject, loadConfig, saveConfig, devHarmonicsDirectory } from "./config.js";
+import { initializeProject, loadConfig, loadConfiguredValidatorSnapshot, saveConfig, devHarmonicsDirectory, ValidatorConfigSnapshotError } from "./config.js";
 import { inspectProviders } from "./doctor.js";
 import { catalogPricesPerMTokens } from "./routing.js";
 import { runCostCounterfactual } from "./model-performance.js";
 import { instantiateWorkflow, parseWorkflowDocument } from "./workflows.js";
-import { Ledger, STEERABLE_RUN_STATUSES, STEERABLE_TASK_STATUSES } from "./ledger.js";
+import {
+  Ledger,
+  STEERABLE_RUN_STATUSES,
+  STEERABLE_TASK_STATUSES,
+  ValidatorStateConflictError,
+  ValidatorStatePreconditionError,
+  type RepositoryRecord,
+} from "./ledger.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ModelCatalogCoordinator } from "./catalog.js";
 import { modelQualificationFingerprint } from "./model-fingerprint.js";
@@ -26,10 +33,19 @@ import { INBOX_RELEVANT_RUN_STATUSES, projectInbox } from "./inbox.js";
 import { projectProgramStatus } from "./program-status.js";
 import { generateStatusExportHtml } from "./status-export.js";
 import { scanProductIntelligence } from "./product-intelligence.js";
-import { decisionRecordCreateSchema, decisionRecordSupersedeSchema, manualModelSchema, objectiveInputSchema, productRegistrationSchema, steeringDirectiveInputSchema, workbenchSessionInputSchema } from "./schemas.js";
+import { decisionRecordCreateSchema, decisionRecordSupersedeSchema, manualModelSchema, objectiveInputSchema, productRegistrationSchema, repositoryValidatorSchema, steeringDirectiveInputSchema, workbenchSessionInputSchema } from "./schemas.js";
 import type { ObjectiveInput, ProviderName, RunRequest, WorkbenchMessageRecord } from "./types.js";
 import { inferModelProfile } from "./model-intelligence.js";
 import type { ModelRecord } from "./registry.js";
+import {
+  createValidatorDiscoverySnapshot,
+  diffValidatorMaps,
+  diffValidatorDiscoveries,
+  discoverRepositoryValidators,
+  effectiveValidatorAllowlist,
+  validatorCandidateFingerprint,
+  validatorStateFingerprint,
+} from "./validator-discovery.js";
 
 const uiDirectory = fileURLToPath(new URL("./ui/", import.meta.url));
 
@@ -80,6 +96,14 @@ const deliveryOperationsInFlight = new Set<string>();
 
 class ClientRequestError extends Error {}
 
+interface ValidatorRescanPreview {
+  repositoryId: string;
+  expectedHeadSha: string;
+  baseStateFingerprint: string;
+  candidateFingerprint: string;
+  expiresAt: number;
+}
+
 export async function startDashboard(options: {
   projectPath: string;
   port?: number;
@@ -94,6 +118,8 @@ export async function startDashboard(options: {
    * set in production paths.
    */
   reconciliationTimeoutMs?: number;
+  /** Test seam for proving validator preview expiry without a fifteen-minute wait. */
+  validatorPreviewTtlMs?: number;
 }): Promise<{ url: string; close: () => Promise<void> }> {
   const defaultProject = path.resolve(options.projectPath);
   await initializeProject(defaultProject);
@@ -106,17 +132,26 @@ export async function startDashboard(options: {
   const delivery = new DeliveryService(ledger, options.deliveryRunner);
   const reconciliationRunner = options.deliveryRunner;
   const reconciliationTimeoutMs = options.reconciliationTimeoutMs;
+  const validatorPreviewTtlMs = options.validatorPreviewTtlMs ?? 15 * 60_000;
   const eventStreams = new Set<ServerResponse>();
+  const validatorRescanPreviews = new Map<string, ValidatorRescanPreview>();
 
   await catalog.refresh(true, "application_launch");
   catalog.startPeriodic();
 
   const server = createServer(async (request, response) => {
     try {
-      await route(request, response, { defaultProject, ledger, orchestrator, catalog, openRouter, delivery, reconciliationRunner, reconciliationTimeoutMs, eventStreams });
+      await route(request, response, { defaultProject, ledger, orchestrator, catalog, openRouter, delivery, reconciliationRunner, reconciliationTimeoutMs, validatorPreviewTtlMs, eventStreams, validatorRescanPreviews });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      sendJson(response, error instanceof ClientRequestError ? 400 : 500, { error: redactText(message) });
+      const status = error instanceof ValidatorConfigSnapshotError
+        ? 422
+        : error instanceof ValidatorStatePreconditionError
+          ? 428
+          : error instanceof ValidatorStateConflictError
+            ? 409
+            : error instanceof ClientRequestError ? 400 : 500;
+      sendJson(response, status, { error: redactText(message) });
     }
   });
 
@@ -155,7 +190,9 @@ async function route(
     delivery: DeliveryService;
     reconciliationRunner: ConstructorParameters<typeof DeliveryService>[1];
     reconciliationTimeoutMs: number | undefined;
+    validatorPreviewTtlMs: number;
     eventStreams: Set<ServerResponse>;
+    validatorRescanPreviews: Map<string, ValidatorRescanPreview>;
   },
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -679,6 +716,7 @@ async function route(
       governanceSources?: unknown;
       governanceRules?: unknown;
       validators?: unknown;
+      baseStateFingerprint?: unknown;
     };
     if (!body.localPath?.trim()) {
       sendJson(response, 400, { error: "Local repository path is required" });
@@ -700,6 +738,35 @@ async function route(
     const knownIds = new Set(product.repositories.map((repository) => repository.id).concat(repositoryId));
     const dependencyRepositoryIds = stringArray(body.dependencyRepositoryIds);
     const unknownDependencies = dependencyRepositoryIds.filter((id) => !knownIds.has(id));
+    let initialValidatorState: {
+      validatorDiscovery: ReturnType<typeof createValidatorDiscoverySnapshot>;
+      validatorLocalConfig: Awaited<ReturnType<typeof loadConfiguredValidatorSnapshot>>;
+      validators: ReturnType<typeof validatorMap>;
+    } | null = null;
+    if (!existing?.localPath) {
+      if (!inspection.headSha) throw new ClientRequestError("Validator discovery requires a readable repository HEAD");
+      const [discovery, localConfig] = await Promise.all([
+        discoverRepositoryValidators(inspection.gitRoot),
+        loadConfiguredValidatorSnapshot(inspection.gitRoot),
+      ]);
+      initialValidatorState = {
+        validatorDiscovery: createValidatorDiscoverySnapshot(discovery, inspection.headSha),
+        validatorLocalConfig: localConfig,
+        validators: validatorMap(body.validators),
+      };
+    }
+    let ownerValidators = existing?.validators ?? validatorMap(body.validators);
+    if (existing?.localPath && body.validators !== undefined) {
+      if (typeof body.baseStateFingerprint !== "string") {
+        sendJson(response, 428, { error: "A current validator state fingerprint precondition is required" });
+        return;
+      }
+      ownerValidators = context.ledger.updateRepositoryValidatorState(
+        existing.id,
+        { validators: validatorMap(body.validators) },
+        body.baseStateFingerprint,
+      ).validators;
+    }
     const repository = context.ledger.upsertRepository({
       id: repositoryId,
       productId: product.id,
@@ -719,7 +786,7 @@ async function route(
       expectedBranch: expectedBranch ?? null,
       owners: stringArray(body.owners),
       dependencyRepositoryIds,
-      validators: validatorMap(body.validators),
+      validators: ownerValidators,
       governanceSources: stringArray(body.governanceSources),
       governanceRules: stringArray(body.governanceRules),
     });
@@ -730,7 +797,204 @@ async function route(
       dirty: inspection.dirty,
       compatibilityIssues: [...inspection.issues.map((issue) => issue.message), ...unknownDependencies.map((id) => `Dependency repository '${id}' is not registered in ${product.name}.`)],
     });
+    if (initialValidatorState) {
+      const current = context.ledger.getRepository(repository.id)!;
+      context.ledger.updateRepositoryValidatorState(
+        repository.id,
+        initialValidatorState,
+        validatorStateFingerprint(
+          current.validatorDiscovery,
+          current.validatorLocalConfig,
+          current.validators,
+          current.validatorSuppressions,
+        ),
+      );
+    }
     sendJson(response, 201, { repository: context.ledger.getRepository(repository.id), inspection });
+    return;
+  }
+
+  const repositoryValidatorsMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/repositories\/([^/]+)\/validators$/);
+  if (request.method === "GET" && repositoryValidatorsMatch?.[1] && repositoryValidatorsMatch[2]) {
+    const productId = decodeURIComponent(repositoryValidatorsMatch[1]);
+    const repositoryId = decodeURIComponent(repositoryValidatorsMatch[2]);
+    const repository = context.ledger.getRepository(repositoryId);
+    if (!repository || repository.productId !== productId) {
+      sendJson(response, 404, { error: "Registered repository not found" });
+      return;
+    }
+    sendJson(response, 200, validatorAllowlistResponse(repository));
+    return;
+  }
+
+  const repositoryValidatorActionMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/repositories\/([^/]+)\/validators\/([^/]+)\/(override|suppression)$/);
+  if (
+    (request.method === "PUT" || request.method === "DELETE")
+    && repositoryValidatorActionMatch?.[1]
+    && repositoryValidatorActionMatch[2]
+    && repositoryValidatorActionMatch[3]
+    && repositoryValidatorActionMatch[4]
+  ) {
+    requireJsonRequest(request);
+    const productId = decodeURIComponent(repositoryValidatorActionMatch[1]);
+    const repositoryId = decodeURIComponent(repositoryValidatorActionMatch[2]);
+    const name = decodeURIComponent(repositoryValidatorActionMatch[3]).trim();
+    const action = repositoryValidatorActionMatch[4];
+    const body = await readJson(request) as Record<string, unknown>;
+    const repository = context.ledger.getRepository(repositoryId);
+    if (!repository || repository.productId !== productId) {
+      sendJson(response, 404, { error: "Registered repository not found" });
+      return;
+    }
+    if (!name || name.length > 100) {
+      sendJson(response, 400, { error: "Validator name must be between 1 and 100 characters" });
+      return;
+    }
+    const baseStateFingerprint = typeof body.baseStateFingerprint === "string"
+      ? body.baseStateFingerprint
+      : null;
+    const currentStateFingerprint = validatorStateFingerprint(
+      repository.validatorDiscovery,
+      repository.validatorLocalConfig,
+      repository.validators,
+      repository.validatorSuppressions,
+    );
+    if (baseStateFingerprint === null) {
+      sendJson(response, 428, { error: "A current validator state fingerprint precondition is required" });
+      return;
+    }
+    if (baseStateFingerprint !== currentStateFingerprint) {
+      sendJson(response, 409, { error: "The validator allowlist changed after it was loaded; review the latest state and retry" });
+      return;
+    }
+    if (action === "override") {
+      const validators = { ...repository.validators };
+      if (request.method === "PUT") {
+        const parsed = repositoryValidatorSchema.safeParse(body.validator ?? body);
+        if (!parsed.success) {
+          sendJson(response, 400, { error: "Validator override is invalid", issues: parsed.error.issues });
+          return;
+        }
+        validators[name] = parsed.data;
+      } else {
+        delete validators[name];
+      }
+      const updated = context.ledger.updateRepositoryValidatorState(repositoryId, { validators }, baseStateFingerprint);
+      sendJson(response, 200, validatorAllowlistResponse(updated));
+      return;
+    }
+    const suppressions = new Set(repository.validatorSuppressions);
+    if (request.method === "PUT") suppressions.add(name);
+    else suppressions.delete(name);
+    const updated = context.ledger.updateRepositoryValidatorState(repositoryId, {
+      validatorSuppressions: [...suppressions],
+    }, baseStateFingerprint);
+    sendJson(response, 200, validatorAllowlistResponse(updated));
+    return;
+  }
+
+  const repositoryValidatorRescanMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/repositories\/([^/]+)\/validators\/(rescan-preview|rescan-apply)$/);
+  if (
+    request.method === "POST"
+    && repositoryValidatorRescanMatch?.[1]
+    && repositoryValidatorRescanMatch[2]
+    && repositoryValidatorRescanMatch[3]
+  ) {
+    requireJsonRequest(request);
+    const productId = decodeURIComponent(repositoryValidatorRescanMatch[1]);
+    const repositoryId = decodeURIComponent(repositoryValidatorRescanMatch[2]);
+    const action = repositoryValidatorRescanMatch[3];
+    const repository = context.ledger.getRepository(repositoryId);
+    if (!repository || repository.productId !== productId || !repository.localPath) {
+      sendJson(response, 404, { error: "Registered local repository not found" });
+      return;
+    }
+    const body = await readJson(request) as Record<string, unknown>;
+    const inspection = await inspectLocalRepository(repository.localPath, {
+      ...(repository.cloneUrl.startsWith("file:") ? {} : { expectedRemoteUrl: repository.cloneUrl }),
+      ...(repository.expectedBranch ? {
+        expectedCurrentBranch: repository.expectedBranch,
+        expectedDefaultBranch: repository.expectedBranch,
+      } : {}),
+    });
+    if (!inspection.isGitRepository || !inspection.gitRoot || !inspection.headSha) {
+      sendJson(response, 409, { error: "Validator rescan requires a readable local Git repository and HEAD" });
+      return;
+    }
+    const discovery = await discoverRepositoryValidators(inspection.gitRoot);
+    const candidate = createValidatorDiscoverySnapshot(discovery, inspection.headSha);
+    const candidateLocalConfig = await loadConfiguredValidatorSnapshot(inspection.gitRoot);
+    const baseStateFingerprint = validatorStateFingerprint(
+      repository.validatorDiscovery,
+      repository.validatorLocalConfig,
+      repository.validators,
+      repository.validatorSuppressions,
+    );
+    const candidateFingerprint = validatorCandidateFingerprint(candidate, candidateLocalConfig);
+    if (action === "rescan-preview") {
+      const now = Date.now();
+      for (const [id, preview] of context.validatorRescanPreviews) {
+        if (preview.expiresAt <= now) context.validatorRescanPreviews.delete(id);
+      }
+      if (context.validatorRescanPreviews.size >= 1_000) {
+        sendJson(response, 429, { error: "Too many validator rescan previews are pending; apply or retry after they expire" });
+        return;
+      }
+      const previewToken = randomUUID();
+      const preview: ValidatorRescanPreview = {
+        repositoryId,
+        expectedHeadSha: inspection.headSha,
+        baseStateFingerprint,
+        candidateFingerprint,
+        expiresAt: now + context.validatorPreviewTtlMs,
+      };
+      context.validatorRescanPreviews.set(previewToken, preview);
+      sendJson(response, 200, {
+        previewToken,
+        expectedHeadSha: preview.expectedHeadSha,
+        baseStateFingerprint: preview.baseStateFingerprint,
+        candidateFingerprint: preview.candidateFingerprint,
+        expiresAt: new Date(preview.expiresAt).toISOString(),
+        diff: diffValidatorDiscoveries(repository.validatorDiscovery, candidate),
+        localConfigDiff: diffValidatorMaps(repository.validatorLocalConfig, candidateLocalConfig),
+        candidate: {
+          validators: candidate.validators,
+          localConfigValidators: candidateLocalConfig,
+          signals: candidate.signals,
+          diagnostics: candidate.diagnostics,
+          ...effectiveValidatorAllowlist(
+            candidate,
+            candidateLocalConfig,
+            repository.validators,
+            repository.validatorSuppressions,
+          ),
+        },
+      });
+      return;
+    }
+
+    const previewToken = typeof body.previewToken === "string" ? body.previewToken : "";
+    const preview = context.validatorRescanPreviews.get(previewToken);
+    const clientMatchesPreview = preview
+      && body.expectedHeadSha === preview.expectedHeadSha
+      && body.baseStateFingerprint === preview.baseStateFingerprint
+      && body.candidateFingerprint === preview.candidateFingerprint;
+    const currentMatchesPreview = preview
+      && preview.repositoryId === repositoryId
+      && preview.expiresAt > Date.now()
+      && inspection.headSha === preview.expectedHeadSha
+      && baseStateFingerprint === preview.baseStateFingerprint
+      && candidateFingerprint === preview.candidateFingerprint;
+    if (!clientMatchesPreview || !currentMatchesPreview) {
+      sendJson(response, 409, { error: "Validator rescan preview is stale; preview the changes again before applying" });
+      return;
+    }
+    context.validatorRescanPreviews.delete(previewToken);
+    const updated = context.ledger.updateRepositoryValidatorState(repositoryId, {
+      validatorDiscovery: candidate,
+      validatorLocalConfig: candidateLocalConfig,
+    }, preview.baseStateFingerprint);
+    sendJson(response, 200, validatorAllowlistResponse(updated));
     return;
   }
 
@@ -1401,6 +1665,17 @@ async function route(
   // mean an unsupported method. Sub-paths keep their 404 (a malformed id and
   // a wrong method are indistinguishable at this point, and guessing 405
   // there would mislabel malformed-id requests).
+  const dynamicMethodContract = [
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators$/, allow: "GET" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators\/[^/]+\/(?:override|suppression)$/, allow: "PUT, DELETE" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/validators\/(?:rescan-preview|rescan-apply)$/, allow: "POST" },
+    { pattern: /^\/api\/products\/[^/]+\/repositories\/[^/]+\/refresh$/, allow: "POST" },
+  ].find((route) => route.pattern.test(url.pathname));
+  if (dynamicMethodContract) {
+    response.setHeader("Allow", dynamicMethodContract.allow);
+    sendJson(response, 405, { error: `Method ${request.method} is not supported for ${url.pathname}` });
+    return;
+  }
   const knownApiPathPattern = /^\/api\/(bootstrap|catalog\/refresh(es)?|config|connections|events|init|model-performance|models|objectives|openrouter\/(callback|catalog|connect|disconnect|models\/activate|status)|products|qualifications|resources|runs|workbench|workflows)$/;
   if (knownApiPathPattern.test(url.pathname)) {
     sendJson(response, 405, { error: `Method ${request.method} is not supported for ${url.pathname}` });
@@ -1439,6 +1714,38 @@ function validatorMap(value: unknown): Record<string, { command: string; args: s
     const command = parts.shift();
     return command ? [[name.trim(), { command, args: parts, timeoutMs: 120_000 }]] : [];
   }));
+}
+
+function validatorAllowlistResponse(repository: RepositoryRecord): Record<string, unknown> {
+  const allowlist = effectiveValidatorAllowlist(
+    repository.validatorDiscovery,
+    repository.validatorLocalConfig,
+    repository.validators,
+    repository.validatorSuppressions,
+  );
+  return {
+    ...allowlist,
+    stateFingerprint: validatorStateFingerprint(
+      repository.validatorDiscovery,
+      repository.validatorLocalConfig,
+      repository.validators,
+      repository.validatorSuppressions,
+    ),
+    discovery: repository.validatorDiscovery === null ? {
+      status: "never_scanned",
+    } : {
+      status: repository.validatorDiscovery.diagnostics === undefined
+        ? "scanned_legacy_unknown"
+        : repository.validatorDiscovery.diagnostics.length
+          ? "scanned_with_diagnostics"
+          : "scanned",
+      headSha: repository.validatorDiscovery.headSha,
+      scannedAt: repository.validatorDiscovery.scannedAt,
+      fingerprint: repository.validatorDiscovery.fingerprint,
+    },
+    signals: repository.validatorDiscovery?.signals ?? [],
+    diagnostics: repository.validatorDiscovery?.diagnostics ?? [],
+  };
 }
 
 function repositoryRemoteIdentity(remote: string | null): { fullName: string; webUrl: string } | null {

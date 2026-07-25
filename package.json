@@ -23,21 +23,24 @@
     "dev": "tsx src/cli.ts",
     "test": "npm run build && npm run test:compiled",
     "test:compiled": "node --test \"dist/test/*.test.js\"",
+    "test:browser": "node --test browser-test/validator-allowlist.test.mjs",
     "test:randomized": "npm run build && node scripts/run-tests-randomized.mjs",
     "test:mutation": "npm run build && node scripts/verify-mutation-discipline.mjs",
     "verify:version-authority-corpus": "npm run build && node scripts/verify-version-authority-corpus.mjs",
+    "verify:validator-discovery-corpus": "npm run build && node scripts/verify-validator-discovery-corpus.mjs",
     "version:check": "npm run build --silent && node scripts/check-version.mjs",
     "version:check:release": "npm run build --silent && node scripts/check-version.mjs --release",
     "check": "npm run build && node scripts/check-version.mjs && npm run test:compiled"
   },
   "dependencies": {
+    "yaml": "2.9.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "playwright": "1.62.0",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0",
-    "yaml": "2.9.0"
+    "typescript": "^5.9.0"
   },
   "engines": {
     "node": ">=24"

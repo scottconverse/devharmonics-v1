@@ -13,7 +13,7 @@
 // opening a recovery candidate must remain read-only and its acceptance
 // contract must not drift with later unreleased migrations.
 
-const migrationNamesThrough37 = Object.freeze([
+const migrationNamesThroughCurrent = Object.freeze([
   "baseline-v0.1-schema",
   "typed-event-payloads",
   "attempt-runtime-receipts",
@@ -50,7 +50,8 @@ const migrationNamesThrough37 = Object.freeze([
   "delivery-merge-commit-oid",
   "runs-status-index",
   "decision-records",
-  "decision-provenance-and-append-only-invariants"
+  "decision-provenance-and-append-only-invariants",
+  "repository-validator-discovery-state"
 ]);
 
 function freezeShape(shape) {
@@ -65,7 +66,7 @@ function freezeManifest(source, version, requiredShape) {
   return Object.freeze({
     tag: source,
     version,
-    migrationNames: Object.freeze(migrationNamesThrough37.slice(0, version)),
+    migrationNames: Object.freeze(migrationNamesThroughCurrent.slice(0, version)),
     requiredShape: freezeShape(requiredShape),
   });
 }
@@ -1772,6 +1773,16 @@ const requiredShape37 = {
   ]
 };
 
+const requiredShape38 = {
+  ...requiredShape37,
+  repositories: [
+    ...requiredShape37.repositories,
+    "validator_discovery_json",
+    "validator_local_config_json",
+    "validator_suppressions_json"
+  ]
+};
+
 export const LEDGER_SCHEMA_MANIFESTS = Object.freeze({
   26: freezeManifest("v0.5.1", 26, requiredShape26),
   33: freezeManifest("v0.6.0", 33, requiredShape33),
@@ -1780,6 +1791,11 @@ export const LEDGER_SCHEMA_MANIFESTS = Object.freeze({
     "commit da7090b09bd6f4da481ab5c21eced609b3de81e4",
     37,
     requiredShape37,
+  ),
+  38: freezeManifest(
+    "unreleased P0-4 validator discovery",
+    38,
+    requiredShape38,
   ),
 });
 

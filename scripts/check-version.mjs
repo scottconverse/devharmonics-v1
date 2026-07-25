@@ -55,7 +55,8 @@ const expectations = [
   ["docs/ROLLBACK.md", `Ledger schema 34 → 35`],
   ["docs/ROLLBACK.md", `Ledger schema 35 → 36`],
   ["docs/ROLLBACK.md", `Ledger schema 36 → 37`],
-  ["docs/ROLLBACK.md", `backup-v34-to-v37`],
+  ["docs/ROLLBACK.md", `Ledger schema 37 → 38`],
+  ["docs/ROLLBACK.md", `backup-v34-to-v38`],
 ];
 
 const failures = [];

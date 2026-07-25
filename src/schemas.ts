@@ -349,7 +349,7 @@ export const repositoryRoleSchema = z.enum([
   "other",
 ]);
 
-const repositoryValidatorSchema = z.object({
+export const repositoryValidatorSchema = z.object({
   command: z.string().min(1).max(1_000),
   args: z.array(z.string().max(2_000)).max(100),
   timeoutMs: z.number().int().positive().max(3_600_000),
@@ -467,6 +467,7 @@ export const devHarmonicsConfigSchema = z.object({
   }),
   repository: z.object({
     validators: validatorsSchema,
+    generatedValidators: validatorsSchema.default({}),
   }),
   runPolicy: z.object({
     autonomy: z.enum(["observe", "supervised", "bounded"]),

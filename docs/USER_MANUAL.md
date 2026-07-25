@@ -122,6 +122,16 @@ Each provider is shown as `READY` or `SETUP`, with its detected version, authent
 
 Register CivicSuite repositories independently. Use roles such as **Umbrella**, **Shared platform**, **Module**, **Desktop**, **Installer**, **Documentation**, and **Release truth** so cross-repository planning can preserve their distinct governance and delivery boundaries.
 
+### Inspect and change a repository's validator allowlist
+
+Expand **Validator allowlist** on a registered repository to see every entry and its effective origin: fixed-recipe discovery, the owner-authored local-config snapshot, or a manual override. Discovery sources name the exact file and structured signal that selected a DevHarmonics-owned command template. DevHarmonics never copies a raw package-script, workflow, or release-script command into the allowlist. A clean scan with no supported evidence shows **Zero validators detected**. If evidence was malformed, oversized, unsafe, or refused at a safety cap, the panel instead shows **Discovery is incomplete** with each persisted diagnostic; fix the named evidence and preview another rescan.
+
+Use **Remove** to suppress a detected or local-config entry, **Restore** to clear that suppression, and **Override** to edit its executable, repeatable arguments, timeout, and optional working directory. **Add manual validator** creates an owner override with the same fields. These mutations use the allowlist version you loaded; if another tab or process changed it first, DevHarmonics reports the conflict beside that repository and asks you to reload/preview rather than overwriting the newer state.
+
+Discovery never refreshes in the background. Select **Preview validator rescan** to perform a new bounded read and inspect the complete before/after command, arguments, timeout, working directory, origin, discovery-source, and local-config differences. A no-change preview says the allowlist is up to date and offers no Apply action. **Apply validator rescan** is available only for a changed preview and reruns the evidence before committing it. A changed HEAD, changed evidence, changed persisted allowlist, expired preview, or wrong token is rejected as stale; select **Preview again**. Manual overrides and suppressions remain in place across a successful rescan.
+
+Planning is repository-local. Every proposed task/check must name a validator effective in each repository that task targets; a validator detected in a sibling repository or the top-level project is not treated as a product-wide global check. A selected repository with zero effective validators is refused before an architect is invoked.
+
 Each repository's ID is now displayed in the product list (small text under its name) so it can be copied into another repository's **Dependencies** field — dependencies are entered as one registered repository ID per line.
 
 For every attached local repository, configure **Key documents to track** (the field's internal name is "canonical intelligence sources"). These are relative paths to the files DevHarmonics should treat as evidence—such as `AGENTS.md`, `CLAUDE.md`, `ARCHITECTURE.md`, `STATUS.md`, `pyproject.toml`, `package.json`, a compatibility matrix, or release documentation. Then select **Scan intelligence** on the product card.
@@ -357,9 +367,15 @@ Key settings in `config.json`:
 - `retry.maxAttempts`: maximum attempts per task
 - `runPolicy.autonomy`: default run mode used by the dashboard and CLI
 - `providers.*.timeoutMs`: provider-process timeout
-- `validators`: commands the architect may select by name
+- `validators`: effective configured commands the architect may select by name; initialization-generated entries are identified by an exact match in `generatedValidators`, while entries added or changed by the owner are owner-authored
 
-Validator commands are trusted local configuration. Models can request a configured validator name but cannot invent a command for execution.
+For a new project or a repository's first product attachment, DevHarmonics also performs read-only validator discovery. Repository evidence can select only a DevHarmonics-owned fixed recipe (`npm run` for supported literal script names, `python -m pytest`, `python -m ruff check .`, or `bash scripts/verify-release.sh`). Fixed-recipe discovery never copies package-script bodies, workflow shell text, or release-script bodies into a command. Commands explicitly authored by the repository owner in `.devharmonics/config.json` are separate: DevHarmonics snapshots them during first attachment or an owner-applied rescan. Compose may appear as setup-dependent evidence, but it is not made executable automatically. No detectable gate means exactly zero validators; `git diff --check` is never inserted as a substitute for behavioral verification.
+
+In **Products**, expand **Validator allowlist** under a local repository to see every effective or suppressed entry, whether it came from fixed-recipe discovery, the repository's snapshotted `.devharmonics/config.json`, or a later manual override. This is the exact map execution receives. You can remove/restore a discovered or local-config entry and add/remove a manual override. **Inspect Git** updates only Git status. To refresh validator evidence, choose **Preview validator rescan** and review the separate discovery and local-config-snapshot added/changed/removed/unchanged diffs; the panel stays open while that preview is pending. **Apply validator rescan** atomically replaces those two snapshots without touching manual overrides or suppressions. If HEAD, a dirty manifest/workflow/script/config, or allowlist state changed after preview, apply refuses as stale and asks for a new preview. DevHarmonics never refreshes this allowlist in the background. A repository registered before snapshots existed remains honestly at zero until its owner applies this explicit rescan.
+
+If an objective has zero effective validators, DevHarmonics refuses before invoking an architect and asks the owner to add a manual validator or explicitly rescan. Provider output is never used to disguise the missing verification policy.
+
+Discovered recipes can still execute repository-controlled test or release code when a run selects them. Fixed structured spawning prevents command-text injection; it is not a sandbox. A missing launcher remains a failed check receipt rather than disappearing or falling back to another gate.
 
 ### Local Ollama specialists and reviewers
 

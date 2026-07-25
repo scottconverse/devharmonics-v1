@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, resolveProviderCommand } from "../src/config.js";
+import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, loadConfiguredValidatorSnapshot, resolveProviderCommand } from "../src/config.js";
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
@@ -54,6 +54,7 @@ import { DeliveryService } from "../src/delivery.js";
 import { INBOX_RELEVANT_RUN_STATUSES, projectInbox, type InboxItem } from "../src/inbox.js";
 import { projectProgramStatus, PROGRAM_QUIET_THRESHOLD_MS, type ProgramBucket } from "../src/program-status.js";
 import type { ProductRecord } from "../src/ledger.js";
+import { createValidatorDiscoverySnapshot, discoverRepositoryValidators, effectiveValidatorAllowlist, validatorStateFingerprint } from "../src/validator-discovery.js";
 
 test("provider output parsers extract each CLI's final response", () => {
   const codex = [
@@ -521,8 +522,148 @@ test("project initialization detects Node validators and writes constitution", a
     assert.equal(config.connections.gemini.command, "agy");
     assert.deepEqual(config.repository.validators.test?.args, ["run", "test"]);
     assert.deepEqual(config.repository.validators.build?.args, ["run", "build"]);
-    assert.ok(config.repository.validators["diff-check"]);
+    assert.equal(config.repository.validators["diff-check"], undefined);
     assert.match(await readFile(path.join(root, ".devharmonics", "constitution.md"), "utf8"), /execution receipt/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generated initialization validators stay discovered until an owner edits local config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-generated-provenance-"));
+  try {
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ scripts: { test: "hostile body is never copied", build: "another hostile body" } }),
+    );
+    await initializeProject(root);
+    const generated = await loadConfig(root);
+    assert.deepEqual(Object.keys(generated.repository.validators), ["build", "test"]);
+    assert.deepEqual(
+      await loadConfiguredValidatorSnapshot(root),
+      {},
+      "DevHarmonics-generated fixed recipes are not owner-authored local commands",
+    );
+    await rm(path.join(root, "package.json"));
+    const removedEvidence = createValidatorDiscoverySnapshot(
+      await discoverRepositoryValidators(root),
+      "a".repeat(40),
+    );
+    assert.deepEqual(
+      effectiveValidatorAllowlist(
+        removedEvidence,
+        await loadConfiguredValidatorSnapshot(root),
+        {},
+        [],
+      ).effectiveValidators,
+      {},
+      "when evidence disappears, generated recipes disappear instead of becoming sticky local commands",
+    );
+
+    generated.repository.validators.test = {
+      command: "node",
+      args: ["owner-test.mjs"],
+      timeoutMs: 30_000,
+    };
+    await writeFile(
+      path.join(devHarmonicsDirectory(root), "config.json"),
+      `${JSON.stringify(generated, null, 2)}\n`,
+      "utf8",
+    );
+    assert.deepEqual(await loadConfiguredValidatorSnapshot(root), {
+      test: { command: "node", args: ["owner-test.mjs"], timeoutMs: 30_000 },
+    });
+    assert.deepEqual(
+      effectiveValidatorAllowlist(
+        removedEvidence,
+        await loadConfiguredValidatorSnapshot(root),
+        {},
+        [],
+      ).effectiveValidators,
+      { test: { command: "node", args: ["owner-test.mjs"], timeoutMs: 30_000 } },
+      "an owner edit breaks generated provenance and survives later evidence removal",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("project initialization gives an empty repository zero validators", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-empty-"));
+  try {
+    await initializeProject(root);
+    const config = await loadConfig(root);
+    assert.deepEqual(config.repository.validators, {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot rejects an out-of-root symlink", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-outside-"));
+  try {
+    const outsideConfig = path.join(outside, "config.json");
+    await writeFile(outsideConfig, JSON.stringify(defaultConfig));
+    await symlink(outside, path.join(root, ".devharmonics"), "junction");
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(root),
+      /unsafe|symbolic link|symlink/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot rejects oversized config before parsing", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-limit-"));
+  try {
+    await mkdir(path.join(root, ".devharmonics"), { recursive: true });
+    await writeFile(path.join(root, ".devharmonics", "config.json"), "x".repeat(1_048_577));
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(root),
+      /too large|size limit/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configured validator snapshot distinguishes absence from malformed JSON", async () => {
+  const absent = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-absent-"));
+  const malformed = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-malformed-"));
+  try {
+    assert.deepEqual(await loadConfiguredValidatorSnapshot(absent), {});
+    await mkdir(path.join(malformed, ".devharmonics"), { recursive: true });
+    await writeFile(path.join(malformed, ".devharmonics", "config.json"), "{broken");
+    await assert.rejects(
+      loadConfiguredValidatorSnapshot(malformed),
+      /invalid configuration JSON/i,
+    );
+  } finally {
+    await rm(absent, { recursive: true, force: true });
+    await rm(malformed, { recursive: true, force: true });
+  }
+});
+
+test("project initialization persists the production Python and release discovery result once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-config-python-"));
+  try {
+    await mkdir(path.join(root, "scripts"), { recursive: true });
+    await writeFile(path.join(root, "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n");
+    await writeFile(path.join(root, "scripts", "verify-release.sh"), "#!/bin/sh\n");
+    await initializeProject(root);
+    const first = await readFile(path.join(root, ".devharmonics", "config.json"), "utf8");
+    const config = await loadConfig(root);
+    assert.deepEqual(config.repository.validators, {
+      pytest: { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000 },
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000 },
+      "verify-release": { command: "bash", args: ["scripts/verify-release.sh"], timeoutMs: 3_600_000 },
+    });
+    await writeFile(path.join(root, "pyproject.toml"), "[project]\nname = \"changed\"\n");
+    await initializeProject(root);
+    assert.equal(await readFile(path.join(root, ".devharmonics", "config.json"), "utf8"), first);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1971,6 +2112,23 @@ test("repository validators cannot escape their assigned worktree through cwd", 
       /outside the assigned worktree/i,
     );
     await assert.rejects(() => readFile(outside, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing discovered validator tool returns an honest failed check receipt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-missing-tool-"));
+  try {
+    const result = await runValidator("pytest", {
+      command: "devharmonics-definitely-missing-validator-tool",
+      args: ["-m", "pytest"],
+      timeoutMs: 5_000,
+    }, root);
+    assert.equal(result.passed, false);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /not found|missing|ENOENT|unavailable/i);
+    assert.equal(result.name, "pytest");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -5391,6 +5549,7 @@ test("ledger upgrades a v0.1 database transactionally and preserves a pre-migrat
           { version: 35, name: "runs-status-index" },
           { version: 36, name: "decision-records" },
           { version: 37, name: "decision-provenance-and-append-only-invariants" },
+          { version: 38, name: "repository-validator-discovery-state" },
         ],
       );
     } finally {
@@ -6563,7 +6722,7 @@ test("repository registry migrates remote observations and persists local govern
     assert.equal(migrated.role, "other");
     assert.equal(migrated.inspection, null);
 
-    const configured = ledger.upsertRepository({
+    let configured = ledger.upsertRepository({
       ...migrated,
       productId: "github:civicsuite",
       localPath: path.join(root, "civiccore"),
@@ -6577,6 +6736,16 @@ test("repository registry migrates remote observations and persists local govern
       governanceSources: ["AGENTS.md", "docs/ARCHITECTURE.md"],
       governanceRules: ["No direct pushes to main"],
     });
+    configured = ledger.updateRepositoryValidatorState(configured.id, {
+      validators: {
+        test: { command: "npm.cmd", args: ["test"], timeoutMs: 120_000 },
+      },
+    }, validatorStateFingerprint(
+      configured.validatorDiscovery,
+      configured.validatorLocalConfig,
+      configured.validators,
+      configured.validatorSuppressions,
+    ));
     assert.equal(configured.localPath, path.join(root, "civiccore"));
     assert.equal(configured.validators.test?.command, "npm.cmd");
 
@@ -6909,7 +7078,7 @@ test("steering directives persist with actor, target, disposition, and supersede
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-steering-ledger-"));
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
-    assert.equal(LEDGER_SCHEMA_VERSION, 37, "the decision-provenance/append-only migration advances the ledger schema");
+    assert.equal(LEDGER_SCHEMA_VERSION, 38, "the validator-discovery state migration advances the ledger schema");
     const runId = ledger.createRun("Steer me", root);
     ledger.savePlan(runId, {
       summary: "One task",
@@ -8050,11 +8219,88 @@ test("a cross-repository architect is offered the validators its repositories ac
   ];
   assert.deepEqual(
     architectValidatorNames(project, repositories),
-    ["diff-check", "lint", "test", "tests", "typecheck"],
-    "the vocabulary is the union of the project's validators and every affected repository's, deduplicated and stable",
+    ["lint", "tests", "typecheck"],
+    "a product objective is offered only repository-local validators; project validators are never implicitly global",
   );
   // With no repository scope the project's own validators are the whole answer.
   assert.deepEqual(architectValidatorNames(project, []), ["diff-check", "test"]);
+});
+
+test("product plans reject a validator that exists only in another task repository", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-repository-validator-plan-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    ledger.upsertProduct({
+      id: "product:fixture",
+      name: "Fixture",
+      organizationUrl: "https://github.com/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    const addRepository = (id: string, validator: string) => ledger.upsertRepository({
+      id,
+      productId: "product:fixture",
+      name: id.split(":").at(-1)!,
+      fullName: `fixture/${id.split(":").at(-1)!}`,
+      url: `https://github.com/fixture/${id.split(":").at(-1)!}`,
+      cloneUrl: `https://github.com/fixture/${id.split(":").at(-1)!}.git`,
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "module",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: { [validator]: { command: "node", args: [validator], timeoutMs: 1_000 } },
+      governanceSources: [],
+      governanceRules: [],
+    });
+    addRepository("repo:a", "test");
+    addRepository("repo:b", "lint");
+    const orchestrator = new Orchestrator(ledger);
+    const objective = {
+      id: "objective",
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      outcome: "Change both repositories",
+      acceptanceCriteria: [],
+      constraints: [],
+      projectPath: root,
+      productId: "product:fixture",
+      repositoryIds: ["repo:a", "repo:b"],
+      risk: "medium",
+      autonomy: "supervised",
+      priority: "normal",
+      policyNotes: [],
+      workflowRevisionHash: null,
+    };
+    const plan = {
+      summary: "Wrong local check",
+      recommendedConcurrency: 2,
+      repositoryImpact: [
+        { repositoryId: "repo:a", disposition: "affected", rationale: "selected" },
+        { repositoryId: "repo:b", disposition: "affected", rationale: "selected" },
+      ],
+      integrationConditions: ["Both repositories remain compatible"],
+      tasks: [
+        { id: "a", title: "A", description: "A", dependencies: [], repositoryIds: ["repo:a"], preferredProvider: null, checks: ["test"] },
+        { id: "b", title: "B", description: "B", dependencies: [], repositoryIds: ["repo:b"], preferredProvider: null, checks: ["test"] },
+      ],
+    };
+    assert.throws(
+      () => (orchestrator as any).validateObjectiveRepositoryPlan(objective, plan, ["repo:a", "repo:b"]),
+      /task 'b'.*validator 'test'.*repo:b.*lint/i,
+    );
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("a qualification for one role does not hide the provider default for another", async () => {
@@ -9121,5 +9367,432 @@ test("migration 37 makes decision_records append-only and its provenance/success
   } finally {
     raw.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the validator allowlist UI renders discovered, override, suppressed, empty, and preview states safely", () => {
+  const appSource = readFileSync(path.join(process.cwd(), "src", "ui", "app.js"), "utf8");
+  const start = appSource.indexOf('function escapeHtml(value = "")');
+  const end = appSource.indexOf("\n// DH-632 visible operation feedback");
+  const seam = appSource.slice(start, end);
+  assert.match(seam, /function renderValidatorAllowlistHtml/);
+  const { renderValidatorAllowlistHtml } = new Function(
+    `${seam}; return { renderValidatorAllowlistHtml };`,
+  )() as {
+    renderValidatorAllowlistHtml: (
+      productId: string,
+      repositoryId: string,
+      allowlist: Record<string, any>,
+      preview?: Record<string, any>,
+      editor?: Record<string, any>,
+      localError?: string,
+      disclosureOpen?: boolean,
+    ) => string;
+  };
+  const html = renderValidatorAllowlistHtml("<product>", "<repo>", {
+    effectiveValidators: {
+      manual: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+    },
+    entries: [
+      {
+        name: "manual",
+        discovered: { sources: [{ kind: "pyproject_table", path: "<pyproject>", evidence: "tool.pytest.ini_options" }] },
+        override: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+        suppressed: false,
+        effectiveOrigin: "manual_override",
+        effectiveConfig: { command: "<script>", args: ["&arg"], timeoutMs: 1_000 },
+      },
+      {
+        name: "local",
+        discovered: null,
+        localConfig: { command: "node", args: ["local.js"], timeoutMs: 1_000 },
+        override: null,
+        suppressed: false,
+        effectiveOrigin: "local_config",
+        effectiveConfig: { command: "node", args: ["local.js"], timeoutMs: 1_000 },
+      },
+      {
+        name: "removed",
+        discovered: { sources: [{ kind: "release_script", path: "scripts/verify-release.sh", evidence: "regular-file" }] },
+        override: null,
+        suppressed: true,
+        effectiveOrigin: null,
+        effectiveConfig: null,
+      },
+    ],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, {
+    diff: { added: ["new"], changed: [], removed: ["old"], unchanged: ["manual"] },
+    localConfigDiff: { added: ["local-new"], changed: ["local"], removed: [], unchanged: [] },
+    candidate: {
+      entries: [
+        {
+          name: "local",
+          effectiveOrigin: "local_config",
+          effectiveConfig: { command: "node", args: ["after.js"], timeoutMs: 2_000, cwd: "tools" },
+          discovered: null,
+        },
+      ],
+    },
+    previewToken: "token",
+  });
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /manual override/i);
+  assert.match(html, /Edit manual validator manual/i);
+  assert.match(html, /Remove manual override manual/i);
+  assert.match(html, /local config/i);
+  assert.match(html, /suppressed|removed/i);
+  assert.match(html, /pyproject/i);
+  assert.match(html, /Previewed changes/i);
+  assert.match(html, /Local config snapshot/i);
+  assert.match(html, /Apply these validator changes/i);
+  assert.match(html, /node local\.js/i);
+  assert.match(html, /node after\.js/i);
+  assert.match(html, /2 seconds/i);
+  assert.match(html, /tools/i);
+  assert.match(html, /<details[^>]*open/);
+  const empty = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  });
+  assert.match(empty, /Zero validators detected/i);
+  assert.doesNotMatch(empty, /diff-check/i);
+  const ownerOpenedEmpty = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, undefined, undefined, undefined, true);
+  assert.match(ownerOpenedEmpty, /<details[^>]*open/);
+  const degraded = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned_with_diagnostics" },
+    diagnostics: [{ source: "package.json", code: "malformed" }],
+    signals: [],
+  });
+  assert.match(degraded, /Discovery is incomplete/i);
+  assert.match(degraded, /package\.json/i);
+  assert.match(degraded, /malformed/i);
+  assert.doesNotMatch(degraded, /Zero validators detected/i);
+  const editor = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, undefined, {
+    name: "owner-check",
+    config: { command: "node", args: ["test.mjs"], timeoutMs: 30_000, cwd: "tools" },
+  });
+  assert.match(editor, /data-validator-editor/i);
+  assert.match(editor, /Executable/i);
+  assert.match(editor, /Argument 1/i);
+  assert.match(editor, /Timeout \(seconds\)/i);
+  assert.match(editor, /Working directory/i);
+  assert.match(editor, /Save manual validator/i);
+  assert.match(editor, /<details[^>]*open/);
+  const noDelta = renderValidatorAllowlistHtml("product", "repo", {
+    effectiveValidators: {},
+    entries: [],
+    discovery: { status: "scanned" },
+    signals: [],
+  }, {
+    diff: { added: [], changed: [], removed: [], unchanged: [] },
+    localConfigDiff: { added: [], changed: [], removed: [], unchanged: [] },
+    candidate: { entries: [] },
+    previewToken: "no-delta",
+  });
+  assert.match(noDelta, /already up to date/i);
+  assert.doesNotMatch(noDelta, /Apply these validator changes/i);
+  assert.match(appSource, /Couldn’t update validators/);
+  assert.doesNotMatch(appSource, /Couldnâ|CouldnÃ/);
+  const appCss = readFileSync(path.join(process.cwd(), "src", "ui", "app.css"), "utf8");
+  assert.match(appCss, /\.validator-local-error button[^}]*min-height:\s*44px/s);
+});
+
+test("validator state persistence rejects a missing owner precondition", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-missing-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    ledger.upsertProduct({
+      id: "fixture",
+      name: "Fixture",
+      organizationUrl: "https://example.invalid/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    ledger.upsertRepository({
+      id: "repo:missing",
+      productId: "fixture",
+      name: "missing",
+      fullName: "fixture/missing",
+      url: "https://example.invalid/fixture/missing",
+      cloneUrl: "https://example.invalid/fixture/missing.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: {},
+      governanceSources: [],
+      governanceRules: [],
+    });
+    assert.throws(
+      () => (ledger.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:missing",
+        { validators: { test: { command: "node", args: ["test.js"], timeoutMs: 1_000 } } },
+      ),
+      /precondition|required|fingerprint/i,
+    );
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents two ledgers from losing an override to another override", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-overrides-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({
+      id: "fixture",
+      name: "Fixture",
+      organizationUrl: "https://example.invalid/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    first.upsertRepository({
+      id: "repo:overrides",
+      productId: "fixture",
+      name: "overrides",
+      fullName: "fixture/overrides",
+      url: "https://example.invalid/fixture/overrides",
+      cloneUrl: "https://example.invalid/fixture/overrides.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: {},
+      governanceSources: [],
+      governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:overrides")!;
+    const expected = validatorStateFingerprint(
+      snapshot.validatorDiscovery,
+      snapshot.validatorLocalConfig,
+      snapshot.validators,
+      snapshot.validatorSuppressions,
+    );
+    const update = (ledger: Ledger, validators: Record<string, any>) =>
+      (ledger.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:overrides",
+        { validators },
+        expected,
+      );
+    update(first, { alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 } });
+    assert.throws(
+      () => update(second!, { beta: { command: "node", args: ["beta.js"], timeoutMs: 1_000 } }),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:overrides")!.validators, {
+      alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 },
+    });
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents an override from losing a concurrent suppression", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-mixed-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({ id: "fixture", name: "Fixture", organizationUrl: "https://example.invalid/fixture", description: "Fixture", repositories: [] });
+    first.upsertRepository({
+      id: "repo:mixed", productId: "fixture", name: "mixed", fullName: "fixture/mixed",
+      url: "https://example.invalid/fixture/mixed", cloneUrl: "https://example.invalid/fixture/mixed.git",
+      defaultBranch: "main", visibility: "private", archived: false, sizeKb: 1, language: null,
+      description: null, intelligence: {}, localPath: root, role: "other", expectedBranch: null,
+      owners: [], dependencyRepositoryIds: [],
+      validators: { test: { command: "node", args: ["test.js"], timeoutMs: 1_000 } },
+      governanceSources: [], governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:mixed")!;
+    const expected = validatorStateFingerprint(snapshot.validatorDiscovery, snapshot.validatorLocalConfig, snapshot.validators, snapshot.validatorSuppressions);
+    (first.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+      "repo:mixed",
+      { validators: { ...snapshot.validators, alpha: { command: "node", args: ["alpha.js"], timeoutMs: 1_000 } } },
+      expected,
+    );
+    assert.throws(
+      () => (second!.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:mixed",
+        { validatorSuppressions: ["test"] },
+        expected,
+      ),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:mixed")!.validatorSuppressions, []);
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validator state CAS prevents a rescan from overwriting a concurrent owner mutation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-rescan-"));
+  const filename = path.join(root, "devharmonics.db");
+  const first = new Ledger(filename);
+  let second: Ledger | null = null;
+  try {
+    first.upsertProduct({ id: "fixture", name: "Fixture", organizationUrl: "https://example.invalid/fixture", description: "Fixture", repositories: [] });
+    first.upsertRepository({
+      id: "repo:rescan", productId: "fixture", name: "rescan", fullName: "fixture/rescan",
+      url: "https://example.invalid/fixture/rescan", cloneUrl: "https://example.invalid/fixture/rescan.git",
+      defaultBranch: "main", visibility: "private", archived: false, sizeKb: 1, language: null,
+      description: null, intelligence: {}, localPath: root, role: "other", expectedBranch: null,
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+    });
+    second = new Ledger(filename);
+    const snapshot = first.getRepository("repo:rescan")!;
+    const expected = validatorStateFingerprint(snapshot.validatorDiscovery, snapshot.validatorLocalConfig, snapshot.validators, snapshot.validatorSuppressions);
+    (first.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+      "repo:rescan",
+      { validators: { owner: { command: "node", args: ["owner.js"], timeoutMs: 1_000 } } },
+      expected,
+    );
+    const candidate = createValidatorDiscoverySnapshot({
+      validators: [{
+        name: "test",
+        recipe: { id: "npm-script", script: "test" },
+        config: { command: "npm", args: ["run", "test"], timeoutMs: 600_000 },
+        sources: [{ kind: "package_json_script", path: "package.json", evidence: "scripts.test" }],
+      }],
+      signals: [],
+      diagnostics: [],
+      fingerprint: "b".repeat(64),
+    }, "a".repeat(40));
+    assert.throws(
+      () => (second!.updateRepositoryValidatorState as unknown as (...args: any[]) => unknown)(
+        "repo:rescan",
+        { validatorDiscovery: candidate },
+        expected,
+      ),
+      /changed|conflict|stale/i,
+    );
+    assert.deepEqual(second.getRepository("repo:rescan")!.validators, {
+      owner: { command: "node", args: ["owner.js"], timeoutMs: 1_000 },
+    });
+  } finally {
+    second?.close();
+    first.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("physical schema 37 to 38 migration preserves owner validators and its pre-migration backup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-migration-"));
+  const filename = path.join(root, "devharmonics.db");
+  const seed = new Ledger(filename);
+  try {
+    seed.upsertProduct({
+      id: "github:fixture",
+      name: "Fixture",
+      organizationUrl: "https://github.com/fixture",
+      description: "Fixture",
+      repositories: [],
+    });
+    seed.upsertRepository({
+      id: "github:fixture/repo",
+      productId: "github:fixture",
+      name: "repo",
+      fullName: "fixture/repo",
+      url: "https://github.com/fixture/repo",
+      cloneUrl: "https://github.com/fixture/repo.git",
+      defaultBranch: "main",
+      visibility: "private",
+      archived: false,
+      sizeKb: 1,
+      language: null,
+      description: null,
+      intelligence: {},
+      localPath: root,
+      role: "other",
+      expectedBranch: null,
+      owners: [],
+      dependencyRepositoryIds: [],
+      validators: { owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 } },
+      governanceSources: [],
+      governanceRules: [],
+    });
+    seed.close();
+    const schema37 = new DatabaseSync(filename);
+    schema37.exec(`
+      ALTER TABLE repositories DROP COLUMN validator_discovery_json;
+      ALTER TABLE repositories DROP COLUMN validator_local_config_json;
+      ALTER TABLE repositories DROP COLUMN validator_suppressions_json;
+      DELETE FROM schema_migrations WHERE version = 38;
+      PRAGMA user_version = 37;
+    `);
+    schema37.close();
+
+    const upgraded = new Ledger(filename);
+    try {
+      const repository = upgraded.getRepository("github:fixture/repo")!;
+      assert.equal(upgraded.getSchemaVersion(), 38);
+      assert.deepEqual(repository.validators, {
+        owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 },
+      });
+      assert.equal(repository.validatorDiscovery, null);
+      assert.deepEqual(repository.validatorLocalConfig, {});
+      assert.deepEqual(repository.validatorSuppressions, []);
+    } finally {
+      upgraded.close();
+    }
+
+    const backups = (await readdir(root)).filter((name) => name.startsWith("devharmonics.db.backup-v37-to-v38-"));
+    assert.equal(backups.length, 1);
+    const backup = new DatabaseSync(path.join(root, backups[0]!));
+    try {
+      assert.equal((backup.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 37);
+      assert.deepEqual(
+        JSON.parse((backup.prepare("SELECT validators_json FROM repositories WHERE id = ?").get("github:fixture/repo") as { validators_json: string }).validators_json),
+        { owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 } },
+      );
+      const backupColumns = new Set(
+        (backup.prepare("SELECT name FROM pragma_table_info('repositories')").all() as Array<{ name: string }>).map((row) => row.name),
+      );
+      assert.equal(backupColumns.has("validator_discovery_json"), false);
+    } finally {
+      backup.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

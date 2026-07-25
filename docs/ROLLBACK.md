@@ -114,9 +114,9 @@ Copy-Item -LiteralPath $backup -Destination $staged -ErrorAction Stop
 Move-Item -LiteralPath $recoveryStaged -Destination $liveLedger -ErrorAction Stop
 ```
 
-## Development-line rollback: ledger schema 37 → v0.6.1
+## Development-line rollback: ledger schema 38 → v0.6.1
 
-The unreleased development line after v0.6.1 advances the ledger through three
+The unreleased development line after v0.6.1 advances the ledger through four
 ordered migrations:
 
 1. **Ledger schema 34 → 35** adds the `runs_status` index used by the approval
@@ -124,25 +124,29 @@ ordered migrations:
 2. **Ledger schema 35 → 36** adds append-only decision records.
 3. **Ledger schema 36 → 37** adds decision provenance, uniqueness indexes, and
    database triggers that prevent decision-record updates and deletes.
+4. **Ledger schema 37 → 38** adds per-repository validator-discovery snapshots
+   plus distinct local-config validator snapshots and suppression tombstones.
+   Existing `validators_json` rows remain unchanged owner overrides.
 
 Backups describe the schema the database actually started at and the maximum
 schema supported by the build that opened it. Opening a schema-34 v0.6.1
-ledger directly with the schema-37 development build creates one snapshot:
+ledger directly with the schema-38 development build creates one snapshot:
 
-`devharmonics.db.backup-v34-to-v37-<timestamp>-<id>.sqlite`
+`devharmonics.db.backup-v34-to-v38-<timestamp>-<id>.sqlite`
 
-It does **not** create separate v34-to-v35, v35-to-v36, and v36-to-v37 files
-while applying the three migrations in one transaction. Pairwise names exist
-only when an intermediate development build whose maximum schema was 35 or 36
-performed that upgrade.
+It does **not** create separate v34-to-v35, v35-to-v36, v36-to-v37, and
+v37-to-v38 files while applying the four migrations in one transaction.
+Pairwise names exist only when an intermediate development build performed
+that upgrade. A schema-37 development ledger opened by this build instead gets
+`devharmonics.db.backup-v37-to-v38-<timestamp>-<id>.sqlite`.
 
 For the exact-path procedure, set:
 
 ```powershell
-$backupNamePattern = 'devharmonics.db.backup-v34-to-v37-*.sqlite'
+$backupNamePattern = 'devharmonics.db.backup-v34-to-v38-*.sqlite'
 $expectedUserVersion = 34
-$currentUserVersion = 37
-$keptLedgerName = 'devharmonics.db.schema37-kept'
+$currentUserVersion = 38
+$keptLedgerName = 'devharmonics.db.schema38-kept'
 ```
 
 After the restored ledger passes verification, check out and build the older
@@ -157,7 +161,8 @@ node dist/src/cli.js serve --project $projectPath
 
 The restored ledger contains none of the Inbox-index, decision-record, or
 decision-provenance changes made after the schema-34 snapshot. The kept
-schema-37 ledger retains that later data.
+schema-38 ledger retains that later data, including validator discovery,
+suppression, and override state.
 
 ## Rollback plan for v0.6.1 → v0.6.0
 
