@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.33**
+Plan version: **1.34**
 Written: **2026-07-14**
-Revised: **2026-07-22**
-Product specification baseline: **DevHarmonics Product Specification v1.12**
+Revised: **2026-07-25**
+Product specification baseline: **DevHarmonics Product Specification v1.13**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.33 (2026-07-22)** — Item-6 (DH-810) implemented. A workflow is a **versioned, parameterized document stored in Git** in the tracked `workflows/` directory of the repository (`.devharmonics/` is gitignored run state and deliberately NOT where workflows-of-record live), identified by content hash — the same content-addressed discipline the ledger already applies to review evidence bindings (plan revisions, by contrast, use per-objective counters; the shared property is immutability of the record, not the identifier scheme). An objective created by instantiation carries the revision hash as structural provenance, and starting that objective pins the hash into the run record once, immutably (idempotent-or-refuse), so a later edit can never rewrite what a historical run executed; a client cannot supply the pin directly, and hand-editing an objective clears its provenance. Execution REUSES the objective composer: instantiating a workflow with typed inputs produces an objective draft through the existing propose/approve/start path — no second execution engine. Recording a revision promoted from a pilot refuses any permission widening (external writes switching on, autonomy escalation, or removal of an approval point the pilot required). A workflow's own approval points, evidence requirements, and completion contract are **advisory metadata in v0.6**: they are consistency-checked at parse time (ungated external writes refuse), compared by the promotion guard, and carried into the objective as policy notes that inform planning — but runtime gating still comes from the global run policy and review policy, not from per-workflow contract fields; structural per-workflow enforcement is deferred. First two concrete workflows ship as fixtures-of-record: documentation-consistency and release-truth audit, seeded idempotently into the ledger at server start from the install's own tracked `workflows/` directory so a fresh cockpit actually contains them. Ledger migration 32 adds workflow revision persistence and run linkage; migration 33 adds objective workflow provenance. Deferred from this increment, explicitly: campaign templates, agent-skill packs, per-product workflow scoping, approval-point taxonomy beyond plan/external_write/spending/destructive, structural enforcement of per-workflow approval/evidence/completion contracts, and discovery of workflow files from the TARGET repository (only the install's own shipped fixtures are seeded; user revisions are recorded through the API).
+Revision history: **v1.34 (2026-07-25)** — Replaced the stale immediate capability sequence with the owner-locked Phase 0/Slice D beta path. Beta readiness is Option A ("one product airtight"): finish and audit Block 0a, finish Slice D, then prove three qualifying real deliveries. The longer-term Phase 0 and org-scale destination remain unchanged, and readiness does not authorize a tag or publication.
+
+Prior revision: **v1.33 (2026-07-22)** — Item-6 (DH-810) implemented. A workflow is a **versioned, parameterized document stored in Git** in the tracked `workflows/` directory of the repository (`.devharmonics/` is gitignored run state and deliberately NOT where workflows-of-record live), identified by content hash — the same content-addressed discipline the ledger already applies to review evidence bindings (plan revisions, by contrast, use per-objective counters; the shared property is immutability of the record, not the identifier scheme). An objective created by instantiation carries the revision hash as structural provenance, and starting that objective pins the hash into the run record once, immutably (idempotent-or-refuse), so a later edit can never rewrite what a historical run executed; a client cannot supply the pin directly, and hand-editing an objective clears its provenance. Execution REUSES the objective composer: instantiating a workflow with typed inputs produces an objective draft through the existing propose/approve/start path — no second execution engine. Recording a revision promoted from a pilot refuses any permission widening (external writes switching on, autonomy escalation, or removal of an approval point the pilot required). A workflow's own approval points, evidence requirements, and completion contract are **advisory metadata in v0.6**: they are consistency-checked at parse time (ungated external writes refuse), compared by the promotion guard, and carried into the objective as policy notes that inform planning — but runtime gating still comes from the global run policy and review policy, not from per-workflow contract fields; structural per-workflow enforcement is deferred. First two concrete workflows ship as fixtures-of-record: documentation-consistency and release-truth audit, seeded idempotently into the ledger at server start from the install's own tracked `workflows/` directory so a fresh cockpit actually contains them. Ledger migration 32 adds workflow revision persistence and run linkage; migration 33 adds objective workflow provenance. Deferred from this increment, explicitly: campaign templates, agent-skill packs, per-product workflow scoping, approval-point taxonomy beyond plan/external_write/spending/destructive, structural enforcement of per-workflow approval/evidence/completion contracts, and discovery of workflow files from the TARGET repository (only the install's own shipped fixtures are seeded; user revisions are recorded through the API).
 
 **v1.32 (2026-07-22)** — Added the review **evidence-lens** axis to DH-460, after external evidence (Cursor's agent-swarm study: independent review lenses reading different information sources catch what any one lens misses) and our own defect #22 converged on the same failure shape: reviewers who all see the same evidence share the same blind spot. Reviewer decorrelation now has two axes — capability (what a reviewer can do, v1.25) and lens (what a reviewer is shown). Quorum policy gains required lens coverage by risk: an **artifact lens** that never sees implementor narration, and a **claims lens** that never sees the artifact and must return a structured claimed-changes manifest, which is then compared mechanically against the integrated diff so a claims/artifact divergence is a fail-closed finding rather than a reviewer's optional catch (generalizing the write-task-must-change-something rule from defect #22). DH-320 gains cheapest-at-established-parity preference among qualified candidates. DH-650 gains a per-run cost counterfactual (the actual mix versus the priciest qualified mix). This scope is inserted ahead of the item-5 delivery rerun by owner decision (2026-07-22); the rerun then serves as the lens machinery's proving ground.
 
@@ -980,9 +982,9 @@ Acceptance:
 
 #### DH-645: Approval inbox and program status — M
 
-Status: **Named work package, owner-approved 2026-07-18. Scheduled immediately after the locked capability sequence; it does not displace any sequence item.**
+Status: **Implemented on unreleased `main`.** The approval inbox, program-status view, delivered-versus-observed reconciliation, and standalone status export are present.
 
-The target architecture names a "product cockpit and approval inbox" as the top layer, and `Approval` is a primary domain entity, but no inbox exists. Every surface today is scoped to one run, so an owner learns that something needs them only by opening the right run — or by being told. The first real CivicSuite delivery demonstrated the gap concretely: a READY run held a prepared delivery awaiting the owner's external-write approval, and nothing in the product surfaced it. For a product whose thesis is that the owner directs a crew and owns the consequential decisions, the owner having no queue of decisions is a structural gap rather than a missing convenience.
+Before implementation, the target architecture named a "product cockpit and approval inbox" as the top layer and `Approval` as a primary domain entity, but no inbox existed. Every surface was scoped to one run, so an owner learned that something needed them only by opening the right run — or by being told. The first real CivicSuite delivery demonstrated the gap concretely: a READY run held a prepared delivery awaiting the owner's external-write approval, and nothing in the product surfaced it. For a product whose thesis is that the owner directs a crew and owns the consequential decisions, the owner having no queue of decisions was a structural gap rather than a missing convenience.
 
 An important boundary distinguishes this from a general dashboard. DevHarmonics' own ledger is written by the system being observed, so a status view sourced only from it can restate what DevHarmonics believes and cannot detect where that belief is wrong. The distinctive contribution is therefore not activity display but **reconciliation**: DevHarmonics is the only component holding both the local run record and the external result of what it delivered, and disagreement between them is the signal worth surfacing.
 
@@ -1003,9 +1005,9 @@ Acceptance:
 
 #### DH-647: Decision records and comparative option analysis — M
 
-Status: **Named work package, owner-approved 2026-07-18. Scheduled with DH-645, after the locked capability sequence.**
+Status: **Implemented on unreleased `main`.** Durable decision records, supersession, planning-context retrieval, and evidence export are present.
 
-DevHarmonics records what was done and can prove it, but it cannot record what was **considered and rejected, and why**. The blackboard holds decisions and assumptions for the life of a run; the constitution holds standing rules. Neither retains the shape of a choice: the options weighed, the constraint that decided it, and the alternatives killed with their reasons. An approach rejected for a good reason in one run is therefore re-proposed in the next, and the second attempt has no way to know the first ever happened.
+Before implementation, DevHarmonics recorded what was done and could prove it, but it could not record what was **considered and rejected, and why**. The blackboard held decisions and assumptions for the life of a run, and the constitution held standing rules, but neither retained the shape of a choice: the options weighed, the constraint that decided it, and the alternatives killed with their reasons. An approach rejected for a good reason in one run could therefore be re-proposed in the next, with no way for the second attempt to know the first had happened.
 
 This is not hypothetical. A container runtime was selected for this machine on evidence, with its gotchas recorded, and eight days later the same decision was made again from scratch — reaching a defensible answer by defaulting rather than comparing, duplicating a tool that was already installed, and accepting a worse isolation posture that the original decision had specifically avoided. The original record existed; nothing pointed at it, so nothing loaded it.
 
@@ -1100,7 +1102,7 @@ Acceptance:
 
 Status: **Automatic fixer/re-review and configured review quorums implemented in the v0.5 development line; milestone remains in progress.** A supported approved plan creates an exact integration set across compatible local repositories. Each repository receives its own run integration branch and worktree pinned to a retained base commit; each task targets one repository and receives its own branch/worktree. Tasks in different repositories may run concurrently, while merges targeting the same repository use that repository's serialized merge queue. Repository-local validators and verification-integrity checks run against each integration branch. Final review is read-only and context-only across aggregate, repository-prefixed diff evidence and must satisfy the risk-configured reviewer count, distinct-provider, and implementor-independence rules. Blocking findings are assigned only by an exact repository-ID path prefix. DevHarmonics creates repository-scoped fixer tasks, revalidates the affected integration branches, requires the reviewed evidence hash to change, invalidates superseded review receipts while retaining their history, and runs a fresh independent quorum. Unscoped or ambiguous findings fail closed. The ledger, evidence export, API, and run-board card retain every repository's base commit, integration HEAD, branch, worktree, status, error, integration conditions, fixer tasks, and review receipts. The registered primary checkouts are not checked out, merged, reset, or otherwise changed.
 
-Still deferred: restart/resume reconstruction, automatic worktree cleanup, pushing branches or opening pull requests, and a single task mutating more than one repository.
+Still deferred: restart/resume reconstruction, automatic worktree cleanup, and a single task mutating more than one repository.
 
 Deliverables:
 
@@ -1228,7 +1230,7 @@ Acceptance:
 
 #### DH-825: Experimental Open Interpreter worker adapter — M
 
-Status: **Roadmap, owner-approved 2026-07-16. Experimental; feature-flagged; does not displace the locked capability sequence.**
+Status: **Roadmap, owner-approved 2026-07-16. Experimental and feature-flagged; it does not displace the current beta execution contract.**
 
 Open Interpreter (github.com/openinterpreter/openinterpreter, Apache-2.0, a Rust Codex-fork agent runtime at 0.0.x) exposes many local and alternative coding models — Ollama and LM Studio without authentication, plus Kimi, DeepSeek, Qwen/GLM and others — behind one noninteractive CLI with newline-delimited JSON events, JSON-Schema-constrained results, sandbox modes, and an ACP mode. Its role in DevHarmonics is an optional leaf worker runtime under the scheduler: a "long tail of models" adapter. It is never the orchestrator, never embedded, and never a replacement for the first-class Codex, Claude Code, and Antigravity integrations.
 
@@ -1335,7 +1337,35 @@ Acceptance:
 
 The work packages are delivered in the following order. Some packages overlap, but an increment does not exit until its gate passes.
 
-Implementation status as of 2026-07-14:
+### Current beta execution contract (owner-locked 2026-07-24)
+
+This sequence supersedes the former immediate recommendation without deleting
+the longer-term increments below:
+
+1. Complete and audit **Block 0a**, the four wrong-answer criticals:
+   - P0-1 release-version comprehension — complete;
+   - P0-2 monorepo/subproject comprehension — pending;
+   - P0-3 structured dependency parsing and provenance — pending; and
+   - P0-4 real validator discovery — complete.
+2. Complete **Slice D restart hardening**: interrupted integration-set
+   reconstruction, retained-work reconciliation, safe phase-specific
+   continuation, and automatic worktree cleanup. Slice D is pending and may run
+   in parallel with comprehension hardening where dependencies permit.
+3. Pass a distinct **Block 0a beta audit**. This narrow gate is not the later
+   full Phase 0 (Blocks 0a + 0b + 0c) census gate, which still requires at least
+   95% correct comprehension and zero silent wrong answers for version,
+   validator, and dependency facts.
+4. Only after Block 0a passes, complete three real deliveries through
+   DevHarmonics: one single-repository delivery, one coordinated module +
+   CivicCore delivery, and one delivery where divergence is detected honestly
+   and contained. Deliveries completed before Block 0a do not qualify.
+5. Run the beta-readiness gates for **Option A: one product airtight**.
+
+Passing these steps means the candidate is ready for the owner's beta decision.
+It does not authorize a tag, release publication, or announcement; each requires
+a separate explicit owner go.
+
+Historical implementation status recorded 2026-07-14 (retained as release-increment history; current work is governed by the beta execution contract above):
 
 - Increment 0 (v0.1.x stabilization): complete.
 - Increment 1 (v0.2 cockpit): complete in the v0.3.0 release line.
@@ -1440,7 +1470,7 @@ Exit gate:
 
 ### Increment 5: CivicSuite single- and multi-repository operation — v0.6
 
-Status: **In progress.** DH-700's registry/local Git inspection, DH-710's product-aware repository selection and impact planning, DH-720's exact multi-repository execution plus automatic fixer/re-review quorum loop, and DH-800's first approved-delivery slice are implemented. The first bounded real CivicSuite implementation is next and must include the DH-632 feedback states exercised by that workflow. Restart reconstruction and cleanup remain follow-on reliability work and do not displace the owner-locked capability sequence.
+Status: **In progress.** DH-700's registry/local Git inspection, DH-710's product-aware repository selection and impact planning, DH-720's exact multi-repository execution plus automatic fixer/re-review quorum loop, and DH-800's first approved-delivery slice are implemented. Real single- and multi-repository CivicSuite work has already exercised these foundations, but deliveries completed before Block 0a passes do not satisfy the beta-readiness delivery gate. The controlling order now requires the remaining P0-2 and P0-3 work plus Slice D restart reconstruction and cleanup before the three qualifying post-Block-0a deliveries. DH-632 feedback remains required for every workflow exercised by that work.
 
 Work:
 
@@ -1759,16 +1789,17 @@ The product specification remains the authority for product scope. This implemen
 
 ## 15. Immediate recommendation
 
-Increment 4 shipped as v0.5.1. Continue Increment 5 in this exact capability order:
+Follow the [current beta execution contract](#current-beta-execution-contract-owner-locked-2026-07-24):
 
-1. **Approved branch/draft-PR delivery — implemented.** Present the exact resulting commits and evidence, require explicit approval before pushing a delivery branch or creating a draft pull request, and never merge automatically.
-2. **First real CivicSuite implementation — next.** Select one bounded, useful single-repository change and run it from objective through implementation, validation, review, repair, and approved delivery. Include DH-632 feedback for every operation and state exercised by this workflow. Fix only blockers actually encountered in that run.
-3. **Live run steering.** Pause task admission; redirect, reprioritize, or reassign queued work; interrupt an active attempt; continue with new instructions; and retain exactly what changed.
-4. **Real provider/local fallback.** Continue an interrupted CivicSuite task through another subscription model or qualified local model while preserving context, evidence, and task state.
-5. **Real cross-repository CivicSuite implementation.** Make and deliver one coordinated change across at least two registered repositories with exact integration evidence.
-6. **Reusable development workflows.** Save proven issue-to-PR, dependency-upgrade, module-finishing, compatibility-checking, and release-truth-review processes as Git-versioned workflows.
+1. finish P0-2 and P0-3, then audit Block 0a;
+2. finish Slice D restart reconstruction and automatic worktree cleanup;
+3. after Block 0a passes, complete the three qualifying real deliveries; and
+4. run the Option A, one-product-airtight beta-readiness gates.
 
-Restart reconstruction, automatic worktree cleanup, analytics, triggers, and campaign-scale orchestration remain planned. They must not be pulled ahead of this sequence unless a real run exposes one as a direct blocker or Scott explicitly changes the plan.
+Blocks 0b and 0c, the full Phase 0 >=95% comprehension exit gate, analytics,
+triggers, campaign-scale orchestration, ACP, API breadth, and the full-org
+CivicSuite destination remain planned in their existing sections. They are not
+silently removed or pulled into the narrower beta contract.
 
 DH-632 is a cross-cutting acceptance obligation, not an additional roadmap detour: each item above must ship its own complete immediate acknowledgement, working/waiting/retry/stall, completion/failure, and refresh-safe feedback before that item is accepted.
 

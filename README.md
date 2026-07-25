@@ -431,8 +431,35 @@ This project-status section describes `main`. What the current unreleased `main`
 
 ### Roadmap
 
-**Available on unreleased `main`** — everything above without a *planned* qualifier, including cockpit-complete delivery, live run steering, visible operation feedback, review evidence lenses, per-run cost counterfactuals, and reusable workflows — all proven against a real multi-repository product (the first cross-repository CivicSuite delivery was pushed, PR'd, and merged from the cockpit).
-**Planned** — Agent Client Protocol transport; integration-set restart reconstruction; automatic worktree cleanup; one task spanning several repositories.
+The owner-locked beta scope is **Option A: one product airtight**. The canonical
+[beta-readiness contract](docs/PRODUCT_SPEC.md#142-beta-readiness-contract-one-product-airtight)
+and [current execution sequence](docs/IMPLEMENTATION_PLAN.md#current-beta-execution-contract-owner-locked-2026-07-24)
+require Block 0a, Slice D restart hardening, and three qualifying real
+deliveries performed only after Block 0a passes.
+
+Current beta-gate status:
+
+- P0-1 release-version comprehension — complete;
+- P0-2 monorepo/subproject comprehension — pending;
+- P0-3 structured dependency parsing and provenance — pending;
+- P0-4 real validator discovery — complete;
+- Slice D restart reconstruction and automatic worktree cleanup — pending; and
+- the three post-Block-0a deliveries — pending.
+
+The Block 0a beta audit is narrower than the later full Phase 0
+(Blocks 0a + 0b + 0c) >=95% comprehension gate. Passing the beta-readiness
+contract would make a candidate ready for an owner decision; it would not
+authorize a tag, publication, or announcement.
+
+**Available on unreleased `main`** — everything above without a *planned*
+qualifier, including cockpit-complete delivery, live run steering, visible
+operation feedback, review evidence lenses, per-run cost counterfactuals, and
+reusable workflows — all proven against a real multi-repository product (the
+first cross-repository CivicSuite delivery was pushed, PR'd, and merged from
+the cockpit).
+**Longer-term planned destination** — full Phase 0 comprehension, campaigns,
+triggers, analytics, Agent Client Protocol transport, broader API support, and
+full-organization CivicSuite operation.
 
 Planned items are proposals recorded in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), not dated commitments.
 
