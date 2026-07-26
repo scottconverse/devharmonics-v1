@@ -104,21 +104,21 @@ export class OpenRouterService {
     return new OpenRouterAdapter(key);
   }
 
-  async assertPaidRoutingAllowed(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = 0): Promise<void> {
+  async assertPaidRoutingAllowed(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = Number.NaN): Promise<void> {
     const reservation = await this.acquirePaidRouting(config, runId, estimatedCostUsd);
     reservation.cancelBeforeInvocation();
   }
 
-  async assertPaidWorkbenchAllowed(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = 0): Promise<void> {
+  async assertPaidWorkbenchAllowed(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = Number.NaN): Promise<void> {
     const reservation = await this.acquirePaidWorkbench(config, sessionId, estimatedCostUsd);
     reservation.cancelBeforeInvocation();
   }
 
-  async acquirePaidRouting(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = 0, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
+  async acquirePaidRouting(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = Number.NaN, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
     return this.acquirePaidSpend(config, "run", runId, estimatedCostUsd, expectedReceiptCount);
   }
 
-  async acquirePaidWorkbench(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = 0, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
+  async acquirePaidWorkbench(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = Number.NaN, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
     return this.acquirePaidSpend(config, "workbench", sessionId, estimatedCostUsd, expectedReceiptCount);
   }
 
@@ -126,6 +126,11 @@ export class OpenRouterService {
     const reservation = await this.acquirePaidRouting(config, runId, estimatedCostUsd, expectedReceiptCount);
     try {
       reservation.markInvoked();
+    } catch (error) {
+      reservation.cancelBeforeInvocation();
+      throw error;
+    }
+    try {
       const result = await action(reservation);
       reservation.settleAfterDurableReceipt();
       return result;
@@ -143,6 +148,9 @@ export class OpenRouterService {
     if (config.openRouter.perRunLimitUsd <= 0 || config.openRouter.monthlyLimitUsd <= 0) {
       throw new Error("OpenRouter requires positive per-run and monthly spending limits");
     }
+    if (!Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
+      throw new Error("OpenRouter estimated cost could not be verified; paid routing is stopped");
+    }
     const reservationId = this.ledger.reservePaidSpend({
       scopeType,
       scopeId,
@@ -156,7 +164,10 @@ export class OpenRouterService {
       if (!status.connected) throw new Error("OpenRouter OAuth connection is unavailable");
       if (!status.key) throw new Error("OpenRouter key limits and credits could not be verified; paid routing is stopped");
       const remaining = numeric(status.key?.limit_remaining);
-      if (remaining !== null && remaining < estimatedCostUsd) throw new Error(`OpenRouter key has only $${remaining.toFixed(4)} remaining`);
+      if (remaining === null || remaining <= 0) {
+        throw new Error("OpenRouter key remaining credit is missing, invalid, or exhausted; paid routing is stopped");
+      }
+      if (remaining < estimatedCostUsd) throw new Error(`OpenRouter key has only $${remaining.toFixed(4)} remaining`);
     } catch (error) {
       this.ledger.releasePaidSpendReservation(reservationId);
       throw error;
@@ -179,10 +190,16 @@ export class OpenRouterService {
   }
 
   async assertQualificationCredit(estimatedCostUsd: number | null): Promise<void> {
+    if (estimatedCostUsd === null || !Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
+      throw new Error("OpenRouter estimated qualification cost could not be verified; the paid qualification was stopped");
+    }
     const status = await this.status();
     if (!status.connected || !status.key) throw new Error("OpenRouter key limits and credits could not be verified; the paid qualification was stopped");
     const remaining = numeric(status.key.limit_remaining);
-    if (remaining !== null && estimatedCostUsd !== null && remaining < estimatedCostUsd) {
+    if (remaining === null || remaining <= 0) {
+      throw new Error("OpenRouter key remaining credit is missing, invalid, or exhausted; the paid qualification was stopped");
+    }
+    if (remaining < estimatedCostUsd) {
       throw new Error(`OpenRouter key has only $${remaining.toFixed(4)} remaining, below the estimated qualification cost`);
     }
   }
