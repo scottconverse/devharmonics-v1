@@ -141,6 +141,7 @@ test("npm declarations use maintained package-spec semantics instead of prefix g
         alias: "npm:real-package@1.2.3",
         tarball: "https://example.invalid/archive.tgz",
         local: "file:../local",
+        localLink: "link:../shared",
         channel: "latest",
         equalsPin: "=1.0.0",
         equalsVPin: "=v2.3.4",
@@ -160,6 +161,7 @@ test("npm declarations use maintained package-spec semantics instead of prefix g
     ["alias", "alias", undefined],
     ["tarball", "direct", undefined],
     ["local", "file", undefined],
+    ["locallink", "file", undefined],
     ["channel", "tag", undefined],
     ["equalspin", "exact", "1.0.0"],
     ["equalsvpin", "exact", "2.3.4"],
@@ -174,6 +176,9 @@ test("npm parser failures become explicit evidence instead of dependency facts",
         " leading-space": "1.2.3",
         invalidWorkspaceRange: "workspace:not a range",
         invalidWorkspaceRemote: "workspace:https://bad.invalid/x",
+        invalidLinkRemote: "link:https://bad.invalid/x",
+        invalidLinkTag: "link:latest",
+        invalidLinkAbsolute: "link:/absolute",
         malformed: "not a valid tag",
         unsupported: "catalog:shared",
       },
@@ -187,6 +192,9 @@ test("npm parser failures become explicit evidence instead of dependency facts",
     locator: item.locator,
   })), [
     { state: "malformed", locator: "/dependencies/ leading-space" },
+    { state: "malformed", locator: "/dependencies/invalidLinkAbsolute" },
+    { state: "malformed", locator: "/dependencies/invalidLinkRemote" },
+    { state: "malformed", locator: "/dependencies/invalidLinkTag" },
     { state: "malformed", locator: "/dependencies/invalidWorkspaceRange" },
     { state: "malformed", locator: "/dependencies/invalidWorkspaceRemote" },
     { state: "malformed", locator: "/dependencies/malformed" },
@@ -283,7 +291,7 @@ test("PEP parser contract preserves whitespace and distinguishes unversioned dec
   const result = await extract(available([
     manifest("pyproject.toml", [
       "[project]",
-      'dependencies = ["  idna == 3.10  ", "packaging>=24,"]',
+      'dependencies = ["  idna == 3.10  ", "packaging>=24,", "parenthesized (>=1.0,)", "bounded (>1,<2,)"]',
       "",
     ].join("\n")),
   ]));
@@ -305,6 +313,20 @@ test("PEP parser contract preserves whitespace and distinguishes unversioned dec
     {
       packageName: "packaging",
       rawDeclaration: "packaging>=24,",
+      kind: "range",
+      assessment: "unassessed",
+      exactVersion: undefined,
+    },
+    {
+      packageName: "parenthesized",
+      rawDeclaration: "parenthesized (>=1.0,)",
+      kind: "range",
+      assessment: "unassessed",
+      exactVersion: undefined,
+    },
+    {
+      packageName: "bounded",
+      rawDeclaration: "bounded (>1,<2,)",
       kind: "range",
       assessment: "unassessed",
       exactVersion: undefined,
@@ -341,7 +363,7 @@ test("PEP 440 arbitrary equality remains an exact dependency constraint", async 
   const result = await extract(available([
     manifest("pyproject.toml", [
       "[project]",
-      'dependencies = ["demo===1.0", "legacy===legacy-version", "embedded===foo===bar"]',
+      'dependencies = ["demo===1.0", "legacy===legacy-version", "embedded===foo===bar", "paren (===1)", "paren-embedded (===foo===bar,)"]',
       "",
     ].join("\n")),
   ]));
@@ -357,6 +379,8 @@ test("PEP 440 arbitrary equality remains an exact dependency constraint", async 
     { packageName: "demo", kind: "exact", assessment: "exact_pin", exactVersion: "1.0" },
     { packageName: "legacy", kind: "exact", assessment: "exact_pin", exactVersion: "legacy-version" },
     { packageName: "embedded", kind: "exact", assessment: "exact_pin", exactVersion: "foo===bar" },
+    { packageName: "paren", kind: "exact", assessment: "exact_pin", exactVersion: "1" },
+    { packageName: "paren-embedded", kind: "exact", assessment: "exact_pin", exactVersion: "foo===bar" },
   ]);
 });
 

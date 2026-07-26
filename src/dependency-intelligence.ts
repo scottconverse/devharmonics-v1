@@ -245,6 +245,24 @@ function npmConstraint(packageName: string, raw: string): NpmConstraintResult {
         };
       }
     }
+    if (protocol === "link") {
+      let targetType: NpmPackageSpec["type"];
+      try {
+        targetType = npmPackageArg.resolve(packageName, target, ".").type;
+      } catch (error) {
+        return {
+          state: "malformed",
+          detail: safeDetail(error, "link protocol requires a relative directory path"),
+        };
+      }
+      const relativeDirectory = (target.startsWith("./") || target.startsWith("../")) && targetType === "directory";
+      if (!relativeDirectory) {
+        return {
+          state: "malformed",
+          detail: "link protocol requires a relative directory path",
+        };
+      }
+    }
     const kind: DependencyConstraintKind = protocol === "workspace" ? "workspace" : "file";
     return {
       constraint: {
@@ -435,6 +453,13 @@ function markerSeparatorIndex(value: string): number {
   return separator;
 }
 
+function withoutTrailingVersionComma(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.endsWith(",")) return trimmed.slice(0, -1).trim();
+  if (/,\s*\)$/.test(trimmed)) return trimmed.replace(/,\s*\)$/, ")");
+  return null;
+}
+
 interface ArbitraryEqualityRewrite {
   text: string;
   specs: Array<{ operator: string; version: string }>;
@@ -461,11 +486,15 @@ function rewriteArbitraryEqualityRequirement(value: string): ArbitraryEqualityRe
   }
   if (specifierIndex < 0) return null;
 
-  const prefix = value.slice(0, specifierIndex).trim();
+  let prefix = value.slice(0, specifierIndex).trim();
   let specifierText = value.slice(specifierIndex).trim();
-  if (specifierText.startsWith("(") && specifierText.endsWith(")")) {
-    specifierText = specifierText.slice(1, -1).trim();
+  const parenthesized = prefix.endsWith("(");
+  if (parenthesized) {
+    prefix = prefix.slice(0, -1).trim();
+    if (!specifierText.endsWith(")")) return null;
+    specifierText = specifierText.slice(0, -1).trim();
   }
+  if (specifierText.endsWith(",")) specifierText = specifierText.slice(0, -1).trim();
   const specs = specifierText.split(",").map((clause) => {
     const match = /^(===|~=|==|!=|<=|>=|<|>)\s*(.*)$/.exec(clause.trim());
     return match ? { operator: match[1]!, version: match[2]!.trim() } : null;
@@ -479,10 +508,11 @@ function rewriteArbitraryEqualityRequirement(value: string): ArbitraryEqualityRe
     return null;
   }
   const complete = specs as Array<{ operator: string; version: string }>;
+  const rewrittenSpecs = complete.map((item) => (
+    item.operator === "===" ? "==0" : `${item.operator}${item.version}`
+  )).join(",");
   return {
-    text: `${prefix}${complete.map((item) => (
-      item.operator === "===" ? "==0" : `${item.operator}${item.version}`
-    )).join(",")}`,
+    text: parenthesized ? `${prefix} (${rewrittenSpecs})` : `${prefix}${rewrittenSpecs}`,
     specs: complete,
   };
 }
@@ -502,9 +532,10 @@ function parsePythonRequirement(raw: string): ParsedPythonRequirement {
       requirementOnly = parsePipRequirementsLine(requirementText.trim());
     } catch {
       const trimmedRequirement = requirementText.trim();
-      if (trimmedRequirement.endsWith(",")) {
+      const withoutTrailingComma = withoutTrailingVersionComma(trimmedRequirement);
+      if (withoutTrailingComma !== null) {
         try {
-          requirementOnly = parsePipRequirementsLine(trimmedRequirement.slice(0, -1).trim());
+          requirementOnly = parsePipRequirementsLine(withoutTrailingComma);
           trailingComma = requirementOnly !== null;
         } catch {
           // The maintained strict parser also does not currently accept
