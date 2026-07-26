@@ -1,15 +1,15 @@
 # DevHarmonics Canonical Product Specification
 
 Document status: **Canonical product direction**
-Specification version: **1.14**
+Specification version: **1.16**
 Written: **2026-07-13**
 Revised: **2026-07-26**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Canonical Product Specification](https://docs.google.com/document/d/1rd-_gqHHPZHhTkrULJR9tHcbAVUOGONsbuEFCV-8pRQ/edit?usp=drivesdk)
 
-Revision history: **v1.14 (2026-07-26)** — Replaced the narrow "one product airtight" advancement gate with the owner-locked full-feature beta definition. Beta now requires every feature and function committed by this specification, including Milestones A through D and every applicable functional requirement, to be implemented and verified as an integrated product. Intermediate gates prove that a feature slice is safe to integrate; they are not miniature release-readiness or polishing gates. Obvious defects and foundational correctness, security, data-loss, and recovery risks are fixed as encountered, while broad polish and production hardening wait until the feature set is complete. Tagging and publication still require separate owner authorization.
+Revision history: **v1.16 (2026-07-26)** — Removed the remaining roadmap ambiguity around beta breadth: ACP and the direct OpenAI API adapter are mandatory beta implementations even though they remain disabled until configured; other direct APIs remain optional. Locked one accountable feature-first dependency sequence in which the complete restart-safe campaign kernel includes diagnostic partitioning and differential/regression controls, all adaptive-workforce and ecosystem tracks join before integrated proof, and only broad whole-product hardening follows feature completion.
 
-Prior revision: **v1.13 (2026-07-25)** — Recorded the former narrow beta contract: Option A ("one product airtight"), Block 0a plus Slice D, and three qualifying real deliveries performed only after Block 0a passes. This contract was superseded by v1.14 because it did not represent completion of the specified product.
+Prior revisions: **v1.15 (2026-07-26)** reconciled the full-feature beta contract with the live feature-first sequence, recorded P0-2 complete, placed recovery and structural workflow enforcement in the campaign kernel, required all Milestone C/D features before final proof, and reserved broad hardening for the post-feature pass. **v1.14 (2026-07-26)** replaced the narrow "one product airtight" gate with the owner-locked full-feature beta definition. **v1.13 (2026-07-25)** recorded the superseded narrow Option A path.
 
 Prior revision: **v1.12 (2026-07-16)** — Recorded the owner's licensing decision: DevHarmonics is released under the Apache License 2.0. The licensing open question is resolved and removed; the repository carries the canonical LICENSE file, and the version-consistency check enforces the license file plus matching package and lockfile metadata.
 
@@ -393,7 +393,7 @@ Primary subscription transports are Codex, Claude Code, and Google Antigravity t
 
 #### Agent Client Protocol
 
-ACP SHOULD be supported where a provider or agent exposes it reliably. ACP is an additional transport, not the definition of the product and not assumed to be the authentication mechanism for every subscription.
+ACP MUST ship for beta through the provider-neutral transport contract, with Open Interpreter as the first conformance target. ACP SHOULD also be used for other providers or agents where they expose it reliably. It is an additional transport, not the definition of the product and not assumed to be the authentication mechanism for every subscription.
 
 #### Local model runtimes
 
@@ -407,7 +407,7 @@ Mellum2 is the first named local specialist family. The registry and scheduler M
 
 OpenRouter is the preferred first implementation for API-based cloud breadth. It is disconnected and paid routing is disabled by default. Connection uses OAuth and OS-protected credential storage so a user never manually handles an API key. OAuth connection does not authorize spending: paid fallback separately requires project and OpenRouter policy gates, positive per-run and monthly limits, explicit model activation, current qualification, and live credit/limit verification. The rest of DevHarmonics remains usable with no model API keys.
 
-Direct provider APIs MAY be added later when they provide a material capability not available through subscriptions, local runtimes, or OpenRouter.
+A direct OpenAI API adapter MUST ship for beta through the provider-neutral API contract and remain disabled until credentials, model selection, privacy policy, and spending policy are configured. Additional direct provider APIs MAY be added later when they provide a material capability not available through subscriptions, local runtimes, OpenRouter, or the direct OpenAI adapter.
 
 ### 7.6 Live model registry
 
@@ -1117,12 +1117,12 @@ Beta readiness requires all of the following:
    required CivicSuite acceptance level is mapped to implementation and exact
    verification evidence. A placeholder, advisory-only contract, hidden
    developer path, or roadmap claim is not implementation.
-2. **Complete factory comprehension.** Blocks 0a, 0b, and 0c pass across the
-   full configured local repository census with at least 95% correct
-   comprehension and zero silent wrong answers for version, validator, and
-   dependency facts. The four Block 0a wrong-answer criticals remain mandatory:
+2. **Complete factory comprehension.** The full configured local repository
+   census passes with at least 95% correct comprehension and zero silent wrong
+   answers for version, validator, dependency, repository-role, topology, and
+   release-truth facts. These four wrong-answer criticals remain mandatory:
    - **P0-1:** authoritative release-version comprehension — complete;
-   - **P0-2:** nested-manifest and subproject comprehension — in progress;
+   - **P0-2:** nested-manifest and subproject comprehension — complete;
    - **P0-3:** structured dependency parsing and provenance — pending; and
    - **P0-4:** real validator discovery without no-op coverage — complete.
 3. **Complete product-manager factory loop.** A product owner can supply an
@@ -1246,23 +1246,23 @@ continued status failure, `delivery.tagged` event failure, and any unexpected
 post-publication local reconciliation error are nonfatal `DEGRADED` conditions
 requiring owner repair, and an attempted event is never retried.
 
-For the pinned CivicRecords AI acceptance repository, this contract
+P0-2 is implemented on `main` by merged PR #58 at merge commit `09209e5`.
+For the pinned CivicRecords AI acceptance repository, the accepted contract
 automatically selects `backend`, declares `1.7.3` from
 `backend/pyproject.toml`, records `frontend` as private and `docs` as
-versionless, and requires no per-delivery approval. Its backend and frontend
-validators execute only from their contained working directories. All
-manifest, workflow, and release-script evidence attributed to a discovery
-snapshot must come from the same immutable commit.
+versionless, and requires no per-delivery approval. Backend and frontend
+validators run only from contained working directories; every manifest,
+workflow, and release-script fact comes from the same immutable commit.
 
 Human approvals attach to consequential product and publication actions:
 approving the plan, resolving genuine release-unit ambiguity, merging, and
 tagging. Routine repository comprehension, validator discovery, and reuse of a
 still-valid persisted decision proceed autonomously.
 
-The Block 0a audit is an intermediate correctness gate. It proves four critical
-comprehension foundations and permits later feature work and real deliveries to
-trust that substrate. It is not beta readiness. Full beta includes the complete
-Phase 0 gate over Blocks 0a, 0b, and 0c.
+The four P0 correctness checks are intermediate gates. They prove critical
+comprehension foundations and permit later features and real deliveries to
+trust that substrate. They are not beta readiness. Full beta also requires the
+concrete full-repository comprehension census described above.
 
 Meeting the complete contract establishes **beta readiness**, not publication. Creating
 a beta tag, publishing a release, or announcing availability requires a
@@ -1331,9 +1331,9 @@ Priorities:
 
 Goal: expand the locally operated factory's available models, tools, and integrations without creating a DevHarmonics cloud platform.
 
-These capabilities are part of the full-feature beta. Individual paid,
-privacy-sensitive, or third-party connections remain opt-in and disabled until
-configured by the owner.
+Milestone D is **required to ship and optional to enable** for full-feature
+beta. Individual paid, privacy-sensitive, or third-party connections remain
+opt-in and disabled until configured by the owner.
 
 Priorities:
 

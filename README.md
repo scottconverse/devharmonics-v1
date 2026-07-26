@@ -441,18 +441,35 @@ are not miniature release-readiness or polishing gates.
 Current foundation status:
 
 - P0-1 release-version comprehension — complete;
-- P0-2 monorepo/subproject comprehension — in progress;
-- P0-3 structured dependency parsing and provenance — pending;
+- P0-2 monorepo/subproject comprehension — complete in merged PR #58
+  (`09209e5`);
+- P0-3 structured dependency parsing and provenance — next;
 - P0-4 real validator discovery — complete;
 - full restart reconstruction and automatic worktree cleanup — pending.
 
 These items are necessary foundations, not the beta boundary. Beta additionally
-requires the complete Phase 0 census; campaigns, pilots, promotion, shards,
-diagnostics, and differential evidence; analytics and evaluation; enforced
-workflows and triggers; ACP and specified provider/runtime/tool breadth;
-portable handoffs; all CivicSuite acceptance levels; and integrated real-product
-proof. Optional connections remain disabled until configured, but their product
+requires every Milestone C and D priority, the full configured-repository
+comprehension census, all
+CivicSuite acceptance levels, and integrated real-product proof. Optional
+connections remain disabled until configured, but their specified product
 capabilities are implemented before beta.
+
+The feature-first delivery order is:
+
+1. complete P0-3 while the broader comprehension census continues in parallel;
+2. enforce workflow and campaign-template contracts;
+3. build the restart-safe campaign kernel with pilots, promotion, shards,
+   diagnostics, differential evidence, and regression accounting;
+4. complete the remaining non-runtime adaptive-workforce capabilities;
+5. deliver product-manager analytics, evaluation, improvement, and trigger
+   controls;
+6. deliver Open Interpreter followed by ACP conformance, OpenRouter completion,
+   direct OpenAI, and ecosystem packaging;
+7. deliver portable handoff plus basic installer and provider onboarding;
+8. join every feature track, close the census and requirements trace, and run
+   integrated real-product proofs; and
+9. perform broad whole-product hardening once, on the complete feature set,
+   before the exact-candidate beta gate.
 
 **Available on unreleased `main`** — cockpit-complete delivery, live run
 steering, visible operation feedback, review evidence lenses, per-run cost
@@ -460,10 +477,12 @@ counterfactuals, and reusable workflow foundations — all proven against a real
 multi-repository product (the first cross-repository CivicSuite delivery was
 pushed, PR'd, and merged from the cockpit). The pending foundation and
 remaining-before-beta lists are not shipped claims.
-**Remaining before beta** — full Phase 0 comprehension, campaigns, triggers,
-analytics and evaluation, Agent Client Protocol transport, broader provider and
-runtime support, recovery, portable handoffs, and full CivicSuite program
-operation.
+**Remaining before beta** — P0-3 and the broader comprehension census;
+structurally enforced workflows; restart-safe campaigns; the remaining adaptive
+workforce, analytics, evaluation, learning, and trigger capabilities; Agent
+Client Protocol transport; broader provider/runtime/tool support; portable
+handoff; basic installer/provider onboarding; full CivicSuite program
+operation; integrated proof; and one final whole-product hardening pass.
 
 The implementation order is recorded in
 [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), and the exhaustive
