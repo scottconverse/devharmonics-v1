@@ -1170,17 +1170,24 @@ and re-selection use compare-and-swap against the expected revision: revision
 zero means and requires true absence for the first write; later writes require
 the exact current positive revision. The API accepts only an exact candidate
 from an immutable commit inventory and rejects stale competing owner actions.
-Repository metadata refresh preserves the reserved selection value atomically
-with its write; it cannot restore an older revision. The tag gate always
-re-resolves the exact merge commit against the current selection revision.
-From that final resolution through tag creation and publication, an atomic
-filesystem lock keyed by the canonical database identity and repository
-prevents a competing selection write from any local process or filesystem
-alias from changing the authority. A crash-stale lock remains fail-closed: it
-is never aged out, stolen, or silently deleted. Only the owner may remove that
-exact lock after independently proving that no selector or tag operation for
-that database and repository remains active. Delivery evidence records the
-commit, selection state and revision, selected unit, source manifest,
+Only the typed selector CAS may create or replace the reserved selection.
+Generic repository insertion or metadata refresh removes an incoming reserved
+value when none exists, while atomically preserving an existing raw value —
+valid, null, string, or malformed — so refresh cannot seed or restore a
+revision. The tag gate always re-resolves the exact merge commit against the
+current selection revision. From that final resolution through tag creation
+and publication, an atomic filesystem lock keyed by the canonical database
+identity and repository prevents a competing selection write from any local
+process or filesystem alias from changing the authority. Lock handles are
+runtime-frozen, and their opaque token is bound to that one canonical key and a
+present lock path before an internal CAS may write. Cleanup always revokes the
+token and never replaces the callback result or original error; an unlink
+failure emits an explicit `DEGRADED` owner-repair diagnostic, never removes or
+replaces any remaining path, and any remaining path stays fail-closed. A
+crash-stale lock is never aged out, stolen, or silently deleted. Only the owner
+may remove that exact lock after independently proving that no selector or tag
+operation for that database and repository remains active. Delivery evidence
+records the commit, selection state and revision, selected unit, source manifest,
 provenance, and every inventoried unit's selection reason and diagnostics.
 
 For the pinned CivicRecords AI acceptance repository, this contract

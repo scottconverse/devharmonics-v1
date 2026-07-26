@@ -3382,8 +3382,8 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
       url: "https://example.invalid/repo", cloneUrl: "https://example.invalid/repo.git", defaultBranch: "main", visibility: "private",
       archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
       owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
-      intelligence: { releaseUnitSelection: { version: 1, cwd: "backend", state: "active", revision: 1,
-        selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null } } });
+      intelligence: {} });
+    ledger.updateReleaseUnitSelection("repo:invalid", "backend", 0);
     const runId = ledger.createRun("Refuse invalid release authority", root);
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
@@ -3573,8 +3573,8 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
       url: "https://example.invalid/truth", cloneUrl: "https://example.invalid/truth.git", defaultBranch: "main", visibility: "private",
       archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
       owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
-      intelligence: { releaseUnitSelection: { version: 1, cwd: "a", state: "active", revision: 1,
-        selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null } } });
+      intelligence: {} });
+    ledger.updateReleaseUnitSelection("repo:truth", "a", 0);
     await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");

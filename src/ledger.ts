@@ -211,11 +211,8 @@ export interface ReleaseUnitSelection {
   version: 1; cwd: string; state: "active" | "invalidated"; revision: number; selectedAt: string;
   invalidatedAt: string | null; invalidationReason: string | null;
 }
-export type ReleaseUnitSelectionDecode =
-  | { kind: "absent" }
-  | { kind: "valid"; value: ReleaseUnitSelection }
-  | { kind: "malformed"; detail: string };
-export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; const releaseUnitTokens = new Set<symbol>();
+export type ReleaseUnitSelectionDecode = { kind: "absent" } | { kind: "valid"; value: ReleaseUnitSelection } | { kind: "malformed"; detail: string };
+export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; const releaseUnitTokens = new Map<symbol, string>();
 
 const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
 function exactIso(value: unknown): value is string {
@@ -3199,7 +3196,7 @@ export class Ledger {
         archived, size_kb, language, description, intelligence_json, observed_at,
         local_path, repository_role, expected_branch, owners_json, dependency_repository_ids_json,
         validators_json, governance_sources_json, governance_rules_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_remove(?, '$.releaseUnitSelection'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         product_id = excluded.product_id, name = excluded.name, full_name = excluded.full_name,
         url = excluded.url, clone_url = excluded.clone_url, default_branch = excluded.default_branch,
@@ -3239,8 +3236,8 @@ export class Ledger {
   }
 
   private releaseUnitLockKey(repositoryId: string): string { return `${realpathSync.native(this.filename)}.release-unit-${createHash("sha256").update(repositoryId).digest("hex")}.lock`; }
-  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = { key: this.releaseUnitLockKey(repositoryId), token: Symbol() }; try { closeSync(openSync(lock.key, "wx")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } releaseUnitTokens.add(lock.token); return lock; }
-  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { if (releaseUnitTokens.delete(lock.token)) unlinkSync(lock.key); }
+  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = Object.freeze({ key: this.releaseUnitLockKey(repositoryId), token: Symbol() }); try { closeSync(openSync(lock.key, "wx")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } releaseUnitTokens.set(lock.token, lock.key); return lock; }
+  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { if (releaseUnitTokens.get(lock.token) !== lock.key) return; try { unlinkSync(lock.key); } catch (error) { console.error(`DEGRADED: stale release-unit lock '${lock.key}' requires owner repair after proving no selector or tag operation remains active (${error instanceof Error ? error.message : String(error)})`); } finally { releaseUnitTokens.delete(lock.token); } }
   async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> { const lock = this.acquireReleaseUnitLock(repositoryId); try { return await action(lock); } finally { this.releaseReleaseUnitLock(lock); } }
 
   updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number, lock?: ReleaseUnitLock): ReleaseUnitSelection {
@@ -3265,8 +3262,7 @@ export class Ledger {
     const own = !lock, holder = lock ?? this.acquireReleaseUnitLock(repositoryId);
     try {
     const key = this.releaseUnitLockKey(repositoryId);
-    if (!releaseUnitTokens.has(holder.token) || holder.key !== key)
-      throw new Error("Release-unit selection or tagging is already in progress");
+    if (releaseUnitTokens.get(holder.token) !== key || holder.key !== key || !existsSync(key)) throw new Error("Release-unit selection or tagging is already in progress");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const repository = this.getRepository(repositoryId);
@@ -3387,7 +3383,7 @@ export class Ledger {
         INSERT INTO repositories
           (id, product_id, name, full_name, url, clone_url, default_branch, visibility,
            archived, size_kb, language, description, intelligence_json, observed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_remove(?, '$.releaseUnitSelection'), ?)
         ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id, name = excluded.name,
           full_name = excluded.full_name, url = excluded.url, clone_url = excluded.clone_url,
           default_branch = excluded.default_branch, visibility = excluded.visibility,
