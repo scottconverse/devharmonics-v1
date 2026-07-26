@@ -1,13 +1,15 @@
 # DevHarmonics Canonical Product Specification
 
 Document status: **Canonical product direction**
-Specification version: **1.13**
+Specification version: **1.14**
 Written: **2026-07-13**
-Revised: **2026-07-25**
+Revised: **2026-07-26**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Canonical Product Specification](https://docs.google.com/document/d/1rd-_gqHHPZHhTkrULJR9tHcbAVUOGONsbuEFCV-8pRQ/edit?usp=drivesdk)
 
-Revision history: **v1.13 (2026-07-25)** — Recorded the owner-locked beta contract: Option A ("one product airtight"), Block 0a plus Slice D, and three qualifying real deliveries performed only after Block 0a passes. Distinguished the Block 0a beta audit from the later full Phase 0 comprehension gate, and kept beta readiness separate from publication or tagging.
+Revision history: **v1.14 (2026-07-26)** — Replaced the narrow "one product airtight" advancement gate with the owner-locked full-feature beta definition. Beta now requires every feature and function committed by this specification, including Milestones A through D and every applicable functional requirement, to be implemented and verified as an integrated product. Intermediate gates prove that a feature slice is safe to integrate; they are not miniature release-readiness or polishing gates. Obvious defects and foundational correctness, security, data-loss, and recovery risks are fixed as encountered, while broad polish and production hardening wait until the feature set is complete. Tagging and publication still require separate owner authorization.
+
+Prior revision: **v1.13 (2026-07-25)** — Recorded the former narrow beta contract: Option A ("one product airtight"), Block 0a plus Slice D, and three qualifying real deliveries performed only after Block 0a passes. This contract was superseded by v1.14 because it did not represent completion of the specified product.
 
 Prior revision: **v1.12 (2026-07-16)** — Recorded the owner's licensing decision: DevHarmonics is released under the Apache License 2.0. The licensing open question is resolved and removed; the repository carries the canonical LICENSE file, and the version-consistency check enforces the license file plus matching package and lockfile metadata.
 
@@ -1098,33 +1100,79 @@ The current release already provides:
 It does not yet provide the complete product defined here. The tagged v0.6.1
 release and subsequent unreleased work have advanced several capabilities beyond
 this baseline summary; `README.md` is the authority for what the current
-checkout ships. The beta-readiness contract below is a separate advancement
-gate and must not be inferred from a feature list.
+checkout ships.
 
-### 14.2 Beta-readiness contract: one product airtight
+### 14.2 Full-feature beta contract
 
-The owner-selected beta scope is **Option A: one product airtight**. The
-full-organization destination remains unchanged, but it is reached by widening
-from a proven product-sized unit rather than by holding the first beta for every
-CivicSuite repository.
+**Beta means the complete product specified here.** It is not a narrow
+advancement subset, infrastructure preview, or promise that unfinished
+capability families will arrive later. Every committed feature and function in
+this specification must exist, be integrated through the real product, and have
+evidence at the layer of its claim before the beta candidate can pass.
 
 Beta readiness requires all of the following:
 
-1. **Block 0a complete and audited.** Block 0a is the four wrong-answer
-   criticals:
+1. **Complete specification coverage.** Every `FR-*` requirement,
+   every Milestone A-D priority, every decided product capability, and every
+   required CivicSuite acceptance level is mapped to implementation and exact
+   verification evidence. A placeholder, advisory-only contract, hidden
+   developer path, or roadmap claim is not implementation.
+2. **Complete factory comprehension.** Blocks 0a, 0b, and 0c pass across the
+   full configured local repository census with at least 95% correct
+   comprehension and zero silent wrong answers for version, validator, and
+   dependency facts. The four Block 0a wrong-answer criticals remain mandatory:
    - **P0-1:** authoritative release-version comprehension — complete;
-   - **P0-2:** nested-manifest and subproject comprehension — pending;
+   - **P0-2:** nested-manifest and subproject comprehension — in progress;
    - **P0-3:** structured dependency parsing and provenance — pending; and
    - **P0-4:** real validator discovery without no-op coverage — complete.
-2. **Slice D complete.** Restart hardening must reconstruct interrupted
-   integration sets, reconcile retained work safely, continue according to the
-   recorded phase, and clean up worktrees automatically. This remains pending.
-3. **Three qualifying real deliveries after Block 0a passes.** Earlier
-   deliveries cannot prove the repaired comprehension substrate. The required
-   sequence is:
+3. **Complete product-manager factory loop.** A product owner can supply an
+   objective, approve the consequential plan and authority boundaries, let
+   DevHarmonics compose and coordinate the adaptive workforce, steer live work,
+   run representative pilots and governed campaigns, review/fix/re-review,
+   validate and reconcile results, and receive evidence-backed delivery without
+   manually operating agent terminals.
+4. **Complete specified breadth.** Campaign orchestration, evaluation and
+   improvement, workflows and triggers, analytics, ACP, specified provider and
+   runtime breadth, tools and skills, portable handoffs, and policy-bounded
+   optional integrations are implemented. "Optional" means disabled until the
+   owner enables it; it does not mean absent from the beta build.
+5. **Complete restart-safe integration.** Interrupted integration sets and
+   campaigns reconstruct from durable state, retained work is reconciled,
+   continuation follows the recorded phase without repeating accepted or
+   consequential actions, and temporary worktrees are cleaned safely.
+6. **Complete real-product proof after the relevant foundations land.** At
+   minimum, DevHarmonics completes:
    - one single-repository delivery;
    - one coordinated module + CivicCore delivery; and
-   - one delivery in which divergence is detected honestly and contained.
+   - one delivery in which divergence is detected honestly and contained;
+   - one governed pilot-to-campaign workflow with diagnostic partitioning,
+     review, repair, differential validation, and regression accounting;
+   - one policy-bounded trigger-to-objective-draft workflow; and
+   - one evaluation-backed recommendation that can be accepted, rejected, and
+     rolled back without silently changing authority.
+7. **Pass the exact-candidate full beta gate.** Requirement-by-requirement
+   evidence, affected automated suites, full integrated runtime journeys, and
+   fresh adversarial review must find no unresolved beta blocker.
+
+The beta capability minimum is closed as follows:
+
+| Capability class | Required beta implementation | Default operation |
+|---|---|---|
+| Subscription workers | Codex, Claude Code, and Google Antigravity adapters | Available after provider-owned sign-in |
+| Local workers | Ollama plus the feature-flagged Open Interpreter worker adapter | Ollama available after local discovery; Open Interpreter disabled until enabled |
+| Agent transport | ACP with Open Interpreter as the first conformance target | Disabled until a compatible local agent is configured |
+| API workers | OpenRouter plus a direct OpenAI API adapter through the provider-neutral API contract | Disabled until credentials, models, privacy, and spending policy are configured |
+| Development triggers | GitHub, Linear, local schedule, and monitoring trigger adapters | Disabled until each trigger and bounded policy are configured |
+| Portable operation | Import/export of objective, workflow, evidence, and delivery-handoff bundles | Available locally; never transfers credentials or authority |
+| Explicit exclusions | Hosted DevHarmonics execution, remote-offline workers, enterprise IAM/compliance/secrets administration, and arbitrary email/chat-driven execution | Not part of this product |
+
+Development gates before this exit are integration gates. They prove the new
+slice is real enough to build upon and has not broken established foundations;
+they do not require broad cosmetic polish, clean-machine release rehearsal, or
+user-ready refinement after every feature. Fix immediately when an issue would
+cause silent wrong answers, security or privacy exposure, data loss, repeated
+consequential actions, corrupted integration, or a broken dependency for later
+features. Record other nonblocking polish for the post-feature beta pass.
 
 #### P0-2 normative release-unit contract
 
@@ -1211,13 +1259,12 @@ approving the plan, resolving genuine release-unit ambiguity, merging, and
 tagging. Routine repository comprehension, validator discovery, and reuse of a
 still-valid persisted decision proceed autonomously.
 
-The Block 0a beta audit proves the four critical comprehension foundations
-needed for this deliberately narrow beta. It is not the full Phase 0 exit gate.
-The later Phase 0 gate covers Blocks 0a, 0b, and 0c across the full local
-repository census and requires at least 95% correct comprehension with zero
-silent wrong answers for version, validator, and dependency facts.
+The Block 0a audit is an intermediate correctness gate. It proves four critical
+comprehension foundations and permits later feature work and real deliveries to
+trust that substrate. It is not beta readiness. Full beta includes the complete
+Phase 0 gate over Blocks 0a, 0b, and 0c.
 
-Meeting this contract establishes **beta readiness**, not publication. Creating
+Meeting the complete contract establishes **beta readiness**, not publication. Creating
 a beta tag, publishing a release, or announcing availability requires a
 separate explicit owner authorization.
 
@@ -1280,18 +1327,23 @@ Priorities:
 12. configurable adversarial review/fix/re-review topologies; and
 13. diagnostic partitioning, test-integrity controls, differential evidence, and regression accounting.
 
-### 14.6 Milestone D: Optional API and ecosystem breadth
+### 14.6 Milestone D: API and ecosystem breadth
 
 Goal: expand the locally operated factory's available models, tools, and integrations without creating a DevHarmonics cloud platform.
+
+These capabilities are part of the full-feature beta. Individual paid,
+privacy-sensitive, or third-party connections remain opt-in and disabled until
+configured by the owner.
 
 Priorities:
 
 1. opt-in OpenRouter with explicit OAuth connection, activated model, privacy, and spending policy;
 2. cost-aware routing and budgets;
-3. additional local runtimes and direct APIs where justified;
+3. the Open Interpreter worker runtime and a direct OpenAI API adapter in
+   addition to Ollama and OpenRouter;
 4. ACP and ecosystem packaging for providers, tools, workflows, skills, and qualification suites;
 5. GitHub and optional Linear triggers under local policy;
-6. portable workflow, objective, evidence, and delivery-handoff bundles for a very small team when useful; and
+6. portable workflow, objective, evidence, and delivery-handoff bundles for a very small team; and
 7. local analytics and evaluation-driven workflow/model improvement.
 
 Milestone D does not include DevHarmonics-hosted execution, remote workers that continue while the computer is off, enterprise IAM/compliance/secrets administration, or a mandatory team service.
@@ -1333,7 +1385,8 @@ DevHarmonics becomes CivicSuite-ready incrementally.
 - Correlate commits, pins, versions, artifacts, documentation, and tests.
 - Report what is proven, what is not proven, and which human approvals remain.
 
-The immediate target is Levels 1–2, followed by Level 3. Levels 4–5 define the product’s proof of maturity.
+Full-feature beta requires Levels 1 through 5. Earlier levels remain useful
+implementation checkpoints, but none independently establishes beta readiness.
 
 ## 16. Success measures
 
