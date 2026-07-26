@@ -208,8 +208,7 @@ export interface RepositoryInspectionRecord extends Omit<RepositoryInspectionInp
 }
 
 export interface ReleaseUnitSelection {
-  version: 1; cwd: string; state: "active" | "invalidated"; revision: number; selectedAt: string;
-  invalidatedAt: string | null; invalidationReason: string | null;
+  version: 1; cwd: string; state: "active" | "invalidated"; revision: number; selectedAt: string; invalidatedAt: string | null; invalidationReason: string | null;
 }
 export type ReleaseUnitSelectionDecode = { kind: "absent" } | { kind: "valid"; value: ReleaseUnitSelection } | { kind: "malformed"; detail: string };
 export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; type ReleaseUnitLockOwner = { key: string; nonce: string; dev: bigint; ino: bigint }; const releaseUnitTokens = new Map<symbol, ReleaseUnitLockOwner>(); function releaseUnitDiagnostic(detail: string): void { try { console.error(`DEGRADED: ${detail}`); } catch {} }

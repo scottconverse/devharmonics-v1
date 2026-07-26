@@ -1194,8 +1194,9 @@ provenance, and every inventoried unit's selection reason and diagnostics.
 Once the remote tag push succeeds, publication is irreversible locally:
 DevHarmonics returns truthful tagged state and never falls back to merged.
 Tagged-status persistence gets one bounded idempotent reconciliation retry;
-continued status failure and `delivery.tagged` event failure are nonfatal
-`DEGRADED` conditions requiring owner repair, and the event is not retried.
+continued status failure, `delivery.tagged` event failure, and any unexpected
+post-publication local reconciliation error are nonfatal `DEGRADED` conditions
+requiring owner repair, and an attempted event is never retried.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from
