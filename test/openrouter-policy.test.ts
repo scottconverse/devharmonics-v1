@@ -9,6 +9,8 @@ class FakePaidSpendLedger {
   readonly activeReservations = new Set<string>();
   readonly reserveInputs: Array<{ scopeType: ScopeType; scopeId: string; estimatedCostUsd: number }> = [];
   releaseCount = 0;
+  markInvokedCount = 0;
+  markInvokedError: Error | null = null;
   private nextId = 1;
 
   reservePaidSpend(input: { scopeType: ScopeType; scopeId: string; estimatedCostUsd: number }): string {
@@ -22,7 +24,10 @@ class FakePaidSpendLedger {
     if (this.activeReservations.delete(id)) this.releaseCount += 1;
   }
 
-  markPaidSpendInvoked(_id: string): void {}
+  markPaidSpendInvoked(_id: string): void {
+    this.markInvokedCount += 1;
+    if (this.markInvokedError) throw this.markInvokedError;
+  }
 
   settlePaidSpendReservation(id: string): boolean {
     return this.activeReservations.delete(id);
@@ -157,6 +162,28 @@ test("routing and Workbench fail closed before reservation when estimated cost i
   }
 });
 
+test("every paid admission helper rejects an omitted or undefined cost before reservation", async () => {
+  const admissions: Array<{
+    name: string;
+    invoke(service: OpenRouterService): Promise<unknown>;
+  }> = [
+    { name: "routing acquire omitted", invoke: (service) => service.acquirePaidRouting(paidConfig(), "run-1") },
+    { name: "routing acquire undefined", invoke: (service) => service.acquirePaidRouting(paidConfig(), "run-1", undefined) },
+    { name: "Workbench acquire omitted", invoke: (service) => service.acquirePaidWorkbench(paidConfig(), "session-1") },
+    { name: "Workbench acquire undefined", invoke: (service) => service.acquirePaidWorkbench(paidConfig(), "session-1", undefined) },
+    { name: "routing assertion omitted", invoke: (service) => service.assertPaidRoutingAllowed(paidConfig(), "run-1") },
+    { name: "routing assertion undefined", invoke: (service) => service.assertPaidRoutingAllowed(paidConfig(), "run-1", undefined) },
+    { name: "Workbench assertion omitted", invoke: (service) => service.assertPaidWorkbenchAllowed(paidConfig(), "session-1") },
+    { name: "Workbench assertion undefined", invoke: (service) => service.assertPaidWorkbenchAllowed(paidConfig(), "session-1", undefined) },
+  ];
+  for (const admission of admissions) {
+    const { ledger, service, statusCalls } = serviceWithBalance(10);
+    await assert.rejects(() => admission.invoke(service), /estimated cost could not be verified/i, admission.name);
+    assert.equal(ledger.reserveInputs.length, 0, admission.name);
+    assert.equal(statusCalls(), 0, admission.name);
+  }
+});
+
 test("a positive sufficient live-credit balance admits routing, Workbench, and qualification", async () => {
   const routing = serviceWithBalance(0.25);
   const routingReservation = await routing.service.acquirePaidRouting(paidConfig(), "run-1", 0.25);
@@ -169,6 +196,15 @@ test("a positive sufficient live-credit balance admits routing, Workbench, and q
 
   const qualification = serviceWithBalance(0.25);
   await qualification.service.assertQualificationCredit(0.25);
+});
+
+test("a verified numeric zero-cost estimate remains admissible", async () => {
+  const { ledger, service, statusCalls } = serviceWithBalance(0.25);
+  const reservation = await service.acquirePaidRouting(paidConfig(), "run-1", 0);
+  assert.equal(ledger.reserveInputs[0]?.estimatedCostUsd, 0);
+  assert.equal(statusCalls(), 1);
+  reservation.cancelBeforeInvocation();
+  assert.equal(ledger.releaseCount, 1);
 });
 
 test("disabled and zero local paid policies fail before reservation or live-credit lookup", async () => {
@@ -202,4 +238,37 @@ test("paid routing never invokes the provider action after live-credit rejection
   assert.equal(providerInvocations, 0);
   assert.equal(ledger.releaseCount, 1);
   assert.equal(ledger.activeReservations.size, 0);
+});
+
+test("a pre-provider invocation-marker failure releases the reservation exactly once", async () => {
+  const { ledger, service } = serviceWithBalance(10);
+  ledger.markInvokedError = new Error("fixture invocation marker failed");
+  let providerInvocations = 0;
+  await assert.rejects(
+    () => service.withPaidRoutingAllowed(paidConfig(), "run-1", 0.25, async () => {
+      providerInvocations += 1;
+      return "unexpected";
+    }),
+    /fixture invocation marker failed/,
+  );
+  assert.equal(ledger.markInvokedCount, 1);
+  assert.equal(providerInvocations, 0);
+  assert.equal(ledger.releaseCount, 1);
+  assert.equal(ledger.activeReservations.size, 0);
+});
+
+test("a post-marker provider-uncertain failure retains the reservation", async () => {
+  const { ledger, service } = serviceWithBalance(10);
+  let providerInvocations = 0;
+  await assert.rejects(
+    () => service.withPaidRoutingAllowed(paidConfig(), "run-1", 0.25, async () => {
+      providerInvocations += 1;
+      throw new Error("fixture provider outcome uncertain");
+    }),
+    /fixture provider outcome uncertain/,
+  );
+  assert.equal(ledger.markInvokedCount, 1);
+  assert.equal(providerInvocations, 1);
+  assert.equal(ledger.releaseCount, 0);
+  assert.equal(ledger.activeReservations.size, 1);
 });

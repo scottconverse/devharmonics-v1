@@ -104,21 +104,21 @@ export class OpenRouterService {
     return new OpenRouterAdapter(key);
   }
 
-  async assertPaidRoutingAllowed(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = 0): Promise<void> {
+  async assertPaidRoutingAllowed(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = Number.NaN): Promise<void> {
     const reservation = await this.acquirePaidRouting(config, runId, estimatedCostUsd);
     reservation.cancelBeforeInvocation();
   }
 
-  async assertPaidWorkbenchAllowed(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = 0): Promise<void> {
+  async assertPaidWorkbenchAllowed(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = Number.NaN): Promise<void> {
     const reservation = await this.acquirePaidWorkbench(config, sessionId, estimatedCostUsd);
     reservation.cancelBeforeInvocation();
   }
 
-  async acquirePaidRouting(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = 0, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
+  async acquirePaidRouting(config: DevHarmonicsConfig, runId: string, estimatedCostUsd = Number.NaN, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
     return this.acquirePaidSpend(config, "run", runId, estimatedCostUsd, expectedReceiptCount);
   }
 
-  async acquirePaidWorkbench(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = 0, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
+  async acquirePaidWorkbench(config: DevHarmonicsConfig, sessionId: string, estimatedCostUsd = Number.NaN, expectedReceiptCount = 1): Promise<PaidSpendReservation> {
     return this.acquirePaidSpend(config, "workbench", sessionId, estimatedCostUsd, expectedReceiptCount);
   }
 
@@ -126,6 +126,11 @@ export class OpenRouterService {
     const reservation = await this.acquirePaidRouting(config, runId, estimatedCostUsd, expectedReceiptCount);
     try {
       reservation.markInvoked();
+    } catch (error) {
+      reservation.cancelBeforeInvocation();
+      throw error;
+    }
+    try {
       const result = await action(reservation);
       reservation.settleAfterDurableReceipt();
       return result;
