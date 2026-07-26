@@ -1,22 +1,166 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
+import * as validatorDiscoveryModule from "../src/validator-discovery.js";
 import {
   createValidatorDiscoverySnapshot,
+  decodePersistedValidatorDiscoveryJson,
   diffValidatorMaps,
   diffValidatorDiscoveries,
+  discoverRepositoryValidatorsAtCommit,
   discoverRepositoryValidators,
   discoveredValidatorMap,
   effectiveValidatorAllowlist,
   validatorCandidateFingerprint,
   validatorStateFingerprint,
 } from "../src/validator-discovery.js";
+import type { ProcessRunner } from "../src/release-units.js";
+
+const exec = promisify(execFile);
 
 async function fixture(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-discovery-"));
 }
+
+async function committedFixture(files: Record<string, string>): Promise<{ root: string; commit: string }> {
+  const root = await fixture();
+  const git = (...args: string[]) => exec("git", args, { cwd: root });
+  await git("init", "-q");
+  await git("config", "user.email", "test@example.invalid");
+  await git("config", "user.name", "DevHarmonics Test");
+  for (const [pathname, text] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, pathname)), { recursive: true });
+    await writeFile(path.join(root, pathname), text);
+  }
+  await git("add", ".");
+  await git("commit", "-qm", "fixture");
+  return { root, commit: (await git("rev-parse", "HEAD")).stdout.trim() };
+}
+
+const processOutput = (stdout: string) => ({ stdout, stderr: "", exitCode: 0, durationMs: 1,
+  timedOut: false, treeKillUnconfirmed: false });
+const EXACT_COMMIT = "a".repeat(40);
+
+test("exact-commit ancillary tree accepts honest-zero output", async () => {
+  const empty: ProcessRunner = async (request) => processOutput(request.args[0] === "cat-file" ? "commit\n" : "");
+  assert.deepEqual((await discoverRepositoryValidatorsAtCommit("C:\\fixture", EXACT_COMMIT, empty)).diagnostics, []);
+});
+
+test("exact-commit ancillary tree runner exceptions degrade instead of rejecting", async () => {
+  let treeCalls = 0;
+  const thrownTree: ProcessRunner = async (request) => {
+    if (request.args[0] === "cat-file") return processOutput("commit\n");
+    if (++treeCalls === 1) return processOutput("");
+    throw new Error("tree runner sentinel");
+  };
+  await assert.doesNotReject(async () => {
+    const result = await discoverRepositoryValidatorsAtCommit("C:\\fixture", EXACT_COMMIT, thrownTree);
+    assert.deepEqual(result.validators, []);
+    assert.deepEqual(result.diagnostics, [{ source: `commit:${EXACT_COMMIT}`, code: "malformed" }]);
+  });
+});
+
+test("exact-commit ancillary blob runner exceptions degrade only that source", async () => {
+  let inventoryRead = true;
+  const thrownBlob: ProcessRunner = async (request) => {
+    if (request.args[1] === "-t") return processOutput("commit\n");
+    if (request.args[0] === "ls-tree" && inventoryRead) { inventoryRead = false; return processOutput(""); }
+    if (request.args[0] === "ls-tree") return processOutput(`100644 blob ${"b".repeat(40)}\t.github/workflows/check.yml\0`);
+    throw new Error("blob runner sentinel");
+  };
+  await assert.doesNotReject(async () => {
+    const result = await discoverRepositoryValidatorsAtCommit("C:\\fixture", EXACT_COMMIT, thrownBlob);
+    assert.deepEqual(result.validators, []);
+    assert.deepEqual(result.diagnostics, [{ source: ".github/workflows/check.yml", code: "malformed" }]);
+  });
+});
+
+test("exact-commit discovery finds nested fixed recipes, qualifies collisions, and ignores mutable edits", async () => {
+  const fixture = await committedFixture({
+    "package.json": JSON.stringify({ scripts: { lint: "ROOT HOSTILE" } }),
+    "backend/pyproject.toml": "[tool.pytest.ini_options]\n[tool.ruff]\n",
+    "worker/pyproject.toml": "[tool.pytest.ini_options]\n",
+    "broken/package.json": "{",
+    "oversized/package.json": " ".repeat(1024 * 1024 + 1),
+    "frontend/package.json": JSON.stringify({ private: true, scripts: {
+      build: "NESTED HOSTILE", lint: "NESTED HOSTILE", test: "NESTED HOSTILE",
+    } }),
+    "scripts/verify-release.sh": "#!/bin/sh\nexit 0\n",
+    ".github/workflows/check.yml": "jobs:\n  integration:\n    steps:\n      - run: |\n          docker compose run api python -m pytest\n",
+  });
+  try {
+    await writeFile(path.join(fixture.root, "backend", "pyproject.toml"), "");
+    await writeFile(path.join(fixture.root, "frontend", "package.json"), "{}");
+    await writeFile(path.join(fixture.root, "scripts", "verify-release.sh"), "");
+    const exact = (validatorDiscoveryModule as unknown as {
+      discoverRepositoryValidatorsAtCommit?: (root: string, head: string) => ReturnType<typeof discoverRepositoryValidators>;
+    }).discoverRepositoryValidatorsAtCommit ?? discoverRepositoryValidators;
+    const result = await exact(fixture.root, fixture.commit);
+    assert.deepEqual(discoveredValidatorMap(result), {
+      build: { command: "npm", args: ["run", "build"], timeoutMs: 600_000, cwd: "frontend" },
+      "backend:pytest": { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000, cwd: "backend" },
+      "frontend:lint": { command: "npm", args: ["run", "lint"], timeoutMs: 600_000, cwd: "frontend" },
+      lint: { command: "npm", args: ["run", "lint"], timeoutMs: 600_000 },
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000, cwd: "backend" },
+      test: { command: "npm", args: ["run", "test"], timeoutMs: 900_000, cwd: "frontend" },
+      "verify-release": { command: "bash", args: ["scripts/verify-release.sh"], timeoutMs: 3_600_000 },
+      "worker:pytest": { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000, cwd: "worker" },
+    });
+    assert.deepEqual(result.signals.map((signal) => signal.kind), ["compose_test_evidence"]);
+    assert.deepEqual(result.diagnostics, [{ source: "broken/package.json", code: "malformed" }, { source: "oversized/package.json", code: "oversized" }]);
+    assert.equal(JSON.stringify(result).includes("HOSTILE"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("persisted discovery v2 retains cwd while exact v1/v2 decoding fails malformed records closed", () => {
+  const result = {
+    validators: [{
+      name: "test",
+      recipe: { id: "npm-script" as const, script: "test" as const },
+      config: { command: "npm", args: ["run", "test"], timeoutMs: 900_000, cwd: "frontend" },
+      sources: [{ kind: "package_json_script" as const, path: "frontend/package.json", evidence: "supported-script:test" }],
+    }],
+    signals: [],
+    diagnostics: [],
+    fingerprint: "b".repeat(64),
+  };
+  const snapshot = createValidatorDiscoverySnapshot(result, "a".repeat(40), "2026-07-25T00:00:00.000Z");
+  assert.equal(snapshot.version, 2);
+  assert.equal((snapshot.validators.test as { cwd?: string }).cwd, "frontend");
+  assert.equal(effectiveValidatorAllowlist(snapshot, {}, {}, []).effectiveValidators.test?.cwd, "frontend");
+  const moved = { ...snapshot, validators: { test: { ...snapshot.validators.test!, cwd: "backend" } } };
+  const repathed = { ...snapshot, validators: { test: { ...snapshot.validators.test!,
+    sources: [{ ...snapshot.validators.test!.sources[0]!, path: "other/package.json" }] } } };
+  assert.deepEqual(diffValidatorDiscoveries(snapshot, moved), { added: [], changed: ["test"], removed: [], unchanged: [] });
+  assert.notEqual(validatorStateFingerprint(snapshot, {}, {}, []), validatorStateFingerprint(moved, {}, {}, []));
+  assert.deepEqual(diffValidatorDiscoveries(snapshot, repathed), { added: [], changed: ["test"], removed: [], unchanged: [] });
+
+  const decode = decodePersistedValidatorDiscoveryJson;
+  const v1 = decode(JSON.stringify({ ...snapshot, version: 1,
+    validators: { test: { recipe: { id: "npm-script", script: "test" }, sources: result.validators[0]!.sources } } }));
+  assert.equal(effectiveValidatorAllowlist(v1 as typeof snapshot, {}, {}, []).effectiveValidators.test?.cwd, undefined);
+  for (const raw of ["{broken", JSON.stringify({ ...snapshot, version: 3 }),
+    JSON.stringify({ ...snapshot, extra: true }),
+    JSON.stringify({ ...snapshot, validators: { test: { ...snapshot.validators.test, cwd: 123 } } }),
+    JSON.stringify({ ...snapshot, validators: { test: { ...snapshot.validators.test, cwd: "." } } }),
+    JSON.stringify({ ...snapshot, validators: { test: { ...snapshot.validators.test, sources: [] } } }),
+    ...["", "../escape/package.json", "/absolute/package.json", "bad\\package.json", `${"x".repeat(2_001)}/package.json`]
+      .map((sourcePath) => JSON.stringify({ ...snapshot, validators: { test: { ...snapshot.validators.test,
+        sources: [{ ...snapshot.validators.test!.sources[0]!, path: sourcePath }] } } })),
+    ...["", "bad\u0000evidence", "x".repeat(2_001)]
+      .map((evidence) => JSON.stringify({ ...snapshot, validators: { test: { ...snapshot.validators.test,
+        sources: [{ ...snapshot.validators.test!.sources[0]!, evidence }] } } }))]) {
+    const degraded = decode(raw) as typeof snapshot;
+    assert.deepEqual(degraded.validators, {});
+    assert.deepEqual(degraded.diagnostics, [{ source: "validator_discovery_json", code: "malformed" }]);
+  }
+});
 
 test("empty repository discovery returns exactly zero validators", async () => {
   const root = await fixture();

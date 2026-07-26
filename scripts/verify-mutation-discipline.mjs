@@ -136,7 +136,7 @@ await proveAdditionalMutation({
 await proveAdditionalMutation({
   compiledPath: path.join(root, "dist", "src", "validator-discovery.js"),
   testPath: path.join(root, "dist", "test", "validator-discovery.test.js"),
-  mutationTarget: 'const document = parseTomlRecord("pyproject.toml", text);',
+  mutationTarget: "const document = parseTomlRecord(source, text);",
   mutationReplacement: "const document = {};",
   sentinelName: "malformed TOML reports malformed and yields no pyproject validator candidate",
 });

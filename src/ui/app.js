@@ -91,7 +91,7 @@ function validatorConfigSummary(entry) {
   const command = [config.command, ...(config.args || [])].join(" ");
   const source = entry.discovered?.sources?.map((item) => `${item.path} (${item.kind})`).join(" Â· ")
     || (entry.localConfig ? ".devharmonics/config.json" : entry.override ? "manual override" : "none");
-  return `${entry.effectiveOrigin || "inactive"} | ${command} | timeout ${config.timeoutMs / 1000} seconds | cwd ${config.cwd || "repository root"} | source ${source}`;
+  return `${entry.effectiveOrigin || "inactive"} | ${command} | timeout ${config.timeoutMs / 1000} seconds | Runs inside ${config.cwd || "repository root"} | source ${source}`;
 }
 
 function previewHasDelta(preview) {
@@ -167,6 +167,9 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
       : entry.localConfig
         ? '<span class="validator-sources">Snapshotted from <code>.devharmonics/config.json</code> during attachment or an owner-applied rescan.</span>'
         : '<span class="validator-sources">Owner-configured; no discovery source.</span>';
+    const execution = entry.discovered
+      ? `<span class="validator-execution">Runs inside <code>${escapeHtml(config?.cwd || "repository root")}</code>; execution stays contained there.</span>`
+      : "";
     const discoveryAction = entry.discovered || entry.localConfig
       ? entry.suppressed
         ? `<button class="secondary small" type="button" data-validator-action="restore" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Restore validator ${name} to the executable allowlist">Restore</button>`
@@ -176,15 +179,21 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
       ? `<button class="secondary small" type="button" data-validator-action="edit-override" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Edit manual validator ${name}">Edit</button><button class="secondary small" type="button" data-validator-action="remove-override" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Remove manual override ${name}">Remove override</button>`
       : `<button class="secondary small" type="button" data-validator-action="override" data-product-id="${product}" data-repository-id="${repository}" data-validator-name="${name}" aria-label="Override validator ${name}">Override</button>`;
     return `<li class="validator-entry ${entry.suppressed ? "suppressed" : ""}">
-      <div><strong>${name}</strong><span class="validator-origin">${escapeHtml(origin)}</span>${command}${sources}</div>
+      <div><strong>${name}</strong><span class="validator-origin">${escapeHtml(origin)}</span>${command}${sources}${execution}</div>
       <div class="validator-entry-actions">${discoveryAction}${overrideAction}</div>
     </li>`;
-  }).join("") : allowlist?.discovery?.status === "scanned_with_diagnostics"
+  }).join("") : ["scanned_with_diagnostics", "scanned_legacy_unknown"].includes(allowlist?.discovery?.status)
     ? '<p class="validator-empty degraded">Zero executable validators. Discovery is incomplete; review the skipped evidence below.</p>'
     : '<p class="validator-empty">Zero validators detected. This repository has no executable validation allowlist.</p>';
   const diagnosticsMarkup = (allowlist?.diagnostics || []).length
     ? `<div class="validator-diagnostics" role="alert"><strong>Discovery is incomplete</strong><ul>${allowlist.diagnostics.map((item) => `<li><code>${escapeHtml(item.source)}</code>: ${escapeHtml(item.code.replaceAll("_", " "))}. Fix this repository evidence, then preview a rescan.</li>`).join("")}</ul></div>`
     : "";
+  const selectedPathsMarkup = allowlist?.discovery?.selectedPaths?.length
+    ? `<p class="validator-selected-paths">Exact-commit evidence selected: ${allowlist.discovery.selectedPaths.map((item) => `<code>${escapeHtml(item)}</code>`).join(" · ")}
+      <span>Contained execution directories: ${(allowlist.discovery.selectedCwds || []).map((item) => `<code>${escapeHtml(item === "." ? "repository root" : item)}</code>`).join(" · ")}</span></p>` : "";
+  const discoveryTruthMarkup = ["scanned_with_diagnostics", "scanned_legacy_unknown"].includes(allowlist?.discovery?.status)
+    ? '<p class="validator-scan-truth degraded">Discovery is incomplete; only the readable exact-commit evidence below is represented.</p>'
+    : allowlist?.discovery?.status === "scanned" ? '<p class="validator-scan-truth">Discovery completed against the displayed exact commit.</p>' : "";
   const errorMarkup = localError
     ? `<div class="validator-local-error" role="alert" tabindex="-1" data-validator-error-for="${repository}"><strong>Couldn’t update validators</strong><span>${escapeHtml(localError)}</span>${/preview.*stale/i.test(localError) ? `<button class="secondary small" type="button" data-validator-action="preview-rescan" data-product-id="${product}" data-repository-id="${repository}">Preview again</button>` : ""}</div>`
     : "";
@@ -200,6 +209,8 @@ function renderValidatorAllowlistHtml(productId, repositoryId, allowlist, previe
     <p class="field-help">Fixed-recipe discovery never copies package, workflow, or release-script bodies. DevHarmonics-generated fixed recipes retain generated provenance; commands an owner adds or changes in <code>.devharmonics/config.json</code> are snapshotted separately during attachment or an owner-applied rescan.</p>
     ${errorMarkup}
     ${diagnosticsMarkup}
+    ${discoveryTruthMarkup}
+    ${selectedPathsMarkup}
     <ul>${entryMarkup}</ul>
     ${previewMarkup}
     ${renderValidatorEditor(editor, product, repository)}

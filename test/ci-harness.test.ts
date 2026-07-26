@@ -17,6 +17,9 @@ import {
 } from "../src/ci-harness.js";
 import { analyzeVerificationIntegrity } from "../src/verification-integrity.js";
 
+type ValidatorCorpusExpectation = string | [string, string | null, string[]];
+type ValidatorCorpusRow = [string, string, ValidatorCorpusExpectation[], string[]];
+
 test("seededShuffle is reproducible and does not mutate its input", () => {
   const input = ["core", "integration", "product", "reconciliation", "repository", "status"];
 
@@ -669,7 +672,7 @@ test("version-authority corpus gate rejects a moved HEAD and an unexpected top-l
   }
 });
 
-test("validator-discovery corpus gate is closed-world and mutation-sensitive", async () => {
+test("validator-discovery corpus gate is closed-world and rejects a dropped nested cwd", async () => {
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-corpus-gate-"));
   const git = (cwd: string, args: string[]): string => {
     const result = spawnSync("git", args, {
@@ -682,11 +685,18 @@ test("validator-discovery corpus gate is closed-world and mutation-sensitive", a
   };
   const createRepository = async (root: string, name: string): Promise<{ path: string; oid: string }> => {
     const repositoryPath = path.join(root, name);
+    await mkdir(path.join(repositoryPath, "backend"), { recursive: true });
+    await mkdir(path.join(repositoryPath, "frontend"), { recursive: true });
     await mkdir(path.join(repositoryPath, "scripts"), { recursive: true });
     git(repositoryPath, ["init", "--initial-branch=main"]);
     git(repositoryPath, ["config", "user.email", "validator-corpus@example.invalid"]);
     git(repositoryPath, ["config", "user.name", "Validator Corpus Fixture"]);
-    await writeFile(path.join(repositoryPath, "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n", "utf8");
+    await writeFile(path.join(repositoryPath, "backend", "pyproject.toml"), "[tool.pytest.ini_options]\n[tool.ruff]\n", "utf8");
+    await writeFile(
+      path.join(repositoryPath, "frontend", "package.json"),
+      JSON.stringify({ private: true, scripts: { build: "node build.mjs", test: "node --test" } }),
+      "utf8",
+    );
     await writeFile(path.join(repositoryPath, "scripts", "verify-release.sh"), "#!/bin/sh\n", "utf8");
     git(repositoryPath, ["add", "."]);
     git(repositoryPath, ["commit", "-m", "validator fixture"]);
@@ -694,7 +704,7 @@ test("validator-discovery corpus gate is closed-world and mutation-sensitive", a
   };
   const runGate = (
     root: string,
-    expectations: Array<[string, string, string[], string[]]>,
+    expectations: ValidatorCorpusRow[],
     seam = true,
   ): ReturnType<typeof spawnSync> => {
     const { NODE_TEST_CONTEXT: _nodeTestContext, ...runnerEnvironment } = process.env;
@@ -714,23 +724,35 @@ test("validator-discovery corpus gate is closed-world and mutation-sensitive", a
     const mutationRoot = path.join(fixtureRoot, "mutation");
     await mkdir(mutationRoot, { recursive: true });
     const fixture = await createRepository(mutationRoot, "expected");
-    const expected: [string, string, string[], string[]] = [
+    const expected: ValidatorCorpusRow = [
       "expected",
       fixture.oid,
-      ["pytest", "ruff", "verify-release"],
+      [
+        ["build", "frontend", ["frontend/package.json"]],
+        ["pytest", "backend", ["backend/pyproject.toml"]],
+        ["ruff", "backend", ["backend/pyproject.toml"]],
+        ["test", "frontend", ["frontend/package.json"]],
+        ["verify-release", null, ["scripts/verify-release.sh"]],
+      ],
       [],
     ];
     const green = runGate(mutationRoot, [expected]);
     assert.equal(green.status, 0, `${green.stdout}\n${green.stderr}`);
 
-    const wrong = runGate(mutationRoot, [[
+    const droppedCwd = runGate(mutationRoot, [[
       "expected",
       fixture.oid,
-      ["pytest", "verify-release"],
+      [
+        ["build", null, ["frontend/package.json"]],
+        ["pytest", "backend", ["backend/pyproject.toml"]],
+        ["ruff", "backend", ["backend/pyproject.toml"]],
+        ["test", "frontend", ["frontend/package.json"]],
+        ["verify-release", null, ["scripts/verify-release.sh"]],
+      ],
       [],
     ]]);
-    assert.notEqual(wrong.status, 0, `${wrong.stdout}\n${wrong.stderr}`);
-    assert.match(`${wrong.stdout}\n${wrong.stderr}`, /expected validators .* received/i);
+    assert.notEqual(droppedCwd.status, 0, `${droppedCwd.stdout}\n${droppedCwd.stderr}`);
+    assert.match(`${droppedCwd.stdout}\n${droppedCwd.stderr}`, /expected validators .* received/i);
 
     const unguarded = runGate(mutationRoot, [expected], false);
     assert.notEqual(unguarded.status, 0, `${unguarded.stdout}\n${unguarded.stderr}`);
@@ -750,7 +772,7 @@ test("validator-discovery corpus gate is closed-world and mutation-sensitive", a
     const unexpected = runGate(unexpectedRoot, [[
       "expected",
       expectedRepo.oid,
-      ["pytest", "ruff", "verify-release"],
+      expected[2],
       [],
     ]]);
     assert.notEqual(unexpected.status, 0, `${unexpected.stdout}\n${unexpected.stderr}`);
@@ -771,7 +793,18 @@ test("validator-discovery corpus manifest is the exact frozen 24-repository cens
     { cwd: process.cwd(), encoding: "utf8" },
   );
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  const manifest = JSON.parse(result.stdout) as Array<[string, string, string[], string[]]>;
+  const manifest = JSON.parse(result.stdout) as ValidatorCorpusRow[];
+  assert.deepEqual(
+    manifest.find(([name]) => name === "civicrecords-ai")?.[2],
+    [
+      ["build", "frontend", ["frontend/package.json"]],
+      ["pytest", "backend", ["backend/pyproject.toml"]],
+      ["ruff", "backend", ["backend/pyproject.toml"]],
+      ["test", "frontend", ["frontend/package.json"]],
+      ["verify-release", null, ["scripts/verify-release.sh", ".github/workflows/release.yml"]],
+    ],
+    "CivicRecords AI must freeze each nested validator cwd and detection source",
+  );
   assert.deepEqual(
     manifest.map(([name, oid]) => [name, oid]),
     [
@@ -809,11 +842,17 @@ test("validator-discovery corpus manifest is the exact frozen 24-repository cens
     manifest.map(([name]) => [
       name,
       name === "civicclerk"
-        ? ["pytest", "verify-release"]
+        ? ["build", "pytest", "test", "verify-release"]
         : name === "civiccode"
           ? ["build", "pytest", "ruff", "typecheck", "verify-release"]
           : name === "civicrecords-ai"
-            ? ["verify-release"]
+            ? [
+              ["build", "frontend", ["frontend/package.json"]],
+              ["pytest", "backend", ["backend/pyproject.toml"]],
+              ["ruff", "backend", ["backend/pyproject.toml"]],
+              ["test", "frontend", ["frontend/package.json"]],
+              ["verify-release", null, ["scripts/verify-release.sh", ".github/workflows/release.yml"]],
+            ]
             : standard,
       name === "civicrecords-ai" ? ["compose_test_evidence"] : [],
     ]),
@@ -942,10 +981,10 @@ test("validator corpus verifier shares the manifest and stays offline, read-only
     readFile("scripts/provision-validator-discovery-corpus.mjs", "utf8"),
   ]);
   assert.match(verifier, /import\s+\{\s*validatorDiscoveryCorpusManifest\s*\}\s+from\s+"\.\/validator-discovery-corpus-manifest\.mjs"/);
-  assert.match(verifier, /discoverRepositoryValidators\(extracted\)/);
+  assert.match(verifier, /discoverRepositoryValidatorsAtCommit\(repositoryPath,\s*oid\)/);
   assert.doesNotMatch(verifier, /\b(?:npm|npx|pnpm|yarn)\b/);
   assert.doesNotMatch(verifier, /\["(?:clone|fetch|pull|push|ls-remote)"/);
-  assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename)\s*\(/);
+  assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename|mkdir|mkdtemp|rm)\s*\(/);
   assert.match(provisioner, /const GIT_TIMEOUT_MS = 180_000/);
   assert.match(provisioner, /const POOL_SIZE = 4/);
   assert.match(provisioner, /\["fetch", "--depth=1", "--no-tags", repositoryUrl\(name\), oid\]/);

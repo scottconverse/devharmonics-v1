@@ -4055,7 +4055,7 @@ test("failed first-attachment validator snapshot leaves no registered repository
     );
   } finally {
     await dashboard.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -4337,8 +4337,14 @@ test("product registry inspects and retains a local repository without changing 
     "utf8",
   );
   await mkdir(path.join(project, "scripts"), { recursive: true });
-  await writeFile(path.join(project, "pyproject.toml"), "[tool.pytest.ini_options]\n", "utf8");
+  await mkdir(path.join(project, "backend"), { recursive: true });
+  await mkdir(path.join(project, "frontend"), { recursive: true });
+  await writeFile(path.join(project, "backend", "pyproject.toml"), "[tool.pytest.ini_options]\n", "utf8");
+  await writeFile(path.join(project, "frontend", "package.json"), JSON.stringify({ private: true, scripts: { build: "tsc" } }), "utf8");
   await writeFile(path.join(project, "scripts", "verify-release.sh"), "#!/bin/sh\n", "utf8");
+  await git(project, ["add", "backend/pyproject.toml", "frontend/package.json", "scripts/verify-release.sh"]);
+  await git(project, ["commit", "-m", "fixture: add nested validator evidence"]);
+  await writeFile(path.join(project, "backend", "pyproject.toml"), "[tool.pytest.ini_options\n", "utf8");
   await writeFile(path.join(project, "local-note.txt"), "uncommitted\n", "utf8");
   const dashboard = await startDashboard({ projectPath: project, port: 0, open: false });
   try {
@@ -4363,13 +4369,15 @@ test("product registry inspects and retains a local repository without changing 
       }),
     });
     assert.equal(repositoryResponse.status, 201);
-    const registered = await repositoryResponse.json() as { repository: { id: string; role: string; localPath: string; validatorDiscovery: { validators: Record<string, unknown> }; inspection: { dirty: boolean; currentBranch: string } } };
+    const registered = await repositoryResponse.json() as { repository: { id: string; role: string; localPath: string; validatorDiscovery: { version: number; validators: Record<string, { cwd?: string; sources: Array<{ path: string }> }> }; inspection: { dirty: boolean; currentBranch: string; headSha: string } } };
     assert.equal(registered.repository.role, "umbrella");
     assert.equal(registered.repository.localPath, path.resolve(project));
     assert.equal(registered.repository.inspection.dirty, true);
     assert.equal(registered.repository.inspection.currentBranch, "main");
     assert.ok(registered.repository.validatorDiscovery, "first attachment must persist a discovery snapshot");
-    assert.deepEqual(Object.keys(registered.repository.validatorDiscovery.validators), ["pytest", "verify-release"]);
+    assert.equal(registered.repository.validatorDiscovery.version, 2);
+    assert.deepEqual(Object.keys(registered.repository.validatorDiscovery.validators), ["build", "pytest", "verify-release"]);
+    assert.equal(registered.repository.validatorDiscovery.validators.pytest?.cwd, "backend", "attachment reads committed nested evidence, not the malformed checkout");
 
     const validatorResponse = await fetch(
       `${dashboard.url}/api/products/civicsuite/repositories/${encodeURIComponent(registered.repository.id)}/validators`,
@@ -4377,13 +4385,18 @@ test("product registry inspects and retains a local repository without changing 
     assert.equal(validatorResponse.status, 200, await validatorResponse.clone().text());
     const allowlist = await validatorResponse.json() as {
       effectiveValidators: Record<string, { command: string; args: string[] }>;
-      entries: Array<{ name: string; effectiveOrigin: string; discovered: { sources: Array<{ path: string }> } | null }>;
+      entries: Array<{ name: string; effectiveOrigin: string; effectiveConfig: { cwd?: string } | null; discovered: { cwd?: string; sources: Array<{ path: string }> } | null }>;
+      discovery: { status: string; version: number; selectedPaths: string[]; selectedCwds: string[] };
     };
-    assert.deepEqual(Object.keys(allowlist.effectiveValidators), ["local-config-check", "pytest", "test", "verify-release"]);
+    assert.deepEqual(Object.keys(allowlist.effectiveValidators), ["build", "local-config-check", "pytest", "test", "verify-release"]);
     assert.equal(allowlist.entries.find((entry) => entry.name === "local-config-check")?.effectiveOrigin, "local_config");
     assert.equal(allowlist.effectiveValidators.test?.command, "npm");
     assert.equal(allowlist.effectiveValidators.pytest?.command, "python");
     assert.equal(allowlist.entries.find((entry) => entry.name === "pytest")?.effectiveOrigin, "discovered");
+    assert.equal(allowlist.entries.find((entry) => entry.name === "pytest")?.effectiveConfig?.cwd, "backend");
+    assert.equal(allowlist.entries.find((entry) => entry.name === "build")?.discovered?.cwd, "frontend");
+    assert.deepEqual(allowlist.discovery.selectedPaths, ["backend/pyproject.toml", "frontend/package.json", "scripts/verify-release.sh"]);
+    assert.deepEqual(allowlist.discovery.selectedCwds, [".", "backend", "frontend"]);
     assert.deepEqual(
       allowlist.entries.find((entry) => entry.name === "verify-release")?.discovered?.sources.map((source) => source.path),
       ["scripts/verify-release.sh"],
@@ -4391,7 +4404,6 @@ test("product registry inspects and retains a local repository without changing 
     const otherProject = path.join(root, "other-project");
     await git(root, ["clone", "--no-local", project, otherProject]);
     await mkdir(path.join(otherProject, "scripts"), { recursive: true });
-    await copyFile(path.join(project, "pyproject.toml"), path.join(otherProject, "pyproject.toml"));
     await copyFile(path.join(project, "scripts", "verify-release.sh"), path.join(otherProject, "scripts", "verify-release.sh"));
     await initializeProject(otherProject);
     await writeFile(
@@ -4498,7 +4510,7 @@ test("product registry inspects and retains a local repository without changing 
     for (const name of ["alpha", "beta"]) {
       assert.equal((await mutateValidator(`${name}/override`, "DELETE")).status, 200);
     }
-    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+    for (const name of ["build", "local-config-check", "pytest", "verify-release"]) {
       const removed = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "PUT");
       assert.equal(removed.status, 200, await removed.clone().text());
     }
@@ -4515,7 +4527,7 @@ test("product registry inspects and retains a local repository without changing 
     const zeroRuntimeContext = await buildRepositoryContext(await loadConfig(project), zeroRepository);
     assert.deepEqual(zeroRuntimeContext.config.repository.validators, {}, "ZERO in the API must mean execution has zero validators");
 
-    for (const name of ["local-config-check", "pytest", "verify-release"]) {
+    for (const name of ["build", "local-config-check", "pytest", "verify-release"]) {
       const restored = await mutateValidator(`${encodeURIComponent(name)}/suppression`, "DELETE");
       assert.equal(restored.status, 200, await restored.clone().text());
     }
@@ -4561,13 +4573,17 @@ test("product registry inspects and retains a local repository without changing 
       `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
       "utf8",
     );
-    await writeFile(path.join(project, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await writeFile(path.join(project, "backend", "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await git(project, ["add", "backend/pyproject.toml"]);
+    await git(project, ["commit", "-m", "fixture: change nested validator evidence"]);
     await writeFile(
       path.join(devHarmonicsDirectory(otherProject), "config.json"),
       `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
       "utf8",
     );
-    await writeFile(path.join(otherProject, "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await writeFile(path.join(otherProject, "backend", "pyproject.toml"), "[tool.ruff]\n", "utf8");
+    await git(otherProject, ["add", "backend/pyproject.toml"]);
+    await git(otherProject, ["commit", "-m", "fixture: change nested validator evidence"]);
     const alignmentLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
     try {
       const sourceState = alignmentLedger.getRepository(registered.repository.id)!;
@@ -4599,12 +4615,16 @@ test("product registry inspects and retains a local repository without changing 
       candidateFingerprint: string;
       diff: { added: string[]; removed: string[] };
       localConfigDiff: { added: string[]; changed: string[]; removed: string[] };
+      candidate: { selectedPaths: string[]; selectedCwds: string[]; entries: Array<{ name: string; effectiveConfig: { cwd?: string } | null }> };
     };
     assert.deepEqual(previewBody.diff.added, ["ruff"]);
     assert.deepEqual(previewBody.diff.removed, ["pytest"]);
     assert.deepEqual(previewBody.localConfigDiff.added, ["local-config-new"]);
     assert.deepEqual(previewBody.localConfigDiff.changed, ["local-config-check"]);
     assert.deepEqual(previewBody.localConfigDiff.removed, []);
+    assert.deepEqual(previewBody.candidate.selectedPaths, ["backend/pyproject.toml", "frontend/package.json", "scripts/verify-release.sh"]);
+    assert.deepEqual(previewBody.candidate.selectedCwds, [".", "backend", "frontend"]);
+    assert.equal(previewBody.candidate.entries.find((entry) => entry.name === "ruff")?.effectiveConfig?.cwd, "backend");
     const beforeApply = await fetch(validatorBase).then((response) => response.json()) as { effectiveValidators: Record<string, unknown> };
     assert.ok(beforeApply.effectiveValidators.pytest, "preview is read-only");
     assert.equal(beforeApply.effectiveValidators.ruff, undefined, "preview never silently refreshes the allowlist");
@@ -4696,7 +4716,9 @@ test("product registry inspects and retains a local repository without changing 
       assert.equal(response.status, 200, await response.clone().text());
       return response.json() as Promise<typeof previewBody>;
     });
-    await writeFile(path.join(project, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }), "utf8");
+    await writeFile(path.join(project, "frontend", "package.json"), JSON.stringify({ private: true, scripts: { build: "tsc", test: "node --test" } }), "utf8");
+    await git(project, ["add", "frontend/package.json"]);
+    await git(project, ["commit", "-m", "fixture: change candidate-only evidence"]);
     const staleApply = await fetch(`${validatorBase}/rescan-apply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4725,6 +4747,21 @@ test("product registry inspects and retains a local repository without changing 
     const registeredPortfolioRepository = portfolio.products[0]?.repositories.find((repository) => repository.id === registered.repository.id);
     assert.deepEqual(registeredPortfolioRepository?.owners, ["product-platform"]);
     assert.equal(registeredPortfolioRepository?.validators.test?.command, "npm");
+    const rawDatabase = new DatabaseSync(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    rawDatabase.prepare("UPDATE repositories SET validator_discovery_json = ? WHERE id = ?")
+      .run(JSON.stringify({ version: 99, validators: { forged: { command: "unsafe" } } }), registered.repository.id);
+    rawDatabase.close();
+    const decodedLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    const decodedFingerprint = decodedLedger.getRepository(registered.repository.id)?.validatorDiscovery?.fingerprint;
+    decodedLedger.close();
+    const degraded = await fetch(validatorBase).then((response) => response.json()) as {
+      discovery: { status: string; fingerprint: string }; diagnostics: Array<{ source: string; code: string }>;
+      effectiveValidators: Record<string, unknown>;
+    };
+    assert.equal(degraded.discovery.status, "scanned_with_diagnostics");
+    assert.equal(degraded.discovery.fingerprint, decodedFingerprint, "API provenance must be the exact ledger-decoded snapshot");
+    assert.deepEqual(degraded.diagnostics, [{ source: "validator_discovery_json", code: "malformed" }]);
+    assert.deepEqual(Object.keys(degraded.effectiveValidators), ["local-config-check", "local-config-new", "test"]);
     const runs = await fetch(`${dashboard.url}/api/runs`).then((response) => response.json()) as { runs: unknown[] };
     assert.equal(runs.runs.length, 0);
   } finally {

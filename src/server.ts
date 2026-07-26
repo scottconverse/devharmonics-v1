@@ -41,7 +41,7 @@ import {
   createValidatorDiscoverySnapshot,
   diffValidatorMaps,
   diffValidatorDiscoveries,
-  discoverRepositoryValidators,
+  discoverRepositoryValidatorsAtCommit,
   effectiveValidatorAllowlist,
   validatorCandidateFingerprint,
   validatorStateFingerprint,
@@ -746,7 +746,7 @@ async function route(
     if (!existing?.localPath) {
       if (!inspection.headSha) throw new ClientRequestError("Validator discovery requires a readable repository HEAD");
       const [discovery, localConfig] = await Promise.all([
-        discoverRepositoryValidators(inspection.gitRoot),
+        discoverRepositoryValidatorsAtCommit(inspection.gitRoot, inspection.headSha),
         loadConfiguredValidatorSnapshot(inspection.gitRoot),
       ]);
       initialValidatorState = {
@@ -921,7 +921,7 @@ async function route(
       sendJson(response, 409, { error: "Validator rescan requires a readable local Git repository and HEAD" });
       return;
     }
-    const discovery = await discoverRepositoryValidators(inspection.gitRoot);
+    const discovery = await discoverRepositoryValidatorsAtCommit(inspection.gitRoot, inspection.headSha);
     const candidate = createValidatorDiscoverySnapshot(discovery, inspection.headSha);
     const candidateLocalConfig = await loadConfiguredValidatorSnapshot(inspection.gitRoot);
     const baseStateFingerprint = validatorStateFingerprint(
@@ -959,6 +959,8 @@ async function route(
         localConfigDiff: diffValidatorMaps(repository.validatorLocalConfig, candidateLocalConfig),
         candidate: {
           validators: candidate.validators,
+          selectedPaths: validatorSelectedPaths(candidate),
+          selectedCwds: validatorSelectedCwds(candidate),
           localConfigValidators: candidateLocalConfig,
           signals: candidate.signals,
           diagnostics: candidate.diagnostics,
@@ -1756,9 +1758,19 @@ function validatorMap(value: unknown): Record<string, { command: string; args: s
   }));
 }
 
+function validatorSelectedPaths(discovery: RepositoryRecord["validatorDiscovery"]): string[] {
+  return [...new Set(Object.values(discovery?.validators ?? {}).flatMap((validator) => validator.sources.map((source) => source.path)))].sort();
+}
+
+function validatorSelectedCwds(discovery: RepositoryRecord["validatorDiscovery"]): string[] {
+  return [...new Set(Object.values(discovery?.validators ?? {}).map((validator) =>
+    "cwd" in validator && typeof validator.cwd === "string" ? validator.cwd : "."))].sort();
+}
+
 function validatorAllowlistResponse(repository: RepositoryRecord): Record<string, unknown> {
+  const discovery = repository.validatorDiscovery;
   const allowlist = effectiveValidatorAllowlist(
-    repository.validatorDiscovery,
+    discovery,
     repository.validatorLocalConfig,
     repository.validators,
     repository.validatorSuppressions,
@@ -1771,20 +1783,23 @@ function validatorAllowlistResponse(repository: RepositoryRecord): Record<string
       repository.validators,
       repository.validatorSuppressions,
     ),
-    discovery: repository.validatorDiscovery === null ? {
+    discovery: discovery === null ? {
       status: "never_scanned",
     } : {
-      status: repository.validatorDiscovery.diagnostics === undefined
+      status: discovery.diagnostics === undefined
         ? "scanned_legacy_unknown"
-        : repository.validatorDiscovery.diagnostics.length
+        : discovery.diagnostics.length
           ? "scanned_with_diagnostics"
           : "scanned",
-      headSha: repository.validatorDiscovery.headSha,
-      scannedAt: repository.validatorDiscovery.scannedAt,
-      fingerprint: repository.validatorDiscovery.fingerprint,
+      version: discovery.version,
+      selectedPaths: validatorSelectedPaths(discovery),
+      selectedCwds: validatorSelectedCwds(discovery),
+      headSha: discovery.headSha,
+      scannedAt: discovery.scannedAt,
+      fingerprint: discovery.fingerprint,
     },
-    signals: repository.validatorDiscovery?.signals ?? [],
-    diagnostics: repository.validatorDiscovery?.diagnostics ?? [],
+    signals: discovery?.signals ?? [],
+    diagnostics: discovery?.diagnostics ?? [],
   };
 }
 

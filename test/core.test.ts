@@ -9909,6 +9909,63 @@ test("validator state persistence rejects a missing owner precondition", async (
   }
 });
 
+test("ledger decodes literal validator discovery v1/v2 and degrades corrupt discovery without losing owner state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-decode-"));
+  const filename = path.join(root, "devharmonics.db");
+  const seed = new Ledger(filename);
+  seed.upsertProduct({ id: "fixture", name: "Fixture", organizationUrl: "https://example.invalid", description: "Fixture", repositories: [] });
+  seed.upsertRepository({
+    id: "repo", productId: "fixture", name: "repo", fullName: "fixture/repo",
+    url: "https://example.invalid/repo", cloneUrl: "https://example.invalid/repo.git",
+    defaultBranch: "main", visibility: "private", archived: false, sizeKb: 1, language: null,
+    description: null, intelligence: {}, localPath: root, role: "other", expectedBranch: null,
+    owners: [], dependencyRepositoryIds: [],
+    validators: { manual: { command: "node", args: ["manual.js"], timeoutMs: 1_000 } },
+    governanceSources: [], governanceRules: [],
+  });
+  const initial = seed.getRepository("repo")!;
+  seed.updateRepositoryValidatorState("repo", {
+    validatorLocalConfig: { local: { command: "node", args: ["local.js"], timeoutMs: 2_000 } },
+  }, validatorStateFingerprint(initial.validatorDiscovery, initial.validatorLocalConfig, initial.validators, initial.validatorSuppressions));
+  seed.close();
+  const source = [{ kind: "package_json_script", path: "package.json", evidence: "supported-script:test" }];
+  const writeDiscovery = (value: unknown) => {
+    const raw = new DatabaseSync(filename);
+    try { raw.prepare("UPDATE repositories SET validator_discovery_json = ? WHERE id = 'repo'").run(JSON.stringify(value)); }
+    finally { raw.close(); }
+  };
+  try {
+    writeDiscovery({ version: 1, headSha: "a".repeat(40), scannedAt: "2026-07-25T00:00:00.000Z",
+      fingerprint: "b".repeat(64), validators: { test: { recipe: { id: "npm-script", script: "test" }, sources: source } },
+      signals: [], diagnostics: [] });
+    let ledger = new Ledger(filename);
+    let repository = ledger.getRepository("repo")!;
+    assert.equal(repository.validatorDiscovery?.version, 1);
+    assert.equal(effectiveValidatorAllowlist(repository.validatorDiscovery, repository.validatorLocalConfig,
+      repository.validators, []).effectiveValidators.test?.cwd, undefined);
+    ledger.close();
+
+    const v2 = createValidatorDiscoverySnapshot({ validators: [{ name: "test", recipe: { id: "npm-script", script: "test" },
+      config: { command: "npm", args: ["run", "test"], timeoutMs: 900_000, cwd: "frontend" }, sources: source as any }],
+      signals: [], diagnostics: [], fingerprint: "c".repeat(64) }, "a".repeat(40), "2026-07-25T00:00:00.000Z");
+    writeDiscovery(v2);
+    ledger = new Ledger(filename); repository = ledger.getRepository("repo")!;
+    assert.equal(effectiveValidatorAllowlist(repository.validatorDiscovery, repository.validatorLocalConfig,
+      repository.validators, []).effectiveValidators.test?.cwd, "frontend");
+    ledger.close();
+
+    writeDiscovery({ version: 99 });
+    ledger = new Ledger(filename); repository = ledger.getRepository("repo")!;
+    assert.deepEqual(repository.validatorDiscovery?.validators, {});
+    assert.deepEqual(repository.validatorDiscovery?.diagnostics, [{ source: "validator_discovery_json", code: "malformed" }]);
+    assert.deepEqual(repository.validators, { manual: { command: "node", args: ["manual.js"], timeoutMs: 1_000 } });
+    assert.deepEqual(repository.validatorLocalConfig, { local: { command: "node", args: ["local.js"], timeoutMs: 2_000 } });
+    ledger.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("validator state CAS prevents two ledgers from losing an override to another override", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-cas-overrides-"));
   const filename = path.join(root, "devharmonics.db");

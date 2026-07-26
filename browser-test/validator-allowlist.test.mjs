@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -272,17 +272,19 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await assert.doesNotReject(() => page.getByText("discovered", { exact: true }).waitFor());
   assert.ok(validatorRequests.some((request) => request.method === "DELETE" && request.url.endsWith("/test/override")));
 
-  await writeFile(
-    path.join(repository, "package.json"),
-    `${JSON.stringify({ name: "validator-browser-fixture", private: true, scripts: { build: "tsc", test: "node --test" } }, null, 2)}\n`,
-    "utf8",
-  );
+  await mkdir(path.join(repository, "frontend", "&quot;ui"), { recursive: true });
+  await writeFile(path.join(repository, "frontend", "&quot;ui", "package.json"), `${JSON.stringify({ private: true, scripts: { build: "tsc" } }, null, 2)}\n`, "utf8");
+  await git(repository, "add", "frontend/&quot;ui/package.json");
+  await git(repository, "commit", "-m", "Add nested browser validator");
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/rescan-preview") && response.request().method() === "POST"),
     page.getByRole("button", { name: "Preview validator rescan" }).click(),
   ]);
   const apply = page.getByRole("button", { name: "Apply these validator changes" });
   await assert.doesNotReject(() => apply.waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText(/frontend\/&quot;ui\/package\.json/).waitFor());
+  await assert.doesNotReject(() => page.getByText(/Runs inside frontend\/&quot;ui/).waitFor());
+  assert.equal(await allowlist.locator("a").count(), 0, "nested provenance is escaped, not parsed as markup");
   assert.equal(await page.locator(".validator-allowlist").getAttribute("open"), "");
   assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Apply these validator changes");
   beforeRender = await renderVersion();
@@ -293,15 +295,15 @@ test("validator allowlist works through the real dashboard at mobile and desktop
   await waitForCompletedRender(beforeRender, "preview-rescan");
   await page.getByText("build", { exact: true }).waitFor({ state: "attached" });
   await assert.doesNotReject(() => page.getByText("build", { exact: true }).waitFor());
+  await assert.doesNotReject(() => allowlist.getByText(/Detected from frontend\/&quot;ui\/package\.json/).waitFor());
+  await assert.doesNotReject(() => allowlist.getByText(/Runs inside frontend\/&quot;ui/).waitFor());
   const rescanApply = validatorRequests.find((request) => request.method === "POST" && request.url.endsWith("/rescan-apply"));
   assert.match(rescanApply?.body?.previewToken ?? "", /^[a-f0-9-]{36}$/);
   assert.match(rescanApply?.body?.baseStateFingerprint ?? "", /^[a-f0-9]{64}$/);
 
-  await writeFile(
-    path.join(repository, "package.json"),
-    `${JSON.stringify({ name: "validator-browser-fixture", private: true, scripts: { build: "tsc", lint: "eslint .", test: "node --test" } }, null, 2)}\n`,
-    "utf8",
-  );
+  await writeFile(path.join(repository, "frontend", "&quot;ui", "package.json"), `${JSON.stringify({ private: true, scripts: { build: "tsc", lint: "eslint ." } }, null, 2)}\n`, "utf8");
+  await git(repository, "add", "frontend/&quot;ui/package.json");
+  await git(repository, "commit", "-m", "Add nested lint validator");
   await Promise.all([
     page.waitForResponse((response) => response.url().endsWith("/rescan-preview") && response.request().method() === "POST"),
     page.getByRole("button", { name: "Preview validator rescan" }).click(),
