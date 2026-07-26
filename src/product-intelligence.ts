@@ -1,8 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import type { ProductRecord, RepositoryRecord } from "./ledger.js";
 import { runProcess } from "./process.js";
+import {
+  discoverDependenciesAtCommit,
+  type DependencyDiagnostic,
+  type DependencyEvidenceState,
+  type DependencyFact,
+  type DependencyManifestEvidence,
+  type DependencyPackageIdentity,
+} from "./dependency-intelligence.js";
 
 export type ProductClaimKind = "version" | "release" | "status" | "maturity" | "tier";
 
@@ -58,7 +67,133 @@ export interface ProductIntelligenceSnapshot {
   sources: ProductIntelligenceSource[];
   claims: SourceBackedClaim[];
   findings: ProductIntelligenceFinding[];
+  dependencyIntelligence: ProductDependencyIntelligence;
   createdAt: string;
+}
+
+export interface ResolvedDependencyFact extends DependencyFact {
+  resolution: { state: "unique" | "ambiguous" | "unresolved"; repositoryIds: string[] };
+}
+
+export interface RepositoryDependencyIntelligence {
+  repositoryId: string;
+  state: DependencyEvidenceState;
+  commit: string | null;
+  facts: ResolvedDependencyFact[];
+  manifests: DependencyManifestEvidence[];
+  diagnostics: DependencyDiagnostic[];
+}
+
+export interface ProductDependencyIntelligence {
+  version: 1;
+  state: "scanned" | "legacy_unscanned";
+  rescanRequired: boolean;
+  repositories: RepositoryDependencyIntelligence[];
+}
+
+const dependencyProvenanceSchema = z.object({
+  commit: z.string().min(1),
+  blobOid: z.string().min(1),
+  path: z.string(),
+  cwd: z.string(),
+  locator: z.string(),
+}).strict();
+const dependencyFactSchema = z.object({
+  ecosystem: z.enum(["npm", "pypi"]),
+  packageName: z.string().min(1),
+  scope: z.string().nullable(),
+  group: z.enum(["runtime", "development", "optional", "peer", "build"]),
+  rawDeclaration: z.string(),
+  constraint: z.object({
+    kind: z.enum(["exact", "range", "direct", "workspace", "file", "alias", "tag", "unversioned"]),
+    assessment: z.enum(["exact_pin", "unassessed"]),
+    exactVersion: z.string().optional(),
+    extras: z.array(z.string()),
+    marker: z.string().nullable(),
+    directReference: z.string().nullable(),
+  }).strict(),
+  provenance: dependencyProvenanceSchema,
+  resolution: z.object({
+    state: z.enum(["unique", "ambiguous", "unresolved"]),
+    repositoryIds: z.array(z.string()),
+  }).strict(),
+}).strict();
+const dependencyManifestSchema = z.object({
+  state: z.enum(["detected", "absent", "unsupported", "malformed", "unavailable", "wrong_shape", "dynamic"]),
+  ecosystem: z.enum(["npm", "pypi"]),
+  commit: z.string().min(1),
+  blobOid: z.string().min(1),
+  path: z.string(),
+  cwd: z.string(),
+  factCount: z.number().int().nonnegative(),
+}).strict();
+const dependencyDiagnosticSchema = z.object({
+  state: z.enum(["unsupported", "malformed", "unavailable", "wrong_shape", "dynamic"]),
+  commit: z.string(),
+  blobOid: z.string().optional(),
+  path: z.string().optional(),
+  cwd: z.string().optional(),
+  locator: z.string().optional(),
+  detail: z.string().min(1),
+}).strict();
+const dependencySectionSchema = z.object({
+  version: z.literal(1),
+  state: z.enum(["scanned", "legacy_unscanned"]),
+  rescanRequired: z.boolean(),
+  repositories: z.array(z.object({
+    repositoryId: z.string().min(1),
+    state: z.enum(["detected", "absent", "unsupported", "malformed", "unavailable", "wrong_shape", "dynamic"]),
+    commit: z.string().nullable(),
+    facts: z.array(dependencyFactSchema),
+    manifests: z.array(dependencyManifestSchema),
+    diagnostics: z.array(dependencyDiagnosticSchema),
+  }).strict()),
+}).strict().superRefine((section, context) => {
+  if (section.state === "legacy_unscanned" && (!section.rescanRequired || section.repositories.length)) {
+    context.addIssue({ code: "custom", message: "legacy dependency intelligence must require rescan and contain no verified repositories" });
+  }
+  if (section.state === "scanned" && section.rescanRequired) {
+    context.addIssue({ code: "custom", message: "scanned dependency intelligence cannot require rescan" });
+  }
+});
+
+const persistedSnapshotEnvelopeSchema = z.object({
+  id: z.string().min(1),
+  productId: z.string().min(1),
+  status: z.enum(["ready", "attention"]),
+  repositories: z.array(z.unknown()),
+  sources: z.array(z.unknown()),
+  claims: z.array(z.unknown()),
+  findings: z.array(z.unknown()),
+  createdAt: z.string().min(1),
+  dependencyIntelligence: dependencySectionSchema.optional(),
+}).passthrough();
+
+export function decodeProductIntelligenceSnapshot(value: unknown): ProductIntelligenceSnapshot {
+  const parsed = persistedSnapshotEnvelopeSchema.parse(value);
+  return {
+    ...parsed,
+    dependencyIntelligence: parsed.dependencyIntelligence
+      ? parsed.dependencyIntelligence
+      : { version: 1, state: "legacy_unscanned", rescanRequired: true, repositories: [] },
+  } as ProductIntelligenceSnapshot;
+}
+
+export function dependencyPlanningContext(
+  section: ProductDependencyIntelligence,
+  relevantRepositoryIds: ReadonlySet<string>,
+): string[] {
+  if (section.state !== "scanned") return [
+    "Dependency intelligence is legacy-unscanned; rescan is required before dependency facts may inform planning.",
+  ];
+  return section.repositories
+    .filter((repository) => relevantRepositoryIds.has(repository.repositoryId))
+    .flatMap((repository) => [
+      ...repository.diagnostics.slice(0, 10).map((item) =>
+        `Dependency diagnostic ${repository.repositoryId} [${item.state}]: ${item.detail}; commit=${item.commit}; path=${item.path ?? "none"}; locator=${item.locator ?? "none"}`),
+      ...repository.facts.slice(0, 30).map((fact) =>
+        `Dependency ${repository.repositoryId} ${fact.ecosystem}:${fact.packageName}=${fact.rawDeclaration}; group=${fact.group}; resolution=${fact.resolution.state}:${fact.resolution.repositoryIds.join(",") || "none"}; commit=${fact.provenance.commit}; blobOid=${fact.provenance.blobOid}; path=${fact.provenance.path}; locator=${fact.provenance.locator}`),
+    ]).slice(0, 60);
 }
 
 export async function scanProductIntelligence(product: ProductRecord): Promise<ProductIntelligenceSnapshot> {
@@ -66,6 +201,10 @@ export async function scanProductIntelligence(product: ProductRecord): Promise<P
   const sources: ProductIntelligenceSource[] = [];
   const claims: SourceBackedClaim[] = [];
   const findings: ProductIntelligenceFinding[] = [];
+  const rawDependencies: Array<Omit<RepositoryDependencyIntelligence, "facts"> & {
+    facts: DependencyFact[];
+    identities: DependencyPackageIdentity[];
+  }> = [];
 
   for (const repository of product.repositories) {
     const result = await scanRepository(repository);
@@ -73,17 +212,54 @@ export async function scanProductIntelligence(product: ProductRecord): Promise<P
     sources.push(...result.sources);
     claims.push(...result.claims);
     findings.push(...result.findings);
+    if (repository.localPath && result.summary.headSha) {
+      const extraction = await discoverDependenciesAtCommit(repository.localPath, result.summary.headSha);
+      rawDependencies.push({ repositoryId: repository.id, ...extraction });
+    } else {
+      rawDependencies.push({
+        repositoryId: repository.id,
+        state: "unavailable",
+        commit: result.summary.headSha,
+        facts: [],
+        identities: [],
+        manifests: [],
+        diagnostics: [{ state: "unavailable", commit: result.summary.headSha ?? "", detail: "local exact-commit dependency evidence is unavailable" }],
+      });
+    }
   }
   findings.push(...conflictingClaimFindings(claims));
+  const identityIndex = new Map<string, Set<string>>();
+  for (const repository of rawDependencies) {
+    for (const identity of repository.identities) {
+      const key = `${identity.ecosystem}:${identity.packageName}`;
+      const ids = identityIndex.get(key) ?? new Set<string>();
+      ids.add(repository.repositoryId);
+      identityIndex.set(key, ids);
+    }
+  }
+  const dependencies: RepositoryDependencyIntelligence[] = rawDependencies.map((entry) => ({
+    repositoryId: entry.repositoryId,
+    state: entry.state,
+    commit: entry.commit,
+    manifests: entry.manifests,
+    diagnostics: entry.diagnostics,
+    facts: entry.facts.map((fact) => {
+      const ids = [...(identityIndex.get(`${fact.ecosystem}:${fact.packageName}`) ?? [])].sort();
+      return { ...fact, resolution: { state: ids.length === 1 ? "unique" : ids.length > 1 ? "ambiguous" : "unresolved", repositoryIds: ids } };
+    }),
+  }));
+  const dependencyAttention = dependencies.some((entry) =>
+    !["detected", "absent"].includes(entry.state) || entry.diagnostics.length > 0);
 
   return {
     id: randomUUID(),
     productId: product.id,
-    status: findings.some((finding) => finding.severity !== "info") ? "attention" : "ready",
+    status: findings.some((finding) => finding.severity !== "info") || dependencyAttention ? "attention" : "ready",
     repositories,
     sources,
     claims,
     findings,
+    dependencyIntelligence: { version: 1, state: "scanned", rescanRequired: false, repositories: dependencies },
     createdAt: new Date().toISOString(),
   };
 }
@@ -272,19 +448,6 @@ function extractClaims(
       const line = Math.max(1, lines.findIndex((value) => value.includes(versionMatch[0])) + 1);
       claims.push(claim(repository.id, sourcePath, "version", name, versionMatch[1], line, lines[line - 1] ?? "", revision, contentSha256, workingTree));
     }
-  }
-  const dependencyPattern = /["']([a-z][a-z0-9_-]+)\s*@[^"']*\/releases\/download\/v([^/"']+)/ig;
-  for (const match of text.matchAll(dependencyPattern)) {
-    if (!match[1] || !match[2] || match.index === undefined) continue;
-    const line = text.slice(0, match.index).split(/\r?\n/).length;
-    claims.push(claim(repository.id, sourcePath, "version", match[1].toLowerCase(), match[2], line, lines[line - 1] ?? "", revision, contentSha256, workingTree));
-  }
-  const proseDependencyPattern = /\b(?:exact|published|requires?|depends? on|pins?)\s+([a-z][a-z0-9_-]+)\s+v(\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?)/ig;
-  for (const match of text.matchAll(proseDependencyPattern)) {
-    if (!match[1] || !match[2] || match.index === undefined) continue;
-    if (["to", "the", "a", "an"].includes(match[1].toLowerCase())) continue;
-    const line = text.slice(0, match.index).split(/\r?\n/).length;
-    claims.push(claim(repository.id, sourcePath, "version", match[1].toLowerCase(), match[2], line, lines[line - 1] ?? "", revision, contentSha256, workingTree));
   }
   const pattern = /^\s*(?:[#>*-]+\s*)?(?:\*\*)?(?:([a-z][a-z0-9_-]*)\s+)?(version|release|status|maturity|tier)(?:\*\*)?\s*[:=-]\s*(.+?)\s*$/i;
   lines.forEach((lineText, index) => {

@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Ledger } from "../src/ledger.js";
+import * as productIntelligence from "../src/product-intelligence.js";
 import { scanProductIntelligence } from "../src/product-intelligence.js";
 import { runProcess } from "../src/process.js";
+import { startDashboard } from "../src/server.js";
+import { requiredProductImpactIds } from "../src/orchestrator.js";
+import { architectPrompt } from "../src/prompts.js";
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const result = await runProcess({ command: "git", args, cwd, timeoutMs: 30_000 });
@@ -30,13 +34,18 @@ test("creates a source-backed product intelligence snapshot without inferring ma
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-intelligence-"));
   const umbrellaPath = path.join(root, "umbrella");
   const modulePath = path.join(root, "module");
+  const mirrorPath = path.join(root, "mirror");
   const umbrellaHead = await createRepository(umbrellaPath, {
+    "package.json": `${JSON.stringify({ name: "umbrella", version: "1.1.0" }, null, 2)}\n`,
     "STATUS.md": "# Product status\n\nFixture version: 1.1.0\nStatus: public beta\nMaturity: release candidate\n",
     "README.md": "# Fixture suite\n",
   });
   const moduleHead = await createRepository(modulePath, {
-    "package.json": `${JSON.stringify({ name: "fixture", version: "1.2.0" }, null, 2)}\n`,
-    "README.md": "# Fixture module\n",
+    "README.md": "# Fixture module\n\nThis prose pins imaginary v9.9.9 and must not become dependency evidence.\n",
+    "package.json": `${JSON.stringify({ name: "fixture", version: "1.2.0", dependencies: { umbrella: "1.1.0", fixture: "1.2.0", external: "^2.0.0" } }, null, 2)}\n`,
+  });
+  const mirrorHead = await createRepository(mirrorPath, {
+    "package.json": `${JSON.stringify({ name: "umbrella", version: "1.0.0" }, null, 2)}\n`,
   });
   await git(modulePath, ["tag", "v9.9.9"]);
   const ledger = new Ledger(path.join(root, "ledger.sqlite"));
@@ -72,6 +81,7 @@ test("creates a source-backed product intelligence snapshot without inferring ma
       governanceRules: [],
     });
     repository("repo:detached", "detached", path.join(root, "no-longer-present"), "module", ["README.md"]);
+    repository("repo:mirror", "mirror", mirrorPath, "module", []);
     repository("repo:umbrella", "umbrella", umbrellaPath, "umbrella", ["STATUS.md", "README.md", "MISSING.md"]);
     repository("repo:module", "module", modulePath, "module", ["package.json", "README.md"]);
 
@@ -81,6 +91,7 @@ test("creates a source-backed product intelligence snapshot without inferring ma
 
     assert.deepEqual(snapshot.repositories.map((item) => [item.repositoryId, item.headSha]), [
       ["repo:detached", null],
+      ["repo:mirror", mirrorHead],
       ["repo:module", moduleHead],
       ["repo:umbrella", umbrellaHead],
     ]);
@@ -95,9 +106,109 @@ test("creates a source-backed product intelligence snapshot without inferring ma
     assert.ok(conflict.citations.some((citation) => citation.endsWith("package.json:3")));
     assert.equal(snapshot.repositories.find((item) => item.repositoryId === "repo:module")?.maturity, "unknown");
     assert.ok(!snapshot.claims.some((claim) => claim.value === "v9.9.9"), "Git tags must not become product claims");
+    const dependencyIntelligence: any = (snapshot as any).dependencyIntelligence;
+    assert.equal(dependencyIntelligence?.version, 1);
+    assert.equal(dependencyIntelligence?.state, "scanned");
+    assert.equal(dependencyIntelligence?.rescanRequired, false);
+    const moduleDependencies = dependencyIntelligence.repositories.find((item: any) => item.repositoryId === "repo:module");
+    const detachedDependencies = dependencyIntelligence.repositories.find((item: any) => item.repositoryId === "repo:detached");
+    assert.equal(snapshot.status, "attention");
+    assert.equal(detachedDependencies?.state, "unavailable");
+    assert.equal(detachedDependencies?.facts.length, 0);
+    assert.ok(detachedDependencies?.diagnostics.length > 0);
+    assert.equal(moduleDependencies?.state, "detected");
+    assert.deepEqual(moduleDependencies?.facts.map((fact: any) => [fact.packageName, fact.resolution.state, fact.resolution.repositoryIds]), [
+      ["umbrella", "ambiguous", ["repo:mirror", "repo:umbrella"]],
+      ["fixture", "unique", ["repo:module"]],
+      ["external", "unresolved", []],
+    ]);
+    assert.ok(moduleDependencies?.facts.every((fact: any) => fact.provenance.commit === moduleHead));
+    assert.ok(!snapshot.claims.some((claim) => claim.subject === "imaginary"));
+    assert.deepEqual(ledger.getRepository("repo:module")?.dependencyRepositoryIds, ["repo:umbrella"]);
+    assert.equal(typeof (productIntelligence as any).dependencyPlanningContext, "function");
+    const planningDependencies = (productIntelligence as any).dependencyPlanningContext(
+      snapshot.dependencyIntelligence,
+      new Set(["repo:module"]),
+    ) as string[];
+    assert.ok(planningDependencies.some((line) => line.includes("npm:umbrella=1.1.0")));
+    assert.ok(planningDependencies.some((line) => line.includes(`commit=${moduleHead}`) && line.includes("blobOid=") && line.includes("locator=")));
+    assert.ok(planningDependencies.every((line) => !line.includes("repo:umbrella npm:")));
+    assert.deepEqual(requiredProductImpactIds(ledger.getProduct("fixture")!, ["repo:module"]), ["repo:module", "repo:umbrella"]);
+    const capturedArchitectPrompt = architectPrompt({
+      goal: "Plan the module",
+      constitution: "local only",
+      validators: ["test"],
+      providers: ["codex"],
+      workspacePath: modulePath,
+      autonomy: "observe",
+      repositoryContext: planningDependencies.join("\n"),
+      selectedRepositoryIds: ["repo:module"],
+    });
+    assert.match(capturedArchitectPrompt, /Dependency repo:module npm:umbrella=1\.1\.0/);
+    assert.match(capturedArchitectPrompt, new RegExp(`commit=${moduleHead}`));
+    assert.match(capturedArchitectPrompt, /blobOid=.*path=package\.json; locator=\/dependencies\/umbrella/);
+    assert.doesNotMatch(capturedArchitectPrompt, /imaginary v9\.9\.9/);
+    assert.doesNotMatch(capturedArchitectPrompt, /Dependency repo:umbrella npm:/);
 
     const saved = ledger.recordProductIntelligenceSnapshot(snapshot);
-    assert.equal(ledger.latestProductIntelligenceSnapshot("fixture")?.id, saved.id);
+    assert.deepEqual((ledger.latestProductIntelligenceSnapshot("fixture") as any)?.dependencyIntelligence, (saved as any).dependencyIntelligence);
+    assert.equal(typeof (productIntelligence as any).decodeProductIntelligenceSnapshot, "function");
+    assert.deepEqual((productIntelligence as any).decodeProductIntelligenceSnapshot({
+      ...snapshot,
+      dependencyIntelligence: undefined,
+    }), {
+      ...snapshot,
+      dependencyIntelligence: { version: 1, state: "legacy_unscanned", rescanRequired: true, repositories: [] },
+    });
+    assert.throws(
+      () => (productIntelligence as any).decodeProductIntelligenceSnapshot({
+        ...snapshot,
+        dependencyIntelligence: { version: 99, state: "scanned", rescanRequired: false, repositories: [] },
+      }),
+      /Invalid literal value|Invalid input/,
+    );
+    assert.throws(
+      () => (productIntelligence as any).decodeProductIntelligenceSnapshot({
+        ...snapshot,
+        dependencyIntelligence: { version: 1, state: "scanned", rescanRequired: false, repositories: [{ repositoryId: 7 }] },
+      }),
+    );
+
+    const dashboard = await startDashboard({ projectPath: modulePath, port: 0, open: false });
+    try {
+      assert.equal((await fetch(`${dashboard.url}/api/products`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: "dependency-api", name: "Dependency API", organizationUrl: "https://github.com/example", description: "",
+          repositories: [{
+            id: "repo:api", name: "module", fullName: "example/module",
+            url: "https://github.com/example/module", cloneUrl: "https://github.com/example/module.git",
+            defaultBranch: "main", visibility: "public", archived: false, sizeKb: 1,
+            language: "TypeScript", description: null, intelligence: {},
+          }],
+        }),
+      })).status, 201);
+      const attached = await fetch(`${dashboard.url}/api/products/dependency-api/repositories`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          localPath: modulePath, role: "module", expectedBranch: "main", owners: [],
+          dependencyRepositoryIds: [], governanceSources: ["README.md"], validators: {},
+        }),
+      });
+      assert.equal(attached.status, 201, await attached.clone().text());
+      const posted = await fetch(`${dashboard.url}/api/products/dependency-api/intelligence`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      assert.equal(posted.status, 201, await posted.clone().text());
+      const postBody = await posted.json() as any;
+      const getBody = await fetch(`${dashboard.url}/api/products/dependency-api/intelligence`).then((response) => response.json()) as any;
+      assert.equal(JSON.stringify(getBody.dependencyIntelligence), JSON.stringify(postBody.dependencyIntelligence));
+      const roundTripFact = getBody.dependencyIntelligence.repositories.flatMap((item: any) => item.facts)[0];
+      assert.equal(roundTripFact?.provenance.commit, moduleHead);
+    } finally {
+      await dashboard.close();
+    }
     assert.equal(await git(umbrellaPath, ["status", "--porcelain=v1"]), beforeUmbrella);
     assert.equal(await git(modulePath, ["status", "--porcelain=v1"]), beforeModule);
   } finally {
