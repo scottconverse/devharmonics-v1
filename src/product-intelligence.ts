@@ -72,7 +72,15 @@ export interface ProductIntelligenceSnapshot {
 }
 
 export interface ResolvedDependencyFact extends DependencyFact {
-  resolution: { state: "unique" | "ambiguous" | "unresolved"; repositoryIds: string[] };
+  resolution: {
+    state: "unique" | "ambiguous" | "unresolved";
+    repositoryIds: string[];
+    matches: ResolvedDependencyIdentity[];
+  };
+}
+
+export interface ResolvedDependencyIdentity extends DependencyPackageIdentity {
+  repositoryId: string;
 }
 
 export interface RepositoryDependencyIntelligence {
@@ -118,6 +126,12 @@ const dependencyFactSchema = z.object({
   resolution: z.object({
     state: z.enum(["unique", "ambiguous", "unresolved"]),
     repositoryIds: z.array(z.string()),
+    matches: z.array(z.object({
+      repositoryId: z.string().min(1),
+      ecosystem: z.enum(["npm", "pypi"]),
+      packageName: z.string().min(1),
+      provenance: dependencyProvenanceSchema,
+    }).strict()),
   }).strict(),
 }).strict();
 const dependencyManifestSchema = z.object({
@@ -152,6 +166,10 @@ function dependencyEvidenceKey(value: { commit: string; blobOid: string; path: s
   return `${value.commit}\0${value.blobOid}\0${value.path}\0${value.cwd}`;
 }
 
+function dependencyIdentityMatchKey(value: ResolvedDependencyIdentity): string {
+  return `${value.repositoryId}\0${value.ecosystem}\0${value.packageName}\0${dependencyEvidenceKey(value.provenance)}\0${value.provenance.locator}`;
+}
+
 const dependencyRepositorySchema = z.object({
   repositoryId: z.string().min(1),
   state: z.enum(["detected", "absent", "unsupported", "malformed", "unavailable", "wrong_shape", "dynamic"]),
@@ -163,15 +181,27 @@ const dependencyRepositorySchema = z.object({
   for (const [index, fact] of repository.facts.entries()) {
     const ids = fact.resolution.repositoryIds;
     const uniqueIds = [...new Set(ids)];
+    const matches = fact.resolution.matches;
+    const matchIds = [...new Set(matches.map((match) => match.repositoryId))].sort();
     if (uniqueIds.length !== ids.length || [...ids].sort().some((id, itemIndex) => id !== ids[itemIndex])) {
       context.addIssue({ code: "custom", path: ["facts", index, "resolution", "repositoryIds"], message: "dependency resolution repository IDs must be unique and sorted" });
     }
+    if (ids.length !== matchIds.length || ids.some((id, itemIndex) => id !== matchIds[itemIndex])) {
+      context.addIssue({ code: "custom", path: ["facts", index, "resolution"], message: "dependency resolution repository IDs must equal its identity matches" });
+    }
     if (
-      (fact.resolution.state === "unique" && ids.length !== 1)
-      || (fact.resolution.state === "ambiguous" && ids.length < 2)
-      || (fact.resolution.state === "unresolved" && ids.length !== 0)
+      (fact.resolution.state === "unique" && matches.length !== 1)
+      || (fact.resolution.state === "ambiguous" && matches.length < 2)
+      || (fact.resolution.state === "unresolved" && (matches.length !== 0 || ids.length !== 0))
     ) {
-      context.addIssue({ code: "custom", path: ["facts", index, "resolution"], message: "dependency resolution state contradicts its repository IDs" });
+      context.addIssue({ code: "custom", path: ["facts", index, "resolution"], message: "dependency resolution state contradicts its identity matches" });
+    }
+    const matchKeys = matches.map(dependencyIdentityMatchKey);
+    if (new Set(matchKeys).size !== matchKeys.length || [...matchKeys].sort().some((key, matchIndex) => key !== matchKeys[matchIndex])) {
+      context.addIssue({ code: "custom", path: ["facts", index, "resolution", "matches"], message: "dependency identity matches must be unique and sorted" });
+    }
+    if (matches.some((match) => match.ecosystem !== fact.ecosystem || match.packageName !== fact.packageName)) {
+      context.addIssue({ code: "custom", path: ["facts", index, "resolution", "matches"], message: "dependency identity matches must describe the declared package" });
     }
     if (repository.commit === null || fact.provenance.commit !== repository.commit) {
       context.addIssue({ code: "custom", path: ["facts", index, "provenance", "commit"], message: "dependency fact commit must match its repository snapshot" });
@@ -204,12 +234,19 @@ const dependencyRepositorySchema = z.object({
     factLocators.add(locatorKey);
   }
   const manifestKeys = new Set<string>();
+  const manifestLocations = new Map<string, string>();
   for (const [index, manifest] of repository.manifests.entries()) {
     const manifestKey = dependencyEvidenceKey(manifest);
+    const manifestLocation = `${manifest.commit}\0${manifest.path}\0${manifest.cwd}`;
     if (manifestKeys.has(manifestKey)) {
       context.addIssue({ code: "custom", path: ["manifests", index], message: "dependency manifest evidence cannot be duplicated" });
     }
+    const retainedBlob = manifestLocations.get(manifestLocation);
+    if (retainedBlob !== undefined && retainedBlob !== manifest.blobOid) {
+      context.addIssue({ code: "custom", path: ["manifests", index], message: "one exact-commit manifest path cannot retain conflicting blob evidence" });
+    }
     manifestKeys.add(manifestKey);
+    manifestLocations.set(manifestLocation, manifest.blobOid);
     if (repository.commit === null || manifest.commit !== repository.commit) {
       context.addIssue({ code: "custom", path: ["manifests", index, "commit"], message: "dependency manifest commit must match its repository snapshot" });
     }
@@ -233,9 +270,9 @@ const dependencyRepositorySchema = z.object({
     if (diagnostic.commit !== expectedCommit) {
       context.addIssue({ code: "custom", path: ["diagnostics", index, "commit"], message: "dependency diagnostic commit must match its repository snapshot" });
     }
-    const location = [diagnostic.blobOid, diagnostic.path, diagnostic.cwd];
+    const location = [diagnostic.blobOid, diagnostic.path, diagnostic.cwd, diagnostic.locator];
     if (location.some((value) => value !== undefined)) {
-      if (location.some((value) => value === undefined)) {
+      if (diagnostic.blobOid === undefined || diagnostic.path === undefined || diagnostic.cwd === undefined) {
         context.addIssue({ code: "custom", path: ["diagnostics", index], message: "dependency diagnostic manifest provenance must be complete" });
       } else if (!manifestKeys.has(dependencyEvidenceKey({
         commit: diagnostic.commit,
@@ -273,6 +310,7 @@ const dependencySectionSchema = z.object({
   }
   const repositoryIds = section.repositories.map((repository) => repository.repositoryId);
   const registered = new Set(repositoryIds);
+  const repositoryById = new Map(section.repositories.map((repository) => [repository.repositoryId, repository]));
   if (registered.size !== repositoryIds.length) {
     context.addIssue({ code: "custom", path: ["repositories"], message: "dependency intelligence cannot contain duplicate repository IDs" });
   }
@@ -284,6 +322,48 @@ const dependencySectionSchema = z.object({
             code: "custom",
             path: ["repositories", repositoryIndex, "facts", factIndex, "resolution", "repositoryIds"],
             message: `dependency resolution references unknown repository '${resolvedId}'`,
+          });
+        }
+      }
+      for (const [matchIndex, match] of fact.resolution.matches.entries()) {
+        const matchedRepository = repositoryById.get(match.repositoryId);
+        const matchPath = ["repositories", repositoryIndex, "facts", factIndex, "resolution", "matches", matchIndex];
+        if (!matchedRepository) {
+          context.addIssue({
+            code: "custom",
+            path: matchPath,
+            message: `dependency identity match references unknown repository '${match.repositoryId}'`,
+          });
+          continue;
+        }
+        if (matchedRepository.commit === null || match.provenance.commit !== matchedRepository.commit) {
+          context.addIssue({
+            code: "custom",
+            path: [...matchPath, "provenance", "commit"],
+            message: "dependency identity match commit must match its repository snapshot",
+          });
+        }
+        const matchedManifest = matchedRepository.manifests.find((manifest) =>
+          dependencyEvidenceKey(manifest) === dependencyEvidenceKey(match.provenance));
+        if (!matchedManifest) {
+          context.addIssue({
+            code: "custom",
+            path: [...matchPath, "provenance"],
+            message: "dependency identity match provenance does not resolve to its repository manifest",
+          });
+        } else if (matchedManifest.ecosystem !== match.ecosystem) {
+          context.addIssue({
+            code: "custom",
+            path: [...matchPath, "ecosystem"],
+            message: "dependency identity match ecosystem must match its repository manifest",
+          });
+        }
+        const expectedLocator = match.ecosystem === "npm" ? "/name" : "/project/name";
+        if (match.provenance.locator !== expectedLocator) {
+          context.addIssue({
+            code: "custom",
+            path: [...matchPath, "provenance", "locator"],
+            message: `dependency identity match locator must be '${expectedLocator}'`,
           });
         }
       }
@@ -450,13 +530,13 @@ export async function scanProductIntelligence(product: ProductRecord): Promise<P
     }
   }
   findings.push(...conflictingClaimFindings(claims));
-  const identityIndex = new Map<string, Set<string>>();
+  const identityIndex = new Map<string, ResolvedDependencyIdentity[]>();
   for (const repository of rawDependencies) {
     for (const identity of repository.identities) {
       const key = `${identity.ecosystem}:${identity.packageName}`;
-      const ids = identityIndex.get(key) ?? new Set<string>();
-      ids.add(repository.repositoryId);
-      identityIndex.set(key, ids);
+      const matches = identityIndex.get(key) ?? [];
+      matches.push({ repositoryId: repository.repositoryId, ...identity });
+      identityIndex.set(key, matches);
     }
   }
   const dependencies: RepositoryDependencyIntelligence[] = rawDependencies.map((entry) => ({
@@ -466,8 +546,21 @@ export async function scanProductIntelligence(product: ProductRecord): Promise<P
     manifests: entry.manifests,
     diagnostics: entry.diagnostics,
     facts: entry.facts.map((fact) => {
-      const ids = [...(identityIndex.get(`${fact.ecosystem}:${fact.packageName}`) ?? [])].sort();
-      return { ...fact, resolution: { state: ids.length === 1 ? "unique" : ids.length > 1 ? "ambiguous" : "unresolved", repositoryIds: ids } };
+      const matches = [...(identityIndex.get(`${fact.ecosystem}:${fact.packageName}`) ?? [])]
+        .sort((left, right) => {
+          const leftKey = dependencyIdentityMatchKey(left);
+          const rightKey = dependencyIdentityMatchKey(right);
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        });
+      const repositoryIds = [...new Set(matches.map((match) => match.repositoryId))].sort();
+      return {
+        ...fact,
+        resolution: {
+          state: matches.length === 1 ? "unique" : matches.length > 1 ? "ambiguous" : "unresolved",
+          repositoryIds,
+          matches,
+        },
+      };
     }),
   }));
   const dependencyAttention = dependencies.some((entry) =>
