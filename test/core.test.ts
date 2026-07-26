@@ -3553,10 +3553,9 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
       return { stdout: '[project]\nname = "truth"\nversion = "1.2.1"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '{"version":"9.9.9"}', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
-      selectionAttempt.value ??= runProcess({ command: process.execPath, args: ["--input-type=module", "--eval", `import { Ledger } from "./dist/src/ledger.js"; const ledger = new Ledger(${JSON.stringify(path.join(alias, "devharmonics.db"))}); try { ledger.updateReleaseUnitSelection("repo:truth", "b", 1); } catch (error) { console.error(String(error)); process.exitCode = 2; } finally { ledger.close(); }`], cwd: process.cwd(), timeoutMs: 30_000 });
-      await selectionAttempt.value;
-      return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "push" && joined.includes("refs/tags/")) {
+      selectionAttempt.value ??= runProcess({ command: process.execPath, args: ["--input-type=module", "--eval", `import { Ledger } from "./dist/src/ledger.js"; const ledger = new Ledger(${JSON.stringify(path.join(alias, "devharmonics.db"))}); try { ledger.updateReleaseUnitSelection("repo:truth", "b", 1); } catch (error) { console.error(String(error)); process.exitCode = 2; } finally { ledger.close(); }`], cwd: process.cwd(), timeoutMs: 30_000 }); await selectionAttempt.value; return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
   };
@@ -3594,9 +3593,9 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     );
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged", "the refused tag changed nothing");
     // An explicitly confirmed mismatch is the owner's deliberate decision.
-    const confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true });
-    assert.equal(confirmed.status, "tagged");
-    assert.equal(confirmed.releaseTag, "v1.0.0");
+    const ledgerApi = ledger as any, updateDelivery = ledgerApi.updateDeliveryRepository.bind(ledger), addEvent = ledgerApi.addEvent.bind(ledger); let statusFault = true, eventFault = true, confirmed: any;
+    ledgerApi.updateDeliveryRepository = (...args: any[]) => { if (statusFault && args[2]?.status === "tagged") { statusFault = false; throw new Error("post-push status sentinel"); } return updateDelivery(...args); }; ledgerApi.addEvent = (...args: any[]) => { if (eventFault && args[1] === "delivery.tagged") { eventFault = false; throw new Error("post-push event sentinel"); } return addEvent(...args); }; try { confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true }); } finally { ledgerApi.updateDeliveryRepository = updateDelivery; ledgerApi.addEvent = addEvent; }
+    assert.deepEqual({ status: confirmed.status, tag: confirmed.releaseTag, stored: ledger.getRun(runId)?.delivery?.repositories[0]?.status, statusFault, eventFault }, { status: "tagged", tag: "v1.0.0", stored: "tagged", statusFault: false, eventFault: false }, "post-push faults reconcile without downgrading the public tag");
     assert.notEqual((await selectionAttempt.value)?.exitCode, 0, "a separate Node process cannot change selection between evidence and tag push");
     assert.match(`${(await selectionAttempt.value)?.stdout}${(await selectionAttempt.value)?.stderr}`, /already in progress/i);
     assert.equal((ledger.getRepository("repo:truth")!.intelligence.releaseUnitSelection as any).revision, 1);

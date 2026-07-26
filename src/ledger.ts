@@ -1,5 +1,5 @@
-import { closeSync, existsSync, mkdirSync, openSync, realpathSync, unlinkSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectLegacyProvider } from "./compatibility.js";
@@ -212,7 +212,7 @@ export interface ReleaseUnitSelection {
   invalidatedAt: string | null; invalidationReason: string | null;
 }
 export type ReleaseUnitSelectionDecode = { kind: "absent" } | { kind: "valid"; value: ReleaseUnitSelection } | { kind: "malformed"; detail: string };
-export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; const releaseUnitTokens = new Map<symbol, string>();
+export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; type ReleaseUnitLockOwner = { key: string; nonce: string; dev: bigint; ino: bigint }; const releaseUnitTokens = new Map<symbol, ReleaseUnitLockOwner>(); function releaseUnitDiagnostic(detail: string): void { try { console.error(`DEGRADED: ${detail}`); } catch {} }
 
 const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
 function exactIso(value: unknown): value is string {
@@ -3235,9 +3235,10 @@ export class Ledger {
     return this.getRepository(repository.id)!;
   }
 
-  private releaseUnitLockKey(repositoryId: string): string { return `${realpathSync.native(this.filename)}.release-unit-${createHash("sha256").update(repositoryId).digest("hex")}.lock`; }
-  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = Object.freeze({ key: this.releaseUnitLockKey(repositoryId), token: Symbol() }); try { closeSync(openSync(lock.key, "wx")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } releaseUnitTokens.set(lock.token, lock.key); return lock; }
-  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { if (releaseUnitTokens.get(lock.token) !== lock.key) return; try { unlinkSync(lock.key); } catch (error) { console.error(`DEGRADED: stale release-unit lock '${lock.key}' requires owner repair after proving no selector or tag operation remains active (${error instanceof Error ? error.message : String(error)})`); } finally { releaseUnitTokens.delete(lock.token); } }
+  private releaseUnitLockKey(repositoryId: string): string { if (statSync(this.filename, { bigint: true }).nlink !== 1n) throw new Error("Release-unit locking refuses a hard-linked ledger database"); return `${realpathSync.native(this.filename)}.release-unit-${createHash("sha256").update(repositoryId).digest("hex")}.lock`; }
+  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = Object.freeze({ key: this.releaseUnitLockKey(repositoryId), token: Symbol() }), nonce = randomUUID(); try { const descriptor = openSync(lock.key, "wx"); try { writeFileSync(descriptor, nonce, "utf8"); } finally { closeSync(descriptor); } } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } const identity = statSync(lock.key, { bigint: true }); releaseUnitTokens.set(lock.token, { key: lock.key, nonce, dev: identity.dev, ino: identity.ino }); return lock; }
+  private ownsReleaseUnitLock(lock: ReleaseUnitLock): boolean { const owner = releaseUnitTokens.get(lock.token); if (!owner || owner.key !== lock.key) return false; try { const current = statSync(lock.key, { bigint: true }); return current.isFile() && current.dev === owner.dev && current.ino === owner.ino && readFileSync(lock.key, "utf8") === owner.nonce; } catch { return false; } }
+  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { const owner = releaseUnitTokens.get(lock.token); try { if (!owner || owner.key !== lock.key) { if (owner) releaseUnitDiagnostic(`release-unit lock ownership mismatch for '${lock.key}'; owner repair is required`); return; } let exact = false; try { const current = statSync(lock.key, { bigint: true }); exact = current.isFile() && current.dev === owner.dev && current.ino === owner.ino && readFileSync(lock.key, "utf8") === owner.nonce; } catch (error) { releaseUnitDiagnostic(`release-unit lock '${lock.key}' could not be verified and requires owner repair (${error instanceof Error ? error.message : String(error)})`); return; } if (!exact) { releaseUnitDiagnostic(`release-unit lock '${lock.key}' was replaced and requires owner repair`); return; } try { unlinkSync(lock.key); } catch (error) { releaseUnitDiagnostic(`stale release-unit lock '${lock.key}' requires owner repair after proving no selector or tag operation remains active (${error instanceof Error ? error.message : String(error)})`); } } finally { releaseUnitTokens.delete(lock.token); } }
   async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> { const lock = this.acquireReleaseUnitLock(repositoryId); try { return await action(lock); } finally { this.releaseReleaseUnitLock(lock); } }
 
   updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number, lock?: ReleaseUnitLock): ReleaseUnitSelection {
@@ -3262,7 +3263,7 @@ export class Ledger {
     const own = !lock, holder = lock ?? this.acquireReleaseUnitLock(repositoryId);
     try {
     const key = this.releaseUnitLockKey(repositoryId);
-    if (releaseUnitTokens.get(holder.token) !== key || holder.key !== key || !existsSync(key)) throw new Error("Release-unit selection or tagging is already in progress");
+    if (holder.key !== key || !this.ownsReleaseUnitLock(holder)) throw new Error("Release-unit selection or tagging is already in progress");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const repository = this.getRepository(repositoryId);

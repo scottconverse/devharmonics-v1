@@ -60,6 +60,7 @@ function githubRemote(value: string): { webUrl: string; repository: string } {
 function failureMessage(result: ProcessResult, fallback: string): string {
   return result.stderr.trim() || result.stdout.trim() || fallback;
 }
+function deliveryDiagnostic(detail: string): void { try { console.error(`DEGRADED: ${detail}`); } catch {} }
 
 /**
  * A refusal grounded in delivery STATE — wrong order, live pull-request
@@ -640,11 +641,13 @@ export class DeliveryService {
       }
       const pushTag = await this.runner({ command: "git", args: ["push", "origin", `refs/tags/${input.tag}`], cwd: delivery.localPath, timeoutMs: 120_000 });
       if (pushTag.exitCode !== 0) throw new Error(failureMessage(pushTag, "Release tag push failed"));
+      const persistTagged = () => {
       const updated = this.ledger.updateDeliveryRepository(input.runId, input.repositoryId, {
         status: "tagged", remoteUrl: remote.webUrl, approvalId: input.approval.id, error: null, releaseTag: input.tag!,
       });
       this.ledger.addEvent(input.runId, "delivery.tagged", `${input.repositoryId}: pushed release tag ${input.tag} on the merge commit under owner approval`, requestRecord);
       return updated;
+      }; const truthful: DeliveryRepositoryRecord = { ...delivery, status: "tagged", remoteUrl: remote.webUrl, approvalId: input.approval.id, error: null, releaseTag: input.tag!, updatedAt: new Date().toISOString() }; try { return persistTagged(); } catch (error) { if (this.ledger.getRun(input.runId)?.delivery?.repositories.find((item) => item.repositoryId === input.repositoryId)?.status === "tagged") { deliveryDiagnostic(`release tag '${input.tag}' was pushed but its delivery.tagged event could not be recorded (${error instanceof Error ? error.message : String(error)})`); return truthful; } deliveryDiagnostic(`release tag '${input.tag}' was pushed but tagged status persistence failed; retrying once (${error instanceof Error ? error.message : String(error)})`); try { return persistTagged(); } catch (retryError) { const reconciled = this.ledger.getRun(input.runId)?.delivery?.repositories.find((item) => item.repositoryId === input.repositoryId)?.status === "tagged"; deliveryDiagnostic(reconciled ? `release tag '${input.tag}' was pushed but its delivery.tagged event could not be recorded (${retryError instanceof Error ? retryError.message : String(retryError)})` : `release tag '${input.tag}' is public but tagged status reconciliation still requires owner repair (${retryError instanceof Error ? retryError.message : String(retryError)})`); return truthful; } }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

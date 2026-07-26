@@ -1,7 +1,5 @@
-import assert from "node:assert/strict"; import { execFile } from "node:child_process"; import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os"; import path from "node:path";
-import { promisify } from "node:util"; import test from "node:test";
-import { DeliveryService } from "../src/delivery.js"; import { decodeReleaseUnitSelection, Ledger } from "../src/ledger.js";
+import assert from "node:assert/strict"; import { execFile } from "node:child_process"; import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os"; import path from "node:path"; import { promisify } from "node:util"; import test from "node:test"; import { DeliveryService } from "../src/delivery.js"; import { decodeReleaseUnitSelection, Ledger } from "../src/ledger.js";
 const exec = promisify(execFile); async function git(root: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: root })).stdout.trim(); }
 async function repository(files: Record<string, string>) { const root = await mkdtemp(path.join(os.tmpdir(), "dh-release-selector-"));
   await git(root, "init", "-q"); await git(root, "config", "user.email", "test@example.invalid"); await git(root, "config", "user.name", "DevHarmonics Test");
@@ -14,17 +12,15 @@ function register(ledger: Ledger, localPath: string, intelligence: Record<string
 test("nested authority automatically selects CivicRecords-style backend with excluded provenance", async () => {
   const fixture = await repository({ "backend/pyproject.toml": '[project]\nversion="1.7.3"\n', "frontend/package.json": '{"private":true,"version":"1.7.3"}', "docs/package.json": '{"name":"docs"}' });
   const ledger = new Ledger(path.join(fixture.root, "ledger.db")); try { const authority: any = await new DeliveryService(ledger).versionAuthorityAtCommit(fixture.root, fixture.commit);
-    assert.deepEqual({ state: authority.state, version: authority.version, source: authority.source, cwd: authority.cwd, reason: authority.reason, units: authority.units.map((unit: any) => [unit.cwd, unit.state]) }, { state: "declared", version: "1.7.3",
-      source: "backend/pyproject.toml", cwd: "backend", reason: "automatic-sole-nested",
-      units: [["backend", "declared"], ["docs", "versionless"], ["frontend", "private"]] });
+    assert.deepEqual({ state: authority.state, version: authority.version, source: authority.source, cwd: authority.cwd, reason: authority.reason, units: authority.units.map((unit: any) => [unit.cwd, unit.state]) }, { state: "declared", version: "1.7.3", source: "backend/pyproject.toml", cwd: "backend", reason: "automatic-sole-nested", units: [["backend", "declared"], ["docs", "versionless"], ["frontend", "private"]] });
   } finally { ledger.close(); await rm(fixture.root, { recursive: true, force: true }); }
 }); test("typed selector CAS is durable, race-safe, stale-safe, and reserved across metadata refresh", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dh-selector-ledger-")), filename = path.join(root, "ledger.db");
   let ledger = new Ledger(filename); try {
     const injected = { version: 1, cwd: "a", state: "active", revision: 1, selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null };
     const original = register(ledger, root, { releaseUnitSelection: injected }); assert.equal(ledger.getRepository(original.id)?.intelligence.releaseUnitSelection, undefined, "repository insert cannot seed the reserved selector");
-    ledger.upsertProduct({ id: "product:test", name: "Test", organizationUrl: "https://example.invalid/test", description: "refreshed", repositories: [{ ...original, intelligence: { releaseUnitSelection: injected } }] });
-    assert.equal(ledger.getRepository(original.id)?.intelligence.releaseUnitSelection, undefined, "product refresh cannot seed an absent selector"); const selected = ledger.updateReleaseUnitSelection("repo:test", "a", 0);
+    ledger.upsertProduct({ id: "product:test", name: "Test", organizationUrl: "https://example.invalid/test", description: "refreshed", repositories: [{ ...original, intelligence: { releaseUnitSelection: injected } }, { ...original, id: "repo:product", name: "product", fullName: "test/product", intelligence: { releaseUnitSelection: injected } }] });
+    assert.deepEqual(["repo:test", "repo:product"].map((id) => ledger.getRepository(id)?.intelligence.releaseUnitSelection), [undefined, undefined], "product refresh and separate insert cannot seed an absent selector"); const selected = ledger.updateReleaseUnitSelection("repo:test", "a", 0);
     register(ledger, root, { refreshed: true }); assert.deepEqual(ledger.getRepository(original.id)?.intelligence.releaseUnitSelection, selected, "repository metadata upsert preserves the reserved selector");
     ledger.upsertProduct({ id: "product:test", name: "Test", organizationUrl: "https://example.invalid/test", description: "refreshed", repositories: [{ ...original, intelligence: { refreshedAgain: true } }] });
     assert.deepEqual(ledger.getRepository(original.id)?.intelligence.releaseUnitSelection, selected, "product metadata upsert also preserves the reserved selector");
@@ -42,21 +38,20 @@ test("nested authority automatically selects CivicRecords-style backend with exc
     assert.deepEqual({ state: persisted.state, revision: persisted.revision }, { state: "invalidated", revision: winner.revision + 1 });
     const reselected = ledger.updateReleaseUnitSelection("repo:test", "a", winner.revision + 1);
     assert.deepEqual({ state: reselected.state, revision: reselected.revision }, { state: "active", revision: winner.revision + 2 });
-    for (const raw of [null, "literal malformed", { version: 99, cwd: "a" }]) { (ledger as any).database.prepare("UPDATE repositories SET intelligence_json = ? WHERE id = ?").run(JSON.stringify({ releaseUnitSelection: raw }), "repo:test");
+    for (const raw of [injected, null, "literal malformed", { version: 99, cwd: "a" }, [], true, 7]) { (ledger as any).database.prepare("UPDATE repositories SET intelligence_json = ? WHERE id = ?").run(JSON.stringify({ releaseUnitSelection: raw }), "repo:test");
       register(ledger, root, { releaseUnitSelection: injected }); assert.deepEqual(ledger.getRepository("repo:test")!.intelligence.releaseUnitSelection, raw, "repository refresh preserves existing raw selector");
       ledger.upsertProduct({ id: "product:test", name: "Test", organizationUrl: "https://example.invalid/test", description: "raw", repositories: [{ ...original, intelligence: { releaseUnitSelection: injected } }] }); assert.deepEqual(ledger.getRepository("repo:test")!.intelligence.releaseUnitSelection, raw, "product refresh preserves existing raw selector"); }
   } finally { ledger.close(); await rm(root, { recursive: true, force: true }); }
-}); test("release lock binds its frozen token to one canonical key and cleanup never masks callbacks", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "dh-selector-lock-")); const ledger = new Ledger(path.join(root, "ledger.db")); let stale = "", tokenEvidence = "";
-  try { register(ledger, root);
-    await ledger.withReleaseUnitLock("repo:other", async (lock) => { let error: unknown; try { ledger.updateReleaseUnitSelection("repo:test", "a", 0, { ...lock, key: (ledger as any).releaseUnitLockKey("repo:test") }); } catch (caught) { error = caught; }
-      tokenEvidence = `lock frozen=${Object.isFrozen(lock)}; forged result=${String(error)}`; });
-    let value: unknown, error: unknown; try { value = await ledger.withReleaseUnitLock("repo:test", async (lock) => { stale = lock.key; await rm(stale); await mkdir(stale); return "completed"; }); } catch (caught) { error = caught; }
-    assert.deepEqual({ value, error: error === undefined ? null : String(error) }, { value: "completed", error: null }, "cleanup cannot mask callback success"); assert.throws(() => ledger.updateReleaseUnitSelection("repo:test", "a", 0), /already in progress/i);
-    await rm(stale, { recursive: true }); stale = ""; error = undefined;
-    try { await ledger.withReleaseUnitLock("repo:test", async (lock) => { stale = lock.key; await rm(stale); await mkdir(stale); throw new Error("callback sentinel"); }); } catch (caught) { error = caught; }
-    assert.match(String(error), /callback sentinel/, "cleanup cannot mask the original callback error"); assert.throws(() => ledger.updateReleaseUnitSelection("repo:test", "a", 0), /already in progress/i); assert.match(tokenEvidence, /frozen=true; forged result=Error: Release-unit selection or tagging is already in progress/);
-  } finally { if (stale) await rm(stale, { recursive: true, force: true }); ledger.close(); await rm(root, { recursive: true, force: true }); }
+}); test("release lock binds canonical storage and ownership without masking callbacks", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dh-selector-lock-")), filename = path.join(root, "ledger.db"), hardlink = path.join(root, "hardlink.db"); const ledger = new Ledger(filename); let stale = "", diagnostics = 0, escaped: any, frozen = false, originalConsole = console.error;
+  try { register(ledger, root); await link(filename, hardlink); let hardError: unknown; try { await ledger.withReleaseUnitLock("repo:hard", async () => undefined); } catch (caught) { hardError = caught; } await rm(hardlink);
+    let forgedError: unknown; await ledger.withReleaseUnitLock("repo:other", async (lock) => { try { ledger.updateReleaseUnitSelection("repo:test", "a", 0, { ...lock, key: (ledger as any).releaseUnitLockKey("repo:test") }); } catch (caught) { forgedError = caught; } }); console.error = () => { diagnostics++; throw new Error("diagnostic sentinel"); };
+    let value: unknown, cleanupError: unknown, obsoleteError: unknown; try { value = await ledger.withReleaseUnitLock("repo:test", async (lock) => { escaped = lock; frozen = Object.isFrozen(lock); stale = lock.key; await rm(stale); await writeFile(stale, "replacement"); try { ledger.updateReleaseUnitSelection("repo:test", "b", 1, lock); } catch (caught) { obsoleteError = caught; } return "completed"; }); } catch (caught) { cleanupError = caught; }
+    const replacement = await readFile(stale, "utf8").catch((error) => String(error)); await rm(stale, { force: true }); stale = ""; let staleError: unknown; try { ledger.updateReleaseUnitSelection("repo:test", "b", 1, escaped); } catch (caught) { staleError = caught; }
+    let originalError: unknown; try { await ledger.withReleaseUnitLock("repo:error", async (lock) => { stale = lock.key; await rm(stale); await writeFile(stale, "replacement-error"); throw new Error("callback sentinel"); }); } catch (caught) { originalError = caught; }
+    const errorReplacement = await readFile(stale, "utf8").catch((error) => String(error)); await rm(stale, { force: true }); stale = ""; console.error = originalConsole;
+    assert.deepEqual({ hardlink: /hard.?link/i.test(String(hardError)), forged: /already in progress/i.test(String(forgedError)), frozen, value, cleanupError: cleanupError ?? null, obsolete: /already in progress/i.test(String(obsoleteError)), replacement, diagnostics, original: /callback sentinel/.test(String(originalError)), errorReplacement, stale: /already in progress/i.test(String(staleError)) }, { hardlink: true, forged: true, frozen: true, value: "completed", cleanupError: null, obsolete: true, replacement: "replacement", diagnostics: 2, original: true, errorReplacement: "replacement-error", stale: true });
+  } finally { console.error = originalConsole; if (stale) await rm(stale, { recursive: true, force: true }); ledger.close(); await rm(root, { recursive: true, force: true }); }
 }); test("configured authority ignores unrelated defects, then persists selected failure without reactivation", async () => {
   const fixture = await repository({ "a/package.json": '{"version":"1.0.0"}', "b/pyproject.toml": '[project]\nversion="2.0.0"\n', "broken/package.json": "{" });
   const filename = path.join(fixture.root, "ledger.db"); let ledger = new Ledger(filename);

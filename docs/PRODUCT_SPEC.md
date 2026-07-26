@@ -1178,17 +1178,24 @@ revision. The tag gate always re-resolves the exact merge commit against the
 current selection revision. From that final resolution through tag creation
 and publication, an atomic filesystem lock keyed by the canonical database
 identity and repository prevents a competing selection write from any local
-process or filesystem alias from changing the authority. Lock handles are
-runtime-frozen, and their opaque token is bound to that one canonical key and a
-present lock path before an internal CAS may write. Cleanup always revokes the
-token and never replaces the callback result or original error; an unlink
-failure emits an explicit `DEGRADED` owner-repair diagnostic, never removes or
-replaces any remaining path, and any remaining path stays fail-closed. A
+process or filesystem alias from changing the authority. A ledger database
+with a filesystem link count other than one fails closed with an explicit
+hard-link refusal. Lock handles are runtime-frozen; their opaque token binds
+the canonical key, a random nonce, and the exact regular lock file's device and
+inode. Holder writes and cleanup require that same identity and nonce. Cleanup
+always revokes the token and never replaces the callback result or original
+error; any mismatch, read/stat failure, or unlink failure emits a nonthrowing
+`DEGRADED` owner-repair diagnostic without removing a replacement path. A
 crash-stale lock is never aged out, stolen, or silently deleted. Only the owner
 may remove that exact lock after independently proving that no selector or tag
 operation for that database and repository remains active. Delivery evidence
 records the commit, selection state and revision, selected unit, source manifest,
 provenance, and every inventoried unit's selection reason and diagnostics.
+Once the remote tag push succeeds, publication is irreversible locally:
+DevHarmonics returns truthful tagged state and never falls back to merged.
+Tagged-status persistence gets one bounded idempotent reconciliation retry;
+continued status failure and `delivery.tagged` event failure are nonfatal
+`DEGRADED` conditions requiring owner repair, and the event is not retried.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from
