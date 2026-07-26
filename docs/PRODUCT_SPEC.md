@@ -1,15 +1,15 @@
 # DevHarmonics Canonical Product Specification
 
 Document status: **Canonical product direction**
-Specification version: **1.16**
+Specification version: **1.17**
 Written: **2026-07-13**
 Revised: **2026-07-26**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Canonical Product Specification](https://docs.google.com/document/d/1rd-_gqHHPZHhTkrULJR9tHcbAVUOGONsbuEFCV-8pRQ/edit?usp=drivesdk)
 
-Revision history: **v1.16 (2026-07-26)** — Removed the remaining roadmap ambiguity around beta breadth: ACP and the direct OpenAI API adapter are mandatory beta implementations even though they remain disabled until configured; other direct APIs remain optional. Locked one accountable feature-first dependency sequence in which the complete restart-safe campaign kernel includes diagnostic partitioning and differential/regression controls, all adaptive-workforce and ecosystem tracks join before integrated proof, and only broad whole-product hardening follows feature completion.
+Revision history: **v1.17 (2026-07-26)** — Clarified that a prerequisite blocks only the feature lanes that consume it: P0-3, structural workflow enforcement, and restart recovery may proceed together, unrelated Milestone C/D work continues when its own contracts are stable, every required feature lane still joins before integrated proof, and broad whole-product hardening remains post-feature.
 
-Prior revisions: **v1.15 (2026-07-26)** reconciled the full-feature beta contract with the live feature-first sequence, recorded P0-2 complete, placed recovery and structural workflow enforcement in the campaign kernel, required all Milestone C/D features before final proof, and reserved broad hardening for the post-feature pass. **v1.14 (2026-07-26)** replaced the narrow "one product airtight" gate with the owner-locked full-feature beta definition. **v1.13 (2026-07-25)** recorded the superseded narrow Option A path.
+Prior revisions: **v1.16 (2026-07-26)** made ACP and direct OpenAI mandatory beta implementations, assigned every C/D priority an accountable feature package, and joined every feature lane before proof. **v1.15 (2026-07-26)** reconciled the full-feature beta contract with the live feature-first sequence, recorded P0-2 complete, placed recovery and structural workflow enforcement in the campaign kernel, required all Milestone C/D features before final proof, and reserved broad hardening for the post-feature pass. **v1.14 (2026-07-26)** replaced the narrow "one product airtight" gate with the owner-locked full-feature beta definition. **v1.13 (2026-07-25)** recorded the superseded narrow Option A path.
 
 Prior revision: **v1.12 (2026-07-16)** — Recorded the owner's licensing decision: DevHarmonics is released under the Apache License 2.0. The licensing open question is resolved and removed; the repository carries the canonical LICENSE file, and the version-consistency check enforces the license file plus matching package and lockfile metadata.
 
@@ -1166,13 +1166,13 @@ The beta capability minimum is closed as follows:
 | Portable operation | Import/export of objective, workflow, evidence, and delivery-handoff bundles | Available locally; never transfers credentials or authority |
 | Explicit exclusions | Hosted DevHarmonics execution, remote-offline workers, enterprise IAM/compliance/secrets administration, and arbitrary email/chat-driven execution | Not part of this product |
 
-Development gates before this exit are integration gates. They prove the new
-slice is real enough to build upon and has not broken established foundations;
-they do not require broad cosmetic polish, clean-machine release rehearsal, or
-user-ready refinement after every feature. Fix immediately when an issue would
-cause silent wrong answers, security or privacy exposure, data loss, repeated
-consequential actions, corrupted integration, or a broken dependency for later
-features. Record other nonblocking polish for the post-feature beta pass.
+Development gates before this exit are integration gates. A prerequisite blocks
+only the feature lanes that consume it; independent Milestone C/D work proceeds
+when its own contracts are stable. These gates prove a slice is real enough to
+build upon, not broadly polished, clean-machine rehearsed, or user-ready. Fix
+immediately when an issue would cause silent wrong answers, security or privacy
+exposure, data loss, repeated consequential actions, corrupted integration, or
+a broken downstream dependency. Defer other polish to the post-feature pass.
 
 #### P0-2 normative release-unit contract
 

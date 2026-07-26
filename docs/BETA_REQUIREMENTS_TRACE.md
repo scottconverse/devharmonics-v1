@@ -1,7 +1,7 @@
 # Beta requirements trace
 
-Source specification: current dirty candidate `docs/PRODUCT_SPEC.md`, v1.16, SHA-256 `6144C8C523D4CF3AC78613768F036B01337A27C5A612F29C1FE8867D754B35F5`.
-The normative-row inventory is generated mechanically from v1.16. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
+Source specification: candidate `docs/PRODUCT_SPEC.md`, v1.17, SHA-256 `F9B1ED2E721E462F53C999C3682BE37141070647A49BCE811BBA0EFFE020D730`.
+The normative-row inventory is generated mechanically from v1.17. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
 
 ## Machine-checkable totals
 
@@ -36,18 +36,20 @@ The four rows account for all **67** functional requirements exactly once.
 
 | Status | Priorities | Count | Principal remaining work |
 |---|---|---:|---|
-| CLAIMED | A2–A8, A10–A12, A14; B1–B6, B8, B10–B11; C3–C4, C12; D2 | 24 | Exact-candidate beta proof remains |
-| PARTIAL | A1, A9, A13; B7, B9; C1–C2, C5–C7, C9, C13; D1, D7 | 14 | Recovery, installer, GitHub breadth, workflow enforcement, catalog/audition/optimization/upgrades/replanning, tool packaging, diagnostics, analytics/evaluation |
+| CLAIMED | A2–A8, A10–A12, A14; B1–B6, B8, B10–B11; C3–C4, C12 | 23 | Exact-candidate beta proof remains |
+| PARTIAL | A1, A9, A13; B7, B9; C1–C2, C5–C7, C9, C13; D1–D2, D7 | 15 | Recovery, installer, GitHub breadth, workflow enforcement, catalog/audition/optimization/upgrades/replanning, tool packaging, diagnostics, analytics/evaluation, complete API budget policy |
 | MISSING | C8, C10–C11; D3–D6 | 7 | ACP, learning policy, campaigns, Open Interpreter/direct OpenAI API, ecosystem packaging, triggers, portable handoffs |
 
 The three rows account for all **45** Milestone A–D priorities exactly once.
 
 ### Dependency-ordered beta feature slices
 
-1. Complete P0-3 next; P0-2 completed in merged PR #58 (`09209e5`). Continue
-   the full-repository comprehension census in parallel and close it after
-   feature implementation but before integrated proof.
-2. Structurally enforce workflow and campaign-template contracts.
+1. Complete P0-3 for dependency-aware planning and campaign consumers; P0-2
+   completed in merged PR #58 (`09209e5`). Continue unrelated eligible C/D work
+   and the full-repository comprehension census in parallel, then close the
+   census after feature implementation but before integrated proof.
+2. Structurally enforce workflow and campaign-template contracts in parallel
+   with P0-3 and other feature lanes they do not block.
 3. Build the restart-safe campaign kernel that owns Milestone C11 and C13:
    campaign stages, representative pilots, promotion gates, resource-aware
    shards, diagnostic partitioning, test-integrity controls, differential
@@ -59,7 +61,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
    policy-bounded trigger controls that own C10, D5, and D7.
 6. Complete the runtime and ecosystem lane: OpenRouter completion, Open
    Interpreter followed by ACP conformance (C8), direct OpenAI, and ecosystem
-   packaging (D1 and D3–D4). Milestone D is required to ship and optional to
+   packaging (D1–D4, including D2 cost/budget completion). Milestone D is required to ship and optional to
    enable.
 7. Deliver portable workflow/objective/evidence/delivery-handoff bundles (D6)
    together with basic installer and provider onboarding (A13).
@@ -75,7 +77,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 
 | ID | Requirement | Normativity | Spec source | Implementation unit/status | Beta evidence |
 |---|---|---|---|---|---|
-| PS-HIST-000 | ACP and direct OpenAI are mandatory beta implementations; the restart-safe campaign kernel includes diagnostic/differential/regression controls; all feature tracks join before integrated proof; only broad hardening follows feature completion. | MUST | `docs/PRODUCT_SPEC.md:10` | UNASSESSED | UNASSESSED |
+| PS-HIST-000 | Prerequisites block only consuming feature lanes; ACP and direct OpenAI remain mandatory; all feature tracks join before integrated proof; only broad hardening follows feature completion. | MUST | `docs/PRODUCT_SPEC.md:10` | UNASSESSED | UNASSESSED |
 | PS-HIST-001 | Every DevHarmonics-owned operation acknowledges immediately, shows truthful lifecycle/elapsed state, survives navigation/refresh, ends visibly, uses evidence-based progress, and ships complete feedback states per workflow. | MUST | `docs/PRODUCT_SPEC.md:16` | UNASSESSED | UNASSESSED |
 | PS-HIST-002 | Antigravity may expose Google/Anthropic/OpenAI models; schedule Gemini vs Claude/GPT quota groups independently and never claim actual model identity without runtime verification. | MUST | `docs/PRODUCT_SPEC.md:24` | UNASSESSED | UNASSESSED |
 | PS-AUTH-000 | Treat this document as the canonical source for product scope, priorities, behavior, and judgment. | DEFINED | `docs/PRODUCT_SPEC.md:36-38` | UNASSESSED | UNASSESSED |
@@ -471,8 +473,8 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-MS-C11 | Campaign stages/pilots/promotion/resource-aware shards. | MILESTONE | `docs/PRODUCT_SPEC.md:1326` | PLANNED — DH-350 accountable | PENDING IMPLEMENTATION |
 | PS-MS-C12 | Configurable adversarial review/fix/re-review. | MILESTONE | `docs/PRODUCT_SPEC.md:1327` | CLAIMED — DH-460 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-MS-C13 | Diagnostic partitioning/test integrity/differential evidence/regression accounting. | MILESTONE | `docs/PRODUCT_SPEC.md:1328` | PLANNED — DH-480 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D01 | Opt-in OpenRouter with OAuth/model/privacy/spending policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1340` | PLANNED — DH-830 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D02 | Cost-aware routing/budgets. | MILESTONE | `docs/PRODUCT_SPEC.md:1341` | CLAIMED — DH-320 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
+| PS-MS-D01 | Opt-in OpenRouter with OAuth/model/privacy/spending policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1340` | PARTIAL — DH-830 accountable; invocation foundation exists; OAuth/no-manual-key, activation, qualification, positive limits, and live-credit controls pending | PENDING IMPLEMENTATION |
+| PS-MS-D02 | Cost-aware routing/budgets. | MILESTONE | `docs/PRODUCT_SPEC.md:1341` | PARTIAL — DH-320 routing foundation; DH-650 counterfactual and complete DH-830 limit policy pending | PENDING IMPLEMENTATION |
 | PS-MS-D03 | Open Interpreter worker runtime and direct OpenAI API adapter, in addition to Ollama and OpenRouter. | MILESTONE | `docs/PRODUCT_SPEC.md:1342-1343` | PLANNED — DH-830 accountable | PENDING IMPLEMENTATION |
 | PS-MS-D04 | ACP/ecosystem packaging for adapters/tools/workflows/skills/qualification. | MILESTONE | `docs/PRODUCT_SPEC.md:1344` | PLANNED — DH-815 accountable | PENDING IMPLEMENTATION |
 | PS-MS-D05 | GitHub and optional Linear triggers under local policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1345` | PLANNED — DH-805 accountable | PENDING IMPLEMENTATION |
@@ -563,7 +565,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 Run from the repository root:
 
 ```powershell
-$expectedHash='6144C8C523D4CF3AC78613768F036B01337A27C5A612F29C1FE8867D754B35F5'
+$expectedHash='F9B1ED2E721E462F53C999C3682BE37141070647A49BCE811BBA0EFFE020D730'
 $actualHash=(Get-FileHash -Algorithm SHA256 -LiteralPath 'docs/PRODUCT_SPEC.md').Hash
 $spec=Get-Content -LiteralPath 'docs/PRODUCT_SPEC.md' -Encoding utf8
 $trace=Get-Content -LiteralPath 'docs/BETA_REQUIREMENTS_TRACE.md' -Encoding utf8
