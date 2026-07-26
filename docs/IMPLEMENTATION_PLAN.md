@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.38**
+Plan version: **1.39**
 Written: **2026-07-14**
 Revised: **2026-07-26**
 Product specification baseline: **DevHarmonics Product Specification v1.17**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.38 (2026-07-26)** — Corrected the remaining feature-first inconsistencies: P0-3, structural workflow enforcement, and recovery now gate only their consumers rather than every C/D lane; OpenRouter acceptance now includes the specification's OAuth, positive-limit, activation, qualification, and live-credit controls; D5 depends on the existing reusable-workflow package rather than nonexistent DH-680; D2 remains partial until the complete policy is implemented; and the optional DH-910 support bundle is unambiguously post-beta.
+Revision history: **v1.39 (2026-07-26)** — Bound the Campaign Control Room to C11 implementation and acceptance, completed the Increment 6 trigger exit with local-schedule and monitoring behavior, required the complete ecosystem-package conformance fixture at the Increment 7 exit, aligned detailed C/D trace statuses with the editorial summary, and marked the historical v0.5 publication-gate wording as superseded.
+
+Prior revision: **v1.38 (2026-07-26)** — Corrected the remaining feature-first inconsistencies: P0-3, structural workflow enforcement, and recovery now gate only their consumers rather than every C/D lane; OpenRouter acceptance now includes the specification's OAuth, positive-limit, activation, qualification, and live-credit controls; D5 depends on the existing reusable-workflow package rather than nonexistent DH-680; D2 remains partial until the complete policy is implemented; and the optional DH-910 support bundle is unambiguously post-beta.
 
 Prior revision: **v1.37 (2026-07-26)** assigned every remaining C/D priority one implementation owner and acceptance anchor, joined all feature tracks before proof, and placed hardening after feature completion. **v1.36 (2026-07-26)** reconciled the execution roadmap with the owner-confirmed feature-first order, P0-2 completion, early campaign recovery/workflow enforcement, all C/D breadth, handoff, and installer before final hardening. **v1.35 (2026-07-26)** replaced the narrow Phase 0/Slice D beta path with the owner-locked full-feature beta contract.
 
@@ -1501,7 +1503,7 @@ independent beta or user-readiness claim):
 - Increment 1 (v0.2 cockpit): complete in the v0.3.0 release line.
 - Increment 2 (v0.3 model fleet and Ollama): complete; the CivicSuite pilot proved local Qwen review using three bounded diagnostic-report chunks.
 - Increment 3 (v0.4 adaptive workforce): complete and accepted. The representative CivicSuite Observe run `c13f39e7-3f0c-45e5-95ae-b37d78beadfb` independently selected Codex Terra, Claude Sonnet, and Gemini 3.5 Flash for three bounded diagnostics, passed every evidence check on the first attempt, and completed three context-only final-review chunks with local Ollama `qwen2.5:7b`. The full 68-test gate, version audit, dependency audit, routing-evidence inspection, model-fleet walkthrough, evidence-view walkthrough, and full/compact responsive passes all succeeded. Reviewer invocations now participate in empirical profiles, manual tier overrides are explicit, and stale assets cannot silently preserve an older cockpit. Task-linked structured reviewer findings remain part of DH-460 rather than being inferred from a run-level verdict.
-- Increment 4 (v0.5 verified local implementation): feature scope and automated verification complete; release publication gate in progress.
+- Increment 4 (v0.5 verified local implementation): historical feature scope and automated verification completed; its former publication gate is superseded by the full-feature beta contract.
 - Increment 5 (v0.6 CivicSuite operation): in progress, with registry, planning, intelligence, exact integration sets, and automatic fix/re-review foundations implemented.
 - Increments 6 through 8: remaining before full-feature beta, with selected
   foundations already present where noted by the work-package evidence.
@@ -1579,7 +1581,7 @@ Exit gate:
 
 ### Increment 4: Verified local implementation — v0.5
 
-Status: **Feature scope and automated verification complete; release publication gate in progress.** DH-440 through DH-470 foundations, DH-510's bounded local tool loop, Mellum2 scheduling, DH-620's durable single-workspace objective/plan approval core, DH-640's read-only multi-model Workbench, exact review-evidence binding, collision-proof internal task IDs, same-provider architect qualification fallback, complete concurrent-abort settling, and bounded OpenRouter spending enforcement are implemented on the v0.5 development branch.
+Status: **Historical feature scope and automated verification completed; the former v0.5 publication gate is superseded by the current full-feature beta contract.** DH-440 through DH-470 foundations, DH-510's bounded local tool loop, Mellum2 scheduling, DH-620's durable single-workspace objective/plan approval core, DH-640's read-only multi-model Workbench, exact review-evidence binding, collision-proof internal task IDs, same-provider architect qualification fallback, complete concurrent-abort settling, and bounded OpenRouter spending enforcement were implemented on the v0.5 development branch.
 
 Work:
 
@@ -1622,6 +1624,9 @@ Work:
 - DH-810 structural workflow-contract enforcement and campaign templates before
   campaign fan-out;
 - DH-350 campaign and stage orchestrator;
+- DH-600 Campaign Control Room, with DH-632 visible operation feedback for its
+  stage, pilot, shard, barrier, review, diagnostic, resource, regression,
+  recovery, and promotion states;
 - DH-360 pilot-to-scale promotion;
 - DH-370 diagnostic partitioner and shard barriers;
 - DH-470 campaign test-integrity and anti-shortcut controls;
@@ -1639,6 +1644,10 @@ Exit gate:
 - broad fan-out is blocked until its diagnostic, test-integrity, differential,
   and regression-budget contracts are executable and the pilot promotion gate
   has passed;
+- the Campaign Control Room truthfully renders stage gates, pilot results,
+  shards, barriers, reviewer quorums, diagnostics, resource pressure,
+  regression budgets, recovery state, and promotion decisions without using
+  raw activity counts as readiness;
 - it survives a provider fallback;
 - it completes one bounded cross-repository objective with exact commits, checks, documentation impacts, and unresolved risks.
 
@@ -1666,6 +1675,10 @@ Exit gate:
 - Scott can redirect, reprioritize, interrupt-and-handoff, or reassign live work with durable attribution;
 - CivicSuite release truth and compatibility workflows produce actionable, reviewable evidence;
 - an allowlisted GitHub or Linear event can create a bounded objective draft without silently authorizing execution;
+- local schedules run only approved maintenance or audit workflows while the
+  local computer and DevHarmonics runtime are available, and monitoring events
+  create diagnostic evidence or bounded drafts without production-mutation
+  authority;
 - one campaign centralizes an expensive diagnostic, partitions non-overlapping repairs, and reports equivalence plus regressions honestly;
 - analytics and versioned evaluations identify routing and workflow improvements without silently promoting them;
 - model catalogs refresh automatically, controlled upgrades can roll back,
@@ -1694,6 +1707,9 @@ Exit gate:
 - OpenRouter can be enabled through setup without code changes;
 - default installations make no paid API calls;
 - fallback cannot bypass spending or privacy policy;
+- one conformance fixture installs an adapter, tool, workflow, skill, and
+  qualification suite through the DH-815 package contract, while tampered,
+  incompatible, or incomplete packages fail closed;
 - portable handoff transfers neither credentials nor authority; and
 - a supported Windows machine can reach the setup cockpit without source
   commands.
@@ -1762,10 +1778,11 @@ because it is not on the single campaign-kernel chain.
 
 ### Milestone C/D accountable implementation map
 
-Each priority has one accountable work package. Dependencies contribute behavior
-but do not create a second owner. The named acceptance anchor is the minimum
-implementation evidence required before the trace row can advance from
-`PLANNED`.
+Each priority has one accountable work package except C11, whose inseparable
+runtime kernel and product-manager Control Room have explicit co-owners.
+Dependencies contribute behavior but do not create additional owners. The named
+acceptance anchor is the minimum implementation evidence required before the
+trace row can advance from `MISSING` or `PARTIAL`.
 
 | Priority | Accountable unit | Required dependencies | Acceptance anchor |
 |---|---|---|---|
@@ -1779,14 +1796,14 @@ implementation evidence required before the trace row can advance from
 | C8 ACP | DH-820 | DH-200, DH-825 | Open Interpreter conformance target completes through normalized task/result/evidence contracts |
 | C9 tool/skill registry | DH-440 | DH-430, DH-510 | Exact registered tool/skill revisions are policy-bounded, receipted, and historically resolvable |
 | C10 governed learning | DH-660 | DH-250, DH-650 | Evaluated recommendation can be accepted, rejected, and rolled back without rewriting authority |
-| C11 campaigns/pilots/shards | DH-350 | DH-310, DH-340, DH-360, DH-370 | Restart-safe pilot promotion and resource-pressure shard simulation pass before fan-out |
+| C11 campaigns/pilots/shards | DH-350 kernel + DH-600 Control Room | DH-310, DH-340, DH-360, DH-370, DH-632 | Restart-safe pilot promotion and resource-pressure shard simulation pass before fan-out; the Control Room renders gates, pilots, shards, barriers, quorums, diagnostics, resources, regressions, recovery, and promotion without presenting vanity counts as readiness |
 | C12 adversarial review/fix/re-review | DH-460 | DH-430, DH-450 | Required independent tiers/lenses pass; fixes invalidate receipts and force re-review |
 | C13 diagnostics/test integrity/differential/regressions | DH-480 | DH-370, DH-470 | One campaign partitions diagnostics and reports unexplained differences/regressions without aggregate-test concealment |
 | D1 OpenRouter opt-in policy | DH-830 | DH-210, DH-320 | OAuth avoids manual keys; paid routing stays off until explicit model activation, current qualification, privacy policy, live credit, and positive per-run/monthly limits pass |
 | D2 cost-aware routing/budgets | DH-320 | DH-250, DH-650, DH-830 | Qualified parity favors cheaper routing; explicit activation, current qualification, live credit, and positive per-run/monthly limits remain hard admission gates |
 | D3 Open Interpreter + direct OpenAI | DH-830 | DH-825 | Both workers schedule through the same provider-neutral policy/task/evidence contract |
 | D4 ACP/ecosystem packaging | DH-815 | DH-440, DH-810, DH-820 | Tamper/compatibility checks and full adapter/tool/workflow/skill/qualification package fixture pass |
-| D5 bounded triggers | DH-805 | DH-620, DH-800, DH-810 | Deduplicated trigger creates a bounded draft and cannot authorize mutating execution |
+| D5 bounded triggers | DH-805 | DH-620, DH-800, DH-810 | Deduplicated GitHub/Linear trigger creates a bounded draft; local schedules run only approved local-runtime workflows; monitoring creates diagnostic evidence or drafts; no trigger authorizes mutating execution |
 | D6 portable handoff | DH-840 | DH-450, DH-810 | Import/export preserves provenance while transferring no credentials, secrets, or authority |
 | D7 local analytics/evaluation | DH-660 | DH-650 | Evidence-backed improvement promotion is comparable, explicit, versioned, and reversible |
 
@@ -1952,7 +1969,8 @@ as of 2026-07-26, is:
    other eligible feature work.** Enforce DH-810 approval, evidence, and
    completion contracts and add versioned campaign templates before or with
    DH-350/DH-360 fan-out.
-4. **Build the restart-safe campaign kernel (owns C11 and C13).** Integrate
+4. **Build the restart-safe campaign kernel (owns C13; co-owns C11 with the
+   DH-600 Campaign Control Room).** Integrate
    DH-340 recovery with DH-350/DH-360 campaigns, stages, pilots, and promotion;
    DH-370 resource-aware shards and diagnostic partitioning; and DH-470/DH-480
    test integrity, differential validation, and regression accounting.
