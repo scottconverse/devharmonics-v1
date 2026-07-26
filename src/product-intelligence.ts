@@ -205,7 +205,10 @@ const dependencyRepositorySchema = z.object({
     if (manifest.factCount !== (factCounts.get(dependencyEvidenceKey(manifest)) ?? 0)) {
       context.addIssue({ code: "custom", path: ["manifests", index, "factCount"], message: "dependency manifest fact count does not match its retained facts" });
     }
-    if ((manifest.state === "detected") !== (manifest.factCount > 0)) {
+    if (
+      (manifest.state === "detected" && manifest.factCount === 0)
+      || (manifest.state === "absent" && manifest.factCount > 0)
+    ) {
       context.addIssue({ code: "custom", path: ["manifests", index, "state"], message: "dependency manifest state contradicts its fact count" });
     }
   }
