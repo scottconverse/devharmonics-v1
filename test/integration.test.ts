@@ -4055,7 +4055,7 @@ test("failed first-attachment validator snapshot leaves no registered repository
     );
   } finally {
     await dashboard.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
