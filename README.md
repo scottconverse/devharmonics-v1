@@ -431,37 +431,46 @@ This project-status section describes `main`. What the current unreleased `main`
 
 ### Roadmap
 
-The owner-locked beta scope is **Option A: one product airtight**. The canonical
-[beta-readiness contract](docs/PRODUCT_SPEC.md#142-beta-readiness-contract-one-product-airtight)
-and [current execution sequence](docs/IMPLEMENTATION_PLAN.md#current-beta-execution-contract-owner-locked-2026-07-24)
-require Block 0a, Slice D restart hardening, and three qualifying real
-deliveries performed only after Block 0a passes.
+The owner-locked beta scope is the **complete specified product**. The canonical
+[full-feature beta contract](docs/PRODUCT_SPEC.md#142-full-feature-beta-contract)
+and [current execution sequence](docs/IMPLEMENTATION_PLAN.md#current-beta-execution-contract-owner-locked-2026-07-26)
+require every specified feature and function to be implemented and verified as
+one integrated factory. Intermediate gates protect the next feature slice; they
+are not miniature release-readiness or polishing gates.
 
-Current beta-gate status:
+Current foundation status:
 
 - P0-1 release-version comprehension — complete;
-- P0-2 monorepo/subproject comprehension — pending;
+- P0-2 monorepo/subproject comprehension — in progress;
 - P0-3 structured dependency parsing and provenance — pending;
 - P0-4 real validator discovery — complete;
-- Slice D restart reconstruction and automatic worktree cleanup — pending; and
-- the three post-Block-0a deliveries — pending.
+- full restart reconstruction and automatic worktree cleanup — pending.
 
-The Block 0a beta audit is narrower than the later full Phase 0
-(Blocks 0a + 0b + 0c) >=95% comprehension gate. Passing the beta-readiness
-contract would make a candidate ready for an owner decision; it would not
-authorize a tag, publication, or announcement.
+These items are necessary foundations, not the beta boundary. Beta additionally
+requires the complete Phase 0 census; campaigns, pilots, promotion, shards,
+diagnostics, and differential evidence; analytics and evaluation; enforced
+workflows and triggers; ACP and specified provider/runtime/tool breadth;
+portable handoffs; all CivicSuite acceptance levels; and integrated real-product
+proof. Optional connections remain disabled until configured, but their product
+capabilities are implemented before beta.
 
-**Available on unreleased `main`** — everything above without a *planned*
-qualifier, including cockpit-complete delivery, live run steering, visible
-operation feedback, review evidence lenses, per-run cost counterfactuals, and
-reusable workflows — all proven against a real multi-repository product (the
-first cross-repository CivicSuite delivery was pushed, PR'd, and merged from
-the cockpit).
-**Longer-term planned destination** — full Phase 0 comprehension, campaigns,
-triggers, analytics, Agent Client Protocol transport, broader API support, and
-full-organization CivicSuite operation.
+**Available on unreleased `main`** — cockpit-complete delivery, live run
+steering, visible operation feedback, review evidence lenses, per-run cost
+counterfactuals, and reusable workflow foundations — all proven against a real
+multi-repository product (the first cross-repository CivicSuite delivery was
+pushed, PR'd, and merged from the cockpit). The pending foundation and
+remaining-before-beta lists are not shipped claims.
+**Remaining before beta** — full Phase 0 comprehension, campaigns, triggers,
+analytics and evaluation, Agent Client Protocol transport, broader provider and
+runtime support, recovery, portable handoffs, and full CivicSuite program
+operation.
 
-Planned items are proposals recorded in [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), not dated commitments.
+The implementation order is recorded in
+[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md), and the exhaustive
+[beta requirements trace](docs/BETA_REQUIREMENTS_TRACE.md) records every
+normative specification row. Feature slices receive proportional correctness
+checks, while broad cosmetic polish and production hardening wait until the
+full feature set exists.
 
 An unreleased checkout still reports package version `0.6.1`. When reporting a problem from `main`, include the output of `git rev-parse HEAD` so the exact development revision is identifiable.
 

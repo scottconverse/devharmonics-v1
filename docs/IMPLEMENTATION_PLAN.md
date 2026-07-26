@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.34**
+Plan version: **1.35**
 Written: **2026-07-14**
-Revised: **2026-07-25**
-Product specification baseline: **DevHarmonics Product Specification v1.13**
+Revised: **2026-07-26**
+Product specification baseline: **DevHarmonics Product Specification v1.14**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.34 (2026-07-25)** — Replaced the stale immediate capability sequence with the owner-locked Phase 0/Slice D beta path. Beta readiness is Option A ("one product airtight"): finish and audit Block 0a, finish Slice D, then prove three qualifying real deliveries. The longer-term Phase 0 and org-scale destination remain unchanged, and readiness does not authorize a tag or publication.
+Revision history: **v1.35 (2026-07-26)** — Replaced the narrow Phase 0/Slice D beta path with the owner-locked full-feature beta contract. Every specified feature and function is now required before beta, including the complete comprehension program, campaign orchestration, analytics and evaluation, workflows and triggers, ACP and ecosystem breadth, restart-safe recovery, all CivicSuite acceptance levels, and integrated real-product proof. Intermediate gates are integration checks rather than miniature user-readiness passes. Feature delivery takes priority over optional polish; only obvious defects and correctness, security, data-loss, recovery, or downstream-blocking issues interrupt the feature sequence. Publication still requires a separate owner go.
+
+Prior revision: **v1.34 (2026-07-25)** — Defined the former Option A ("one product airtight") narrow beta path. It was superseded because it allowed beta readiness while specified capability families remained unimplemented.
 
 Prior revision: **v1.33 (2026-07-22)** — Item-6 (DH-810) implemented. A workflow is a **versioned, parameterized document stored in Git** in the tracked `workflows/` directory of the repository (`.devharmonics/` is gitignored run state and deliberately NOT where workflows-of-record live), identified by content hash — the same content-addressed discipline the ledger already applies to review evidence bindings (plan revisions, by contrast, use per-objective counters; the shared property is immutability of the record, not the identifier scheme). An objective created by instantiation carries the revision hash as structural provenance, and starting that objective pins the hash into the run record once, immutably (idempotent-or-refuse), so a later edit can never rewrite what a historical run executed; a client cannot supply the pin directly, and hand-editing an objective clears its provenance. Execution REUSES the objective composer: instantiating a workflow with typed inputs produces an objective draft through the existing propose/approve/start path — no second execution engine. Recording a revision promoted from a pilot refuses any permission widening (external writes switching on, autonomy escalation, or removal of an approval point the pilot required). A workflow's own approval points, evidence requirements, and completion contract are **advisory metadata in v0.6**: they are consistency-checked at parse time (ungated external writes refuse), compared by the promotion guard, and carried into the objective as policy notes that inform planning — but runtime gating still comes from the global run policy and review policy, not from per-workflow contract fields; structural per-workflow enforcement is deferred. First two concrete workflows ship as fixtures-of-record: documentation-consistency and release-truth audit, seeded idempotently into the ledger at server start from the install's own tracked `workflows/` directory so a fresh cockpit actually contains them. Ledger migration 32 adds workflow revision persistence and run linkage; migration 33 adds objective workflow provenance. Deferred from this increment, explicitly: campaign templates, agent-skill packs, per-product workflow scoping, approval-point taxonomy beyond plan/external_write/spending/destructive, structural enforcement of per-workflow approval/evidence/completion contracts, and discovery of workflow files from the TARGET repository (only the install's own shipped fixtures are seeded; user revisions are recorded through the API).
 
@@ -1215,6 +1217,8 @@ Acceptance:
 
 #### DH-820: ACP transport — L
 
+Status: **Required before full-feature beta; not yet implemented.**
+
 Deliverables:
 
 - implement ACP as a transport where provider support is stable;
@@ -1230,7 +1234,10 @@ Acceptance:
 
 #### DH-825: Experimental Open Interpreter worker adapter — M
 
-Status: **Roadmap, owner-approved 2026-07-16. Experimental and feature-flagged; it does not displace the current beta execution contract.**
+Status: **Required before full-feature beta; not yet implemented. During
+development it is pre-acceptance and feature-flagged. The beta candidate must
+pass every DH-825 acceptance item; after acceptance it remains disabled by
+default, not experimental.**
 
 Open Interpreter (github.com/openinterpreter/openinterpreter, Apache-2.0, a Rust Codex-fork agent runtime at 0.0.x) exposes many local and alternative coding models — Ollama and LM Studio without authentication, plus Kimi, DeepSeek, Qwen/GLM and others — behind one noninteractive CLI with newline-delimited JSON events, JSON-Schema-constrained results, sandbox modes, and an ACP mode. Its role in DevHarmonics is an optional leaf worker runtime under the scheduler: a "long tail of models" adapter. It is never the orchestrator, never embedded, and never a replacement for the first-class Codex, Claude Code, and Antigravity integrations.
 
@@ -1255,7 +1262,8 @@ Acceptance:
 
 #### DH-830: OpenRouter and API runtime — L
 
-Status: **OpenRouter foundation implemented in v0.3.0 and accepted in v0.4.0; broader API-provider support remains planned.**
+Status: **OpenRouter foundation implemented in v0.3.0 and accepted in v0.4.0;
+the direct OpenAI API adapter remains required before full-feature beta.**
 
 Deliverables:
 
@@ -1263,7 +1271,8 @@ Deliverables:
 - store API credentials in the operating-system credential store;
 - require explicit enablement, allowed models, spending ceiling, privacy/data policy, and fallback position;
 - collect normalized usage and cost receipts;
-- allow future direct API providers behind the same contract.
+- implement a direct OpenAI API adapter through the same provider-neutral
+  contract.
 
 Acceptance:
 
@@ -1272,7 +1281,9 @@ Acceptance:
 - spending and data-boundary violations fail before invocation;
 - disabling it removes all API candidates from scheduling.
 
-#### DH-840: Small-team handoff — M (deferred)
+#### DH-840: Small-team handoff — M
+
+Status: **Required before full-feature beta; not yet implemented.**
 
 Deliverables:
 
@@ -1335,37 +1346,55 @@ Acceptance:
 
 ## 7. Release increments
 
-The work packages are delivered in the following order. Some packages overlap, but an increment does not exit until its gate passes.
+The work packages are delivered in dependency order and may overlap. Increment
+gates prove that a capability is implemented well enough to integrate and build
+upon; they do not make every intermediate checkout polished, clean-machine
+ready, or independently releasable. Broad polish and production hardening are
+deferred until all specified features and functions exist. Obvious defects and
+correctness, security, privacy, data-loss, recovery, or downstream-blocking
+issues are fixed when encountered.
 
-### Current beta execution contract (owner-locked 2026-07-24)
+### Current beta execution contract (owner-locked 2026-07-26)
 
-This sequence supersedes the former immediate recommendation without deleting
-the longer-term increments below:
+Beta is the complete specified product. The earlier Block 0a + Slice D + three
+deliveries contract remains useful as an intermediate integration checkpoint,
+but it cannot produce a beta candidate while committed features remain planned,
+advisory-only, hidden, or absent.
 
-1. Complete and audit **Block 0a**, the four wrong-answer criticals:
+The live [beta requirements trace](BETA_REQUIREMENTS_TRACE.md) inventories every
+normative specification row. No beta candidate passes while any trace row lacks
+an implementation unit, disposition, or exact evidence.
+
+1. Complete **Block 0a** and continue through the complete Phase 0
+   comprehension program:
    - P0-1 release-version comprehension — complete;
-   - P0-2 monorepo/subproject comprehension — pending;
+   - P0-2 monorepo/subproject comprehension — in progress;
    - P0-3 structured dependency parsing and provenance — pending; and
    - P0-4 real validator discovery — complete.
-2. Complete **Slice D restart hardening**: interrupted integration-set
-   reconstruction, retained-work reconciliation, safe phase-specific
-   continuation, and automatic worktree cleanup. Slice D is pending and may run
-   in parallel with comprehension hardening where dependencies permit.
-3. Pass a distinct **Block 0a beta audit**. This narrow gate is not the later
-   full Phase 0 (Blocks 0a + 0b + 0c) census gate, which still requires at least
-   95% correct comprehension and zero silent wrong answers for version,
-   validator, and dependency facts.
-4. Only after Block 0a passes, complete three real deliveries through
-   DevHarmonics: one single-repository delivery, one coordinated module +
-   CivicCore delivery, and one delivery where divergence is detected honestly
-   and contained. Deliveries completed before Block 0a do not qualify.
-5. Run the beta-readiness gates for **Option A: one product airtight**.
+2. Build the remaining product features in dependency-aware parallel slices:
+   campaign/stage orchestration and pilot promotion; diagnostic partitioning,
+   shards, differential validation, and regression accounting; full recovery;
+   analytics and evaluation-driven improvement; structurally enforced reusable
+   workflows and bounded triggers; remaining product-manager cockpit controls;
+   ACP, provider/runtime/tool breadth, and portable handoffs.
+3. Complete all Milestone A-D priorities and every applicable functional
+   requirement. Optional integrations ship disabled by default but are
+   implemented and can be enabled without a code change.
+4. Exercise the integrated factory through the required single-repository,
+   multi-repository, divergence-containment, pilot-to-campaign, trigger, and
+   evaluation/rollback proofs.
+5. Run a requirement-by-requirement full-spec beta audit and integrated runtime
+   gauntlet against the exact candidate. Repair beta blockers; route
+   nonblocking cosmetic polish to the post-feature beta pass rather than
+   reopening completed feature slices.
 
-Passing these steps means the candidate is ready for the owner's beta decision.
-It does not authorize a tag, release publication, or announcement; each requires
-a separate explicit owner go.
+Passing this complete contract makes the candidate ready for the owner's beta
+decision. It does not authorize a tag, release publication, or announcement;
+each requires a separate explicit owner go.
 
-Historical implementation status recorded 2026-07-14 (retained as release-increment history; current work is governed by the beta execution contract above):
+Historical implementation status recorded 2026-07-14 (retained as
+capability-increment history; none of these intermediate increments is an
+independent beta or user-readiness claim):
 
 - Increment 0 (v0.1.x stabilization): complete.
 - Increment 1 (v0.2 cockpit): complete in the v0.3.0 release line.
@@ -1373,7 +1402,8 @@ Historical implementation status recorded 2026-07-14 (retained as release-increm
 - Increment 3 (v0.4 adaptive workforce): complete and accepted. The representative CivicSuite Observe run `c13f39e7-3f0c-45e5-95ae-b37d78beadfb` independently selected Codex Terra, Claude Sonnet, and Gemini 3.5 Flash for three bounded diagnostics, passed every evidence check on the first attempt, and completed three context-only final-review chunks with local Ollama `qwen2.5:7b`. The full 68-test gate, version audit, dependency audit, routing-evidence inspection, model-fleet walkthrough, evidence-view walkthrough, and full/compact responsive passes all succeeded. Reviewer invocations now participate in empirical profiles, manual tier overrides are explicit, and stale assets cannot silently preserve an older cockpit. Task-linked structured reviewer findings remain part of DH-460 rather than being inferred from a run-level verdict.
 - Increment 4 (v0.5 verified local implementation): feature scope and automated verification complete; release publication gate in progress.
 - Increment 5 (v0.6 CivicSuite operation): in progress, with registry, planning, intelligence, exact integration sets, and automatic fix/re-review foundations implemented.
-- Increments 6 through 8: planned, with selected foundations already present where noted by the work-package evidence.
+- Increments 6 through 8: remaining before full-feature beta, with selected
+  foundations already present where noted by the work-package evidence.
 
 ### Increment 0: Stabilized baseline — v0.1.x
 
@@ -1426,7 +1456,7 @@ Exit gate:
 - a local model completes a read-only analysis task;
 - unhealthy or exhausted candidates are not scheduled.
 
-### Increment 3: Adaptive agent workforce — v0.4
+### Increment 3: Adaptive routing foundation — v0.4
 
 Work:
 
@@ -1470,7 +1500,15 @@ Exit gate:
 
 ### Increment 5: CivicSuite single- and multi-repository operation — v0.6
 
-Status: **In progress.** DH-700's registry/local Git inspection, DH-710's product-aware repository selection and impact planning, DH-720's exact multi-repository execution plus automatic fixer/re-review quorum loop, and DH-800's first approved-delivery slice are implemented. Real single- and multi-repository CivicSuite work has already exercised these foundations, but deliveries completed before Block 0a passes do not satisfy the beta-readiness delivery gate. The controlling order now requires the remaining P0-2 and P0-3 work plus Slice D restart reconstruction and cleanup before the three qualifying post-Block-0a deliveries. DH-632 feedback remains required for every workflow exercised by that work.
+Status: **In progress.** DH-700's registry/local Git inspection, DH-710's
+product-aware repository selection and impact planning, DH-720's exact
+multi-repository execution plus automatic fixer/re-review quorum loop, and
+DH-800's first approved-delivery slice are implemented. Real single- and
+multi-repository CivicSuite work has already exercised these foundations.
+Remaining work in this increment includes P0-2/P0-3 correctness, full restart
+reconstruction and cleanup, campaign/stage orchestration, pilot promotion, and
+the integrated Levels 1-4 proofs. DH-632 feedback remains required for every
+workflow exercised by that work.
 
 Work:
 
@@ -1521,7 +1559,8 @@ Work:
 
 - DH-820 ACP;
 - DH-830 OpenRouter/API hardening and additional API-provider support;
-- additional runtime adapters selected by demonstrated need;
+- the feature-flagged Open Interpreter worker adapter;
+- a direct OpenAI API adapter through the provider-neutral API contract;
 - policy, privacy, cost, and compatibility hardening.
 
 Exit gate:
@@ -1531,7 +1570,7 @@ Exit gate:
 - default installations make no paid API calls;
 - fallback cannot bypass spending or privacy policy.
 
-### Increment 8: Production hardening — v1.0
+### Increment 8: Full-feature beta integration and proportional hardening
 
 Work:
 
@@ -1540,17 +1579,24 @@ Work:
 - DH-920 release engineering;
 - performance, accessibility, security, upgrade, and clean-machine gates;
 - portable small-team handoff bundles without hosted infrastructure.
+- requirement-to-implementation traceability for every specification item;
+- integrated all-feature runtime and adversarial beta proof.
 
 Exit gate:
 
 - routine use on CivicSuite is stable;
 - restart and upgrade paths are proven;
 - all shipped claims have automated or retained acceptance evidence;
-- unresolved high-risk security or data-loss defects are zero.
+- unresolved high-risk security or data-loss defects are zero;
+- every specified feature and function is implemented and verified;
+- no roadmap, planned, deferred, advisory-only, or experimental qualifier
+  remains on a capability committed to beta.
 
-### Later expansion: Small-team handoff
+### Full-beta small-team handoff boundary
 
-DH-840 is implemented only when Scott's personal workflow is stable and a concrete need exists to exchange approved work with a very small team. It remains an artifact-handoff capability, not a hosted team service, remote-worker platform, or enterprise administration layer.
+DH-840 is implemented before beta as a portable artifact-handoff capability.
+Using it remains optional. It is not a hosted team service, remote-worker
+platform, or enterprise administration layer.
 
 ## 8. Dependency map and parallelism
 
@@ -1681,21 +1727,25 @@ A deterministic fake clock and fake fleet will simulate:
 
 ## 10. Definition of done
 
-Every work package must include:
+Every work package must include only the proportional integration evidence
+needed to make it a trustworthy foundation for later feature work:
 
-- approved domain and interface changes;
-- tests that fail without the behavior and pass with it;
-- migration or compatibility handling where applicable;
-- diagnostics and error classification;
-- security and redaction review;
-- user-visible status and recovery guidance;
-- immediate, durable, accessible working-state feedback for every asynchronous operation introduced or exercised by the work package, without fabricated progress;
-- documentation of shipped behavior;
-- retained acceptance evidence;
-- verification-integrity evidence proving expected tests and gates actually ran and were not materially weakened;
-- independent review appropriate to risk, with fixer changes invalidating prior review when configured;
-- behavioral, runtime, security, accessibility, performance, visual, migration, or human-acceptance evidence required by the task contract;
-- no regression in the current full check suite.
+- the specified behavior and interface contract;
+- a witnessed failing test for changed logic when practical, then passing
+  affected tests;
+- migration, compatibility, security, redaction, diagnostics, recovery,
+  accessibility, performance, or visual evidence only when that risk or surface
+  is materially affected;
+- immediate and truthful working-state feedback for asynchronous operations
+  introduced by the package;
+- accurate documentation of the behavior and current limitations;
+- focused independent review appropriate to the named risk; and
+- no new failure in the affected suite.
+
+The complete suite, broad runtime journeys, clean-machine setup, whole-product
+accessibility/security/performance review, and release presentation belong to
+the integrated full-beta gate after all specified features exist. A feature
+slice must not be repeatedly polished into a standalone user-ready release.
 
 A feature is not done because one model successfully demonstrated it once or because one test command returned green. Tests are necessary evidence; the applicable layered evidence contract determines readiness.
 
@@ -1789,19 +1839,32 @@ The product specification remains the authority for product scope. This implemen
 
 ## 15. Immediate recommendation
 
-Follow the [current beta execution contract](#current-beta-execution-contract-owner-locked-2026-07-24):
+Follow the [full-feature beta execution contract](#current-beta-execution-contract-owner-locked-2026-07-26):
 
-1. finish P0-2 and P0-3, then audit Block 0a;
-2. finish Slice D restart reconstruction and automatic worktree cleanup;
-3. after Block 0a passes, complete the three qualifying real deliveries; and
-4. run the Option A, one-product-airtight beta-readiness gates.
+1. finish P0-2 and P0-3 while starting independent full-recovery and campaign
+   foundations in parallel;
+2. complete the remaining campaign, pilot, shard, diagnostic, differential, and
+   restart-safe orchestration capabilities;
+3. complete analytics, evaluation, structurally enforced workflows, triggers,
+   and the remaining product-manager control-plane functions;
+4. complete ACP, provider/runtime/tool breadth, portable handoffs, and every
+   other specified ecosystem capability;
+5. pass the complete Phase 0 census and run the required integrated real-product
+   proofs; and
+6. perform one full-feature beta verification and repair pass before presenting
+   the exact candidate for owner go/no-go.
 
-Blocks 0b and 0c, the full Phase 0 >=95% comprehension exit gate, analytics,
-triggers, campaign-scale orchestration, ACP, API breadth, and the full-org
-CivicSuite destination remain planned in their existing sections. They are not
-silently removed or pulled into the narrower beta contract.
+Do not insert broad polish or release-readiness projects between feature slices.
+Each slice gets the checks needed to prove its behavior and protect downstream
+work. Fix obvious defects and foundation-threatening correctness, security,
+privacy, data-loss, recovery, and integration problems immediately; defer
+nonblocking cosmetic and production refinements until the specified feature set
+exists.
 
-DH-632 is a cross-cutting acceptance obligation, not an additional roadmap detour: each item above must ship its own complete immediate acknowledgement, working/waiting/retry/stall, completion/failure, and refresh-safe feedback before that item is accepted.
+DH-632 remains a cross-cutting functional requirement: each new workflow must
+acknowledge the initiating action and expose truthful working, waiting, retry,
+stall, completion, and failure states. Meeting that requirement for the changed
+workflow is implementation, not a separate polishing campaign.
 
 ## Sources
 
