@@ -33,6 +33,9 @@
     "check": "npm run build && node scripts/check-version.mjs && npm run test:compiled"
   },
   "dependencies": {
+    "@renovatebot/pep440": "4.2.4",
+    "npm-package-arg": "13.0.2",
+    "pip-requirements-js": "1.0.3",
     "toml": "5.0.0",
     "yaml": "2.9.0",
     "zod": "^4.0.0"
