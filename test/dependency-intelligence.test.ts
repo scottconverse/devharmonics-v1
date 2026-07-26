@@ -190,9 +190,9 @@ test("PEP 621 and PEP 518 declarations use the standards parser and preserve ext
   const result = await extract(available([
     manifest("services/api/pyproject.toml", [
       "[project]",
-      `dependencies = ["Requests[security]==2.32.3 ; python_version >= '3.11'", "urllib3>=2,<3", "demo @ https://example.invalid/demo.whl"]`,
+      `dependencies = ["Requests[security]==2.32.3 ; python_version >= '3.11'", "urllib3>=2,<3", "demo @ https://example.invalid/demo.whl ; sys_platform == 'linux'"]`,
       "[project.optional-dependencies]",
-      'Docs = ["Sphinx~=8.0"]',
+      'docs = ["Sphinx~=8.0"]',
       "[build-system]",
       'requires = ["setuptools==75.0.0"]',
       'build-backend = "setuptools.build_meta"',
@@ -240,7 +240,7 @@ test("PEP 621 and PEP 518 declarations use the standards parser and preserve ext
       group: "runtime",
       scope: null,
       extras: [],
-      marker: null,
+      marker: "sys_platform == 'linux'",
       directReference: "https://example.invalid/demo.whl",
       kind: "direct",
       exactVersion: undefined,
@@ -255,7 +255,7 @@ test("PEP 621 and PEP 518 declarations use the standards parser and preserve ext
       directReference: null,
       kind: "range",
       exactVersion: undefined,
-      locator: "/project/optional-dependencies/Docs/0",
+      locator: "/project/optional-dependencies/docs/0",
     },
     {
       packageName: "setuptools",
@@ -330,17 +330,50 @@ test("PEP arbitrary equality is preserved in environment markers", async () => {
   const result = await extract(available([
     manifest("pyproject.toml", [
       "[project]",
-      `dependencies = ["demo===legacy-version ; python_version === '3.10-custom'"]`,
+      "dependencies = [",
+      `  "demo===legacy-version ; python_version === '3.10-custom'",`,
+      `  "plain ; implementation_version === 'custom-build'",`,
+      `  "wheel @ https://example.com/wheel.whl ; python_full_version === '3.10-custom'",`,
+      "]",
       "",
     ].join("\n")),
   ]));
 
   assert.equal(result.state, "detected");
   assert.deepEqual(result.diagnostics, []);
-  assert.equal(result.facts[0].constraint.kind, "exact");
-  assert.equal(result.facts[0].constraint.assessment, "unassessed");
-  assert.equal(result.facts[0].constraint.exactVersion, "legacy-version");
-  assert.equal(result.facts[0].constraint.marker, "python_version === '3.10-custom'");
+  assert.deepEqual(result.facts.map((fact: any) => ({
+    packageName: fact.packageName,
+    kind: fact.constraint.kind,
+    assessment: fact.constraint.assessment,
+    exactVersion: fact.constraint.exactVersion,
+    marker: fact.constraint.marker,
+    directReference: fact.constraint.directReference,
+  })), [
+    {
+      packageName: "demo",
+      kind: "exact",
+      assessment: "unassessed",
+      exactVersion: "legacy-version",
+      marker: "python_version === '3.10-custom'",
+      directReference: null,
+    },
+    {
+      packageName: "plain",
+      kind: "unversioned",
+      assessment: "unassessed",
+      exactVersion: undefined,
+      marker: "implementation_version === 'custom-build'",
+      directReference: null,
+    },
+    {
+      packageName: "wheel",
+      kind: "direct",
+      assessment: "unassessed",
+      exactVersion: undefined,
+      marker: "python_full_version === '3.10-custom'",
+      directReference: "https://example.com/wheel.whl",
+    },
+  ]);
 });
 
 test("PEP arbitrary-equality fallback leaves quoted marker values unchanged", async () => {
@@ -377,17 +410,8 @@ test("PEP marker rendering preserves the parser tree's boolean grouping", async 
 test("standards parser packages stay pinned to the audited artifacts", async () => {
   const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
   const packageLock = JSON.parse(await readFile(path.resolve("package-lock.json"), "utf8"));
-  assert.equal(packageJson.dependencies["@renovatebot/pep440"], "4.2.4");
-  assert.deepEqual(packageLock.packages["node_modules/@renovatebot/pep440"], {
-    version: "4.2.4",
-    resolved: "https://registry.npmjs.org/@renovatebot/pep440/-/pep440-4.2.4.tgz",
-    integrity: "sha512-r+Pwj9ud/5QOOHoSsD7mWzU0Qkj105UPOyPwihGAtbNCl9pqnWkEDNRM5an63QvsFsS9tt+X3o+npT3AKBiTVg==",
-    license: "Apache-2.0",
-    engines: {
-      node: "^20.9.0 || ^22.11.0 || ^24",
-      pnpm: ">=10.0.0",
-    },
-  });
+  assert.equal(packageJson.dependencies["@renovatebot/pep440"], undefined);
+  assert.equal(packageLock.packages["node_modules/@renovatebot/pep440"], undefined);
   assert.equal(packageJson.dependencies["npm-package-arg"], "13.0.2");
   assert.deepEqual(packageLock.packages["node_modules/npm-package-arg"], {
     version: "13.0.2",
@@ -459,19 +483,24 @@ test("PEP 621 rejects invalid or normalization-colliding optional-extra names", 
     manifest("pyproject.toml", [
       "[project.optional-dependencies]",
       '"not valid!" = ["invalid==1.0"]',
-      'docs-test = ["first==1.0"]',
-      'docs_test = ["second==1.0"]',
+      'Docs = ["uppercase==1.0"]',
+      'docs_test = ["underscore==1.0"]',
+      '"docs.test" = ["dot==1.0"]',
+      '"docs--test" = ["double==1.0"]',
+      'docs-test = ["valid==1.0"]',
       "",
     ].join("\n")),
   ]));
 
   assert.equal(result.state, "wrong_shape");
-  assert.equal(result.facts.length, 0);
+  assert.deepEqual(result.facts.map((fact: any) => fact.packageName), ["valid"]);
   assert.deepEqual(result.diagnostics.map((item: any) => ({
     state: item.state,
     locator: item.locator,
   })), [
-    { state: "wrong_shape", locator: "/project/optional-dependencies/docs-test" },
+    { state: "wrong_shape", locator: "/project/optional-dependencies/Docs" },
+    { state: "wrong_shape", locator: "/project/optional-dependencies/docs--test" },
+    { state: "wrong_shape", locator: "/project/optional-dependencies/docs.test" },
     { state: "wrong_shape", locator: "/project/optional-dependencies/docs_test" },
     { state: "wrong_shape", locator: "/project/optional-dependencies/not valid!" },
   ]);

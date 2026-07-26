@@ -1,9 +1,10 @@
 import { createRequire } from "node:module";
-import { validRange as validPep440Range } from "@renovatebot/pep440";
 import {
   parsePipRequirementsLine,
   parsePipRequirementsLineLoosely,
   type EnvironmentMarker,
+  type LooseProjectNameRequirement,
+  type LooseVersionSpec,
   type Requirement,
   VersionOperator,
 } from "pip-requirements-js";
@@ -410,25 +411,57 @@ function parsePythonRequirement(raw: string): ParsedPythonRequirement {
   try {
     return { requirement: parsePipRequirementsLine(raw), markerOverride: null };
   } catch (strictError) {
-    let loose;
-    try {
-      loose = parsePipRequirementsLineLoosely(raw);
-    } catch {
-      throw strictError;
-    }
-    const looseSpecs = loose?.versionSpec ?? [];
     const markerIndex = markerSeparatorIndex(raw);
     const requirementText = markerIndex < 0 ? raw : raw.slice(0, markerIndex);
     const markerTextOriginal = markerIndex < 0 ? "" : raw.slice(markerIndex + 1).trim();
-    const transformedRequirement = replaceArbitraryEqualityOperators(requirementText);
     const transformedMarker = replaceArbitraryEqualityOperators(markerTextOriginal);
-    const hasArbitraryVersion = looseSpecs.some((item) => item.operator === "===");
+
+    let requirementOnly: Requirement | null = null;
+    try {
+      requirementOnly = parsePipRequirementsLine(requirementText.trim());
+    } catch {
+      // The maintained strict parser does not currently accept PEP 440's
+      // arbitrary-equality operator, so validate that narrow case below.
+    }
+
+    if (requirementOnly !== null) {
+      if (
+        markerIndex < 0
+        || (requirementOnly.type !== "ProjectName" && requirementOnly.type !== "ProjectURL")
+        || (transformedMarker.count === 0 && requirementOnly.type !== "ProjectURL")
+      ) {
+        throw strictError;
+      }
+      const markerCarrier = parsePipRequirementsLine(`devharmonics-marker ; ${transformedMarker.text}`);
+      if (
+        markerCarrier?.type !== "ProjectName"
+        || markerCarrier.environmentMarkerTree === undefined
+      ) {
+        throw strictError;
+      }
+      return {
+        requirement: {
+          ...requirementOnly,
+          environmentMarkerTree: markerCarrier.environmentMarkerTree,
+        },
+        markerOverride: transformedMarker.count > 0 ? markerTextOriginal : null,
+      };
+    }
+
+    let loose: LooseProjectNameRequirement | null;
+    try {
+      loose = parsePipRequirementsLineLoosely(requirementText.trim());
+    } catch {
+      throw strictError;
+    }
+    const looseSpecs: LooseVersionSpec[] = loose?.versionSpec ?? [];
+    const arbitrarySpecCount = looseSpecs.filter((item) => item.operator === "===").length;
+    const transformedRequirement = replaceArbitraryEqualityOperators(requirementText);
     if (
       loose?.type !== "ProjectName"
-      || (!hasArbitraryVersion && transformedMarker.count === 0)
+      || arbitrarySpecCount === 0
+      || arbitrarySpecCount !== transformedRequirement.count
       || looseSpecs.some((item) => !item.version)
-      || (hasArbitraryVersion
-        && !validPep440Range(looseSpecs.map((item) => `${item.operator}${item.version!}`).join(",")))
     ) {
       throw strictError;
     }
@@ -559,14 +592,7 @@ function stringArray(
 }
 
 function validPythonExtraName(value: string): boolean {
-  try {
-    const parsed = parsePipRequirementsLine(`devharmonics-extra[${value}]`);
-    return parsed?.type === "ProjectName"
-      && parsed.extras?.length === 1
-      && parsed.extras[0] === value;
-  } catch {
-    return false;
-  }
+  return !/[\r\n]/.test(value) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 }
 
 function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedManifest {
