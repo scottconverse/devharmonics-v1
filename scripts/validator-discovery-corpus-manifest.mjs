@@ -78,3 +78,41 @@ export const versionAuthorityCorpusManifest = Object.freeze(
       : Object.freeze({ state: "absent" }),
   ])),
 );
+
+const dependencyFingerprintByRepository = Object.freeze({
+  civic311: ["detected", 10, 1, 1, 0, "ed5c01de236b3dc465c6b64220f59b9063251e8defcdc82ef32664a56fab666a"],
+  civicboards: ["detected", 10, 1, 1, 0, "e742580ee944f6282fc1697582c8872c01f4744260261bd4c95842eaf1655872"],
+  civicbudget: ["detected", 10, 1, 1, 0, "b241472961aa438287b556f4c018341411e209f71eb98f8132947984c10e9cf1"],
+  civicclerk: ["detected", 24, 2, 2, 0, "6e5ef500d3ede2edac37f395174df7236076c002ec1d129cfc5d9915133cb28f"],
+  civiccode: ["detected", 23, 2, 2, 0, "9530d9cf73e59a555949d7222f70f55aa4b22d88a1a12c1ed0ba48a327a81201"],
+  civiccomms: ["detected", 10, 1, 1, 0, "4bb64bba9d56b7f5367ef3f7c7f295c879f681f0bc2eddd81c08846285fd3522"],
+  civiccontracts: ["detected", 10, 1, 1, 0, "0d2f7880f121d7127323f345fd8c106307327a8d674918bca8090af832dd7f0c"],
+  civiccore: ["detected", 37, 1, 1, 0, "178765cc56d969f04b3e1db4da5aa8faf10dc899a92fb1d8e4e70c2fed506bb2"],
+  civiccourt: ["detected", 10, 1, 1, 0, "a34241ca59e839c6d9eed91e2d3efbfa26e37e2baa3e6be7cbd6078b5de03866"],
+  civicdata: ["detected", 10, 1, 1, 0, "49a528d5c1997060e19e658d7de41a7b66be8f054ed52ac63a7d4ef5f87c3fe2"],
+  civicelections: ["detected", 10, 1, 1, 0, "cc09d2d0a238f99d9decad59d92711e4430975fd99fd8aed144c3a9dad928ecb"],
+  civicgrants: ["detected", 10, 1, 1, 0, "019f26e47e684f5b30b1678845e746c68499175f3471662307c9d04a65b3d88e"],
+  civichr: ["detected", 10, 1, 1, 0, "e01da01f27566b59900eb137ff08ed0305909de83543e452095749c84e5c8843"],
+  civicinspect: ["detected", 10, 1, 1, 0, "58bc3a1cf7d6baca1cb3216997824483d9a3a859400c5ff783d67a2db9b55a3a"],
+  civiclegal: ["detected", 10, 1, 1, 0, "6e9235d13c4d5b0b584c569bec176017bdfd13df46e8d32e19e686ecae51aa2c"],
+  civiclibrary: ["detected", 9, 1, 1, 0, "41df990df676941b9c4290463234b37032ab21eeb254327b162100f5ea118bbf"],
+  civicparks: ["detected", 9, 1, 1, 0, "1e6bdc940a4b1491cae8406b2c00a2d56a8b799c434ac6f43e04d39544b164cd"],
+  civicpermit: ["detected", 10, 1, 1, 0, "063894dc608ece963f533d7d6343a88acf8f4fcc7e6959fda36ef856c8fff27b"],
+  civicplan: ["detected", 10, 1, 1, 0, "21cd07e62359933043a45fc28ee50281495598f6de13edb0b11048fa31e1a711"],
+  civicprocure: ["detected", 10, 1, 1, 0, "1396cb597ce805731a4f5791147bd5f2cfc59b86014acb17bd67e4ce2ba6cf93"],
+  "civicrecords-ai": ["detected", 63, 2, 3, 0, "325831b0aaa0e4212f139399b11f9550639ab1eb8f3d4862cf85b12ebea208f1"],
+  civicsafety: ["detected", 9, 1, 1, 0, "9749bff60104964f19729a303cf21f45bf84f4df0ea8c2a8c7299c88ced9b982"],
+  civicutility: ["detected", 10, 1, 1, 0, "d34ea87beab21d47d33836f5263345fed5fd03b65c73a31c6b3a155b52b6cb10"],
+  civiczone: ["detected", 9, 1, 1, 0, "1b57ed289dfe3915c1b1bad63deae5d338c7fc47008c4d66ee5595725a8eeca2"],
+});
+
+export const dependencyIntelligenceCorpusManifest = Object.freeze(
+  validatorDiscoveryCorpusManifest.map(([name, oid]) => {
+    const [state, facts, identities, manifests, diagnostics, sha256] = dependencyFingerprintByRepository[name];
+    return Object.freeze([
+      name,
+      oid,
+      Object.freeze({ state, facts, identities, manifests, diagnostics, sha256 }),
+    ]);
+  }),
+);

@@ -104,6 +104,8 @@ jobs:
         run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:validator-discovery-corpus
       - name: Verify immutable release authority
         run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:version-authority-corpus
+      - name: Verify immutable dependency intelligence
+        run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:dependency-intelligence-corpus
 
   validator-browser:
     name: Validator allowlist browser journey
