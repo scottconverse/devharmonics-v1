@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -215,8 +215,7 @@ export type ReleaseUnitSelectionDecode =
   | { kind: "absent" }
   | { kind: "valid"; value: ReleaseUnitSelection }
   | { kind: "malformed"; detail: string };
-export type ReleaseUnitLock = { readonly key: string; readonly token: symbol };
-const releaseUnitLocks = new Map<string, symbol>();
+export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; const releaseUnitTokens = new Set<symbol>();
 
 const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
 function exactIso(value: unknown): value is string {
@@ -3239,13 +3238,10 @@ export class Ledger {
     return this.getRepository(repository.id)!;
   }
 
-  async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> {
-    const filename = process.platform === "win32" ? path.resolve(this.filename).toLowerCase() : path.resolve(this.filename);
-    const lock = { key: `${filename}\0${repositoryId}`, token: Symbol() };
-    if (releaseUnitLocks.has(lock.key)) throw new Error("Release-unit selection or tagging is already in progress");
-    releaseUnitLocks.set(lock.key, lock.token);
-    try { return await action(lock); } finally { if (releaseUnitLocks.get(lock.key) === lock.token) releaseUnitLocks.delete(lock.key); }
-  }
+  private releaseUnitLockKey(repositoryId: string): string { return `${realpathSync.native(this.filename)}.release-unit-${createHash("sha256").update(repositoryId).digest("hex")}.lock`; }
+  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = { key: this.releaseUnitLockKey(repositoryId), token: Symbol() }; try { closeSync(openSync(lock.key, "wx")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } releaseUnitTokens.add(lock.token); return lock; }
+  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { if (releaseUnitTokens.delete(lock.token)) unlinkSync(lock.key); }
+  async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> { const lock = this.acquireReleaseUnitLock(repositoryId); try { return await action(lock); } finally { this.releaseReleaseUnitLock(lock); } }
 
   updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number, lock?: ReleaseUnitLock): ReleaseUnitSelection {
     if (!normalizedReleaseUnitCwd(cwd) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
@@ -3266,9 +3262,10 @@ export class Ledger {
 
   private writeReleaseUnitSelection(repositoryId: string, expectedRevision: number, lock: ReleaseUnitLock | undefined,
     create: (revision: number, now: string, current: ReleaseUnitSelectionDecode) => ReleaseUnitSelection): ReleaseUnitSelection {
-    const filename = process.platform === "win32" ? path.resolve(this.filename).toLowerCase() : path.resolve(this.filename);
-    const key = `${filename}\0${repositoryId}`, held = releaseUnitLocks.get(key);
-    if ((held && held !== lock?.token) || (lock && (lock.key !== key || held !== lock.token)))
+    const own = !lock, holder = lock ?? this.acquireReleaseUnitLock(repositoryId);
+    try {
+    const key = this.releaseUnitLockKey(repositoryId);
+    if (!releaseUnitTokens.has(holder.token) || holder.key !== key)
       throw new Error("Release-unit selection or tagging is already in progress");
     this.database.exec("BEGIN IMMEDIATE");
     try {
@@ -3287,6 +3284,7 @@ export class Ledger {
       this.database.exec("ROLLBACK");
       throw error;
     }
+    } finally { if (own) this.releaseReleaseUnitLock(holder); }
   }
 
   getRepository(repositoryId: string): RepositoryRecord | null {

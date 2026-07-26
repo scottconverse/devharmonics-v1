@@ -1173,11 +1173,15 @@ from an immutable commit inventory and rejects stale competing owner actions.
 Repository metadata refresh preserves the reserved selection value atomically
 with its write; it cannot restore an older revision. The tag gate always
 re-resolves the exact merge commit against the current selection revision.
-From that final resolution through tag creation and publication,
-repository-scoped serialization prevents a competing selection write from
-changing the authority. Delivery evidence records the commit, selection state
-and revision, selected unit, source manifest, provenance, and every inventoried
-unit's selection reason and diagnostics.
+From that final resolution through tag creation and publication, an atomic
+filesystem lock keyed by the canonical database identity and repository
+prevents a competing selection write from any local process or filesystem
+alias from changing the authority. A crash-stale lock remains fail-closed: it
+is never aged out, stolen, or silently deleted. Only the owner may remove that
+exact lock after independently proving that no selector or tag operation for
+that database and repository remains active. Delivery evidence records the
+commit, selection state and revision, selected unit, source manifest,
+provenance, and every inventoried unit's selection reason and diagnostics.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from

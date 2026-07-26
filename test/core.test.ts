@@ -3519,10 +3519,10 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
   // contradiction unless the mismatch is explicitly confirmed.
   const workflows = await import("../src/delivery.js") as Record<string, any>;
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-tag-truth-"));
-  const filename = path.join(root, "devharmonics.db");
+  const filename = path.join(root, "devharmonics.db"), alias = `${root}-alias`;
   const ledger = new Ledger(filename);
   let prState = "OPEN";
-  let competingLedger: Ledger | null = null, competing: DeliveryService, selectionAttempt: Promise<unknown> | null = null;
+  const selectionAttempt: { value: Promise<ProcessResult> | null } = { value: null };
   const runner = async (request: { command: string; args: string[] }) => {
     const joined = request.args.join(" ");
     if (request.command === "git" && joined === "remote get-url origin") {
@@ -3554,8 +3554,8 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     }
     if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '{"version":"9.9.9"}', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
-      selectionAttempt ??= competing.selectReleaseUnit("repo:truth", root, "c".repeat(40), "b", 1).then(() => null, (error) => error);
-      await selectionAttempt;
+      selectionAttempt.value ??= runProcess({ command: process.execPath, args: ["--input-type=module", "--eval", `import { Ledger } from "./dist/src/ledger.js"; const ledger = new Ledger(${JSON.stringify(path.join(alias, "devharmonics.db"))}); try { ledger.updateReleaseUnitSelection("repo:truth", "b", 1); } catch (error) { console.error(String(error)); process.exitCode = 2; } finally { ledger.close(); }`], cwd: process.cwd(), timeoutMs: 30_000 });
+      await selectionAttempt.value;
       return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
     }
     return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
@@ -3575,8 +3575,7 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
       owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
       intelligence: { releaseUnitSelection: { version: 1, cwd: "a", state: "active", revision: 1,
         selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null } } });
-    competingLedger = new Ledger(filename);
-    competing = new DeliveryService(competingLedger, runner as never);
+    await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
     ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:truth", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: "b".repeat(40), branch: "devharmonics/truth" });
@@ -3598,11 +3597,12 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     const confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true });
     assert.equal(confirmed.status, "tagged");
     assert.equal(confirmed.releaseTag, "v1.0.0");
-    assert.match(String(await selectionAttempt), /already in progress/i, "a second Ledger cannot change selection between evidence and tag push");
+    assert.notEqual((await selectionAttempt.value)?.exitCode, 0, "a separate Node process cannot change selection between evidence and tag push");
+    assert.match(`${(await selectionAttempt.value)?.stdout}${(await selectionAttempt.value)?.stderr}`, /already in progress/i);
     assert.equal((ledger.getRepository("repo:truth")!.intelligence.releaseUnitSelection as any).revision, 1);
     assert.equal((ledger.listEvents(runId).filter((event) => event.kind === "delivery.tag_authority").at(-1)?.data as any).selectionRevision, 1);
   } finally {
-    competingLedger?.close(); ledger.close();
+    ledger.close(); await rm(alias, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
 });
