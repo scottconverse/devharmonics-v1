@@ -1,10 +1,8 @@
 import { createRequire } from "node:module";
+import { validRange as validPep440Range } from "@renovatebot/pep440";
 import {
   parsePipRequirementsLine,
-  parsePipRequirementsLineLoosely,
   type EnvironmentMarker,
-  type LooseProjectNameRequirement,
-  type LooseVersionSpec,
   type Requirement,
   VersionOperator,
 } from "pip-requirements-js";
@@ -214,12 +212,40 @@ function safeDetail(value: unknown, fallback: string): string {
 
 function npmConstraint(packageName: string, raw: string): NpmConstraintResult {
   const value = raw.trim();
+  try {
+    npmPackageArg.resolve(packageName, "*", ".");
+  } catch (error) {
+    return {
+      state: "malformed",
+      detail: safeDetail(error, "npm package-spec parser rejected the package name"),
+    };
+  }
   const alternateProtocol = /^(workspace|link):(.*)$/i.exec(value);
   if (alternateProtocol) {
-    if (!alternateProtocol[2]!.trim()) {
+    const protocol = alternateProtocol[1]!.toLowerCase();
+    const target = alternateProtocol[2]!.trim();
+    if (!target) {
       return { state: "malformed", detail: `'${alternateProtocol[1]!.toLowerCase()}:' requires a target` };
     }
-    const kind: DependencyConstraintKind = alternateProtocol[1]!.toLowerCase() === "workspace" ? "workspace" : "file";
+    if (protocol === "workspace" && target !== "^" && target !== "~" && target !== "*") {
+      let targetType: NpmPackageSpec["type"];
+      try {
+        targetType = npmPackageArg.resolve(packageName, target, ".").type;
+      } catch (error) {
+        return {
+          state: "malformed",
+          detail: safeDetail(error, "workspace protocol requires a semantic-version range or relative path"),
+        };
+      }
+      const relativeDirectory = (target.startsWith("./") || target.startsWith("../")) && targetType === "directory";
+      if (targetType !== "version" && targetType !== "range" && !relativeDirectory) {
+        return {
+          state: "malformed",
+          detail: "workspace protocol requires a semantic-version range, ^/~/* token, or relative path",
+        };
+      }
+    }
+    const kind: DependencyConstraintKind = protocol === "workspace" ? "workspace" : "file";
     return {
       constraint: {
         kind,
@@ -290,7 +316,8 @@ function parseNpm(entry: ManifestInventoryEntry, commit: string): ParsedManifest
   }
   let value: unknown;
   try {
-    value = JSON.parse(entry.text!);
+    const text = entry.text!.charCodeAt(0) === 0xfeff ? entry.text!.slice(1) : entry.text!;
+    value = JSON.parse(text);
   } catch (error) {
     return {
       evidence: evidence(entry, commit, "malformed", 0),
@@ -317,22 +344,22 @@ function parseNpm(entry: ManifestInventoryEntry, commit: string): ParsedManifest
     }
     for (const [name, raw] of Object.entries(declarations as Record<string, unknown>)) {
       const locator = `/${key}/${pointerSegment(name)}`;
-      if (!name.trim() || typeof raw !== "string" || !raw.trim()) {
+      if (!name.trim() || typeof raw !== "string") {
         diagnostics.push(diagnostic(
           entry,
           commit,
           "wrong_shape",
-          `'${key}' entries must map non-empty package names to non-empty strings`,
+          `'${key}' entries must map non-empty package names to strings`,
           locator,
         ));
         continue;
       }
-      const packageName = normalizeNpmName(name);
-      const parsed = npmConstraint(packageName, raw);
+      const parsed = npmConstraint(name, raw);
       if ("state" in parsed) {
         diagnostics.push(diagnostic(entry, commit, parsed.state, parsed.detail, locator));
         continue;
       }
+      const packageName = normalizeNpmName(name);
       facts.push({
         ecosystem: "npm",
         packageName,
@@ -392,6 +419,7 @@ function replaceArbitraryEqualityOperators(value: string): { text: string; count
 
 function markerSeparatorIndex(value: string): number {
   let quote: "'" | '"' | null = null;
+  let separator = -1;
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index]!;
     if (quote !== null) {
@@ -402,9 +430,61 @@ function markerSeparatorIndex(value: string): number {
       quote = character;
       continue;
     }
-    if (character === ";") return index;
+    if (character === ";") separator = index;
   }
-  return -1;
+  return separator;
+}
+
+interface ArbitraryEqualityRewrite {
+  text: string;
+  specs: Array<{ operator: string; version: string }>;
+}
+
+function rewriteArbitraryEqualityRequirement(value: string): ArbitraryEqualityRewrite | null {
+  const operators = ["===", "~=", "==", "!=", "<=", ">=", "<", ">"];
+  let bracketDepth = 0;
+  let specifierIndex = -1;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (character === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (bracketDepth === 0 && operators.some((operator) => value.startsWith(operator, index))) {
+      specifierIndex = index;
+      break;
+    }
+  }
+  if (specifierIndex < 0) return null;
+
+  const prefix = value.slice(0, specifierIndex).trim();
+  let specifierText = value.slice(specifierIndex).trim();
+  if (specifierText.startsWith("(") && specifierText.endsWith(")")) {
+    specifierText = specifierText.slice(1, -1).trim();
+  }
+  const specs = specifierText.split(",").map((clause) => {
+    const match = /^(===|~=|==|!=|<=|>=|<|>)\s*(.*)$/.exec(clause.trim());
+    return match ? { operator: match[1]!, version: match[2]!.trim() } : null;
+  });
+  if (
+    !prefix
+    || specs.some((item) => item === null)
+    || !specs.some((item) => item?.operator === "===")
+    || specs.some((item) => item?.operator === "===" && /\s/.test(item.version))
+  ) {
+    return null;
+  }
+  const complete = specs as Array<{ operator: string; version: string }>;
+  return {
+    text: `${prefix}${complete.map((item) => (
+      item.operator === "===" ? "==0" : `${item.operator}${item.version}`
+    )).join(",")}`,
+    specs: complete,
+  };
 }
 
 function parsePythonRequirement(raw: string): ParsedPythonRequirement {
@@ -417,21 +497,30 @@ function parsePythonRequirement(raw: string): ParsedPythonRequirement {
     const transformedMarker = replaceArbitraryEqualityOperators(markerTextOriginal);
 
     let requirementOnly: Requirement | null = null;
+    let trailingComma = false;
     try {
       requirementOnly = parsePipRequirementsLine(requirementText.trim());
     } catch {
-      // The maintained strict parser does not currently accept PEP 440's
-      // arbitrary-equality operator, so validate that narrow case below.
+      const trimmedRequirement = requirementText.trim();
+      if (trimmedRequirement.endsWith(",")) {
+        try {
+          requirementOnly = parsePipRequirementsLine(trimmedRequirement.slice(0, -1).trim());
+          trailingComma = requirementOnly !== null;
+        } catch {
+          // The maintained strict parser also does not currently accept
+          // PEP 440's arbitrary-equality operator; validate that below.
+        }
+      }
     }
 
     if (requirementOnly !== null) {
-      if (
-        markerIndex < 0
-        || (requirementOnly.type !== "ProjectName" && requirementOnly.type !== "ProjectURL")
-        || (transformedMarker.count === 0 && requirementOnly.type !== "ProjectURL")
-      ) {
+      if (markerIndex < 0) {
+        if (trailingComma) {
+          return { requirement: requirementOnly, markerOverride: null };
+        }
         throw strictError;
       }
+      if (requirementOnly.type !== "ProjectName" && requirementOnly.type !== "ProjectURL") throw strictError;
       const markerCarrier = parsePipRequirementsLine(`devharmonics-marker ; ${transformedMarker.text}`);
       if (
         markerCarrier?.type !== "ProjectName"
@@ -448,42 +537,25 @@ function parsePythonRequirement(raw: string): ParsedPythonRequirement {
       };
     }
 
-    let loose: LooseProjectNameRequirement | null;
-    try {
-      loose = parsePipRequirementsLineLoosely(requirementText.trim());
-    } catch {
-      throw strictError;
-    }
-    const looseSpecs: LooseVersionSpec[] = loose?.versionSpec ?? [];
-    const arbitrarySpecCount = looseSpecs.filter((item) => item.operator === "===").length;
-    const transformedRequirement = replaceArbitraryEqualityOperators(requirementText);
-    if (
-      loose?.type !== "ProjectName"
-      || arbitrarySpecCount === 0
-      || arbitrarySpecCount !== transformedRequirement.count
-      || looseSpecs.some((item) => !item.version)
-    ) {
-      throw strictError;
-    }
-
+    const rewritten = rewriteArbitraryEqualityRequirement(requirementText);
+    if (rewritten === null) throw strictError;
     const markerSuffix = markerIndex < 0 ? "" : ` ; ${transformedMarker.text}`;
-    const parsed = parsePipRequirementsLine(`${transformedRequirement.text}${markerSuffix}`);
+    const parsed = parsePipRequirementsLine(`${rewritten.text}${markerSuffix}`);
     if (
       !parsed
       || parsed.type !== "ProjectName"
-      || parsed.name !== loose.name
-      || JSON.stringify(parsed.extras ?? []) !== JSON.stringify(loose.extras ?? [])
-      || (parsed.versionSpec ?? []).length !== looseSpecs.length
+      || (parsed.versionSpec ?? []).length !== rewritten.specs.length
     ) {
       throw strictError;
     }
     parsed.versionSpec = parsed.versionSpec!.map((spec, index) => {
-      const original = looseSpecs[index]!;
-      if (original.version !== spec.version || (original.operator !== "===" && original.operator !== spec.operator)) {
+      const original = rewritten.specs[index]!;
+      const expectedVersion = original.operator === "===" ? "0" : original.version;
+      if (expectedVersion !== spec.version || (original.operator !== "===" && original.operator !== spec.operator)) {
         throw strictError;
       }
       return original.operator === "==="
-        ? { operator: VersionOperator.ArbitrarilyEqual, version: original.version! }
+        ? { operator: VersionOperator.ArbitrarilyEqual, version: original.version }
         : spec;
     });
     return {
@@ -512,9 +584,9 @@ function pythonConstraint(requirement: Requirement, markerOverride: string | nul
     specs[0]!.operator === "===" || (specs[0]!.operator === "==" && !specs[0]!.version.includes("*"))
   ) ? specs[0]!.version : undefined;
   return {
-    kind: exact ? "exact" : specs.length ? "range" : "unversioned",
-    assessment: exact && marker === null ? "exact_pin" : "unassessed",
-    ...(exact ? { exactVersion: exact } : {}),
+    kind: exact !== undefined ? "exact" : specs.length ? "range" : "unversioned",
+    assessment: exact !== undefined && marker === null ? "exact_pin" : "unassessed",
+    ...(exact !== undefined ? { exactVersion: exact } : {}),
     extras,
     marker,
     directReference: null,
@@ -548,6 +620,32 @@ function parsePythonDeclaration(
         commit,
         "malformed",
         "PEP 508 declaration must identify a package",
+        declaration.locator,
+      ),
+    };
+  }
+  if (requirement.type === "ProjectURL" && !requirement.url.trim()) {
+    return {
+      diagnostic: diagnostic(
+        entry,
+        commit,
+        "malformed",
+        "PEP 508 direct references require a non-empty URL",
+        declaration.locator,
+      ),
+    };
+  }
+  if (
+    requirement.type === "ProjectName"
+    && (requirement.versionSpec?.length ?? 0) > 0
+    && !validPep440Range(requirement.versionSpec!.map((item) => `${item.operator}${item.version}`).join(","))
+  ) {
+    return {
+      diagnostic: diagnostic(
+        entry,
+        commit,
+        "malformed",
+        "PEP 440 validator rejected the version specifier",
         declaration.locator,
       ),
     };

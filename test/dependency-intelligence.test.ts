@@ -135,7 +135,7 @@ test("npm dependency groups and scoped names retain exact structural provenance"
 
 test("npm declarations use maintained package-spec semantics instead of prefix guesses", async () => {
   const result = await extract(available([
-    manifest("package.json", JSON.stringify({
+    manifest("package.json", `\uFEFF${JSON.stringify({
       dependencies: {
         shortRange: "1.2",
         alias: "npm:real-package@1.2.3",
@@ -144,8 +144,9 @@ test("npm declarations use maintained package-spec semantics instead of prefix g
         channel: "latest",
         equalsPin: "=1.0.0",
         equalsVPin: "=v2.3.4",
+        implicitRange: "",
       },
-    })),
+    })}`),
   ]));
 
   assert.equal(result.state, "detected");
@@ -162,6 +163,7 @@ test("npm declarations use maintained package-spec semantics instead of prefix g
     ["channel", "tag", undefined],
     ["equalspin", "exact", "1.0.0"],
     ["equalsvpin", "exact", "2.3.4"],
+    ["implicitrange", "range", undefined],
   ]);
 });
 
@@ -169,6 +171,9 @@ test("npm parser failures become explicit evidence instead of dependency facts",
   const result = await extract(available([
     manifest("package.json", JSON.stringify({
       dependencies: {
+        " leading-space": "1.2.3",
+        invalidWorkspaceRange: "workspace:not a range",
+        invalidWorkspaceRemote: "workspace:https://bad.invalid/x",
         malformed: "not a valid tag",
         unsupported: "catalog:shared",
       },
@@ -181,6 +186,9 @@ test("npm parser failures become explicit evidence instead of dependency facts",
     state: item.state,
     locator: item.locator,
   })), [
+    { state: "malformed", locator: "/dependencies/ leading-space" },
+    { state: "malformed", locator: "/dependencies/invalidWorkspaceRange" },
+    { state: "malformed", locator: "/dependencies/invalidWorkspaceRemote" },
     { state: "malformed", locator: "/dependencies/malformed" },
     { state: "unsupported", locator: "/dependencies/unsupported" },
   ]);
@@ -275,7 +283,7 @@ test("PEP parser contract preserves whitespace and distinguishes unversioned dec
   const result = await extract(available([
     manifest("pyproject.toml", [
       "[project]",
-      'dependencies = ["  idna == 3.10  ", "packaging"]',
+      'dependencies = ["  idna == 3.10  ", "packaging>=24,"]',
       "",
     ].join("\n")),
   ]));
@@ -296,19 +304,44 @@ test("PEP parser contract preserves whitespace and distinguishes unversioned dec
     },
     {
       packageName: "packaging",
-      rawDeclaration: "packaging",
-      kind: "unversioned",
+      rawDeclaration: "packaging>=24,",
+      kind: "range",
       assessment: "unassessed",
       exactVersion: undefined,
     },
   ]);
+
+  const invalid = await extract(available([
+    manifest("invalid/pyproject.toml", [
+      "[project]",
+      "dependencies = [",
+      '  "double-dot==1..0",',
+      '  "empty-local==1.0+",',
+      '  "ordered-wildcard>=1.0.*",',
+      '  "ordered-wildcard-le<=1.0.*",',
+      '  "ordered-wildcard-gt>1.0.*",',
+      '  "ordered-wildcard-lt<1.0.*",',
+      '  "short-compatible~=1",',
+      '  "wild-compatible~=1.0.*",',
+      '  "empty-epoch==1!",',
+      '  "trailing-dash==1.0-",',
+      '  "trailing-underscore==1.0_",',
+      '  "double-post-dot==1.0..post1",',
+      '  "double-local-dot==1.0+abc..def",',
+      "]",
+      "",
+    ].join("\n")),
+  ]));
+  assert.equal(invalid.state, "malformed");
+  assert.equal(invalid.facts.length, 0);
+  assert.equal(invalid.diagnostics.length, 13);
 });
 
 test("PEP 440 arbitrary equality remains an exact dependency constraint", async () => {
   const result = await extract(available([
     manifest("pyproject.toml", [
       "[project]",
-      'dependencies = ["demo===1.0", "legacy===legacy-version"]',
+      'dependencies = ["demo===1.0", "legacy===legacy-version", "embedded===foo===bar"]',
       "",
     ].join("\n")),
   ]));
@@ -323,6 +356,7 @@ test("PEP 440 arbitrary equality remains an exact dependency constraint", async 
   })), [
     { packageName: "demo", kind: "exact", assessment: "exact_pin", exactVersion: "1.0" },
     { packageName: "legacy", kind: "exact", assessment: "exact_pin", exactVersion: "legacy-version" },
+    { packageName: "embedded", kind: "exact", assessment: "exact_pin", exactVersion: "foo===bar" },
   ]);
 });
 
@@ -334,6 +368,7 @@ test("PEP arbitrary equality is preserved in environment markers", async () => {
       `  "demo===legacy-version ; python_version === '3.10-custom'",`,
       `  "plain ; implementation_version === 'custom-build'",`,
       `  "wheel @ https://example.com/wheel.whl ; python_full_version === '3.10-custom'",`,
+      `  "archive @ https://example.com/a;b.whl ; python_version == '3.12'",`,
       "]",
       "",
     ].join("\n")),
@@ -373,6 +408,14 @@ test("PEP arbitrary equality is preserved in environment markers", async () => {
       marker: "python_full_version === '3.10-custom'",
       directReference: "https://example.com/wheel.whl",
     },
+    {
+      packageName: "archive",
+      kind: "direct",
+      assessment: "unassessed",
+      exactVersion: undefined,
+      marker: "python_version == '3.12'",
+      directReference: "https://example.com/a;b.whl",
+    },
   ]);
 });
 
@@ -410,8 +453,17 @@ test("PEP marker rendering preserves the parser tree's boolean grouping", async 
 test("standards parser packages stay pinned to the audited artifacts", async () => {
   const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
   const packageLock = JSON.parse(await readFile(path.resolve("package-lock.json"), "utf8"));
-  assert.equal(packageJson.dependencies["@renovatebot/pep440"], undefined);
-  assert.equal(packageLock.packages["node_modules/@renovatebot/pep440"], undefined);
+  assert.equal(packageJson.dependencies["@renovatebot/pep440"], "3.0.20");
+  assert.deepEqual(packageLock.packages["node_modules/@renovatebot/pep440"], {
+    version: "3.0.20",
+    resolved: "https://registry.npmjs.org/@renovatebot/pep440/-/pep440-3.0.20.tgz",
+    integrity: "sha512-Jw8jzHh2r1LAPTrjQlIwh/+8J3N2MqXZgPuTt6HdNeJIBjJskV8bsEfGs9rBzXi/omeHob3BXnvlECu2rCCUYw==",
+    license: "Apache-2.0",
+    engines: {
+      node: "^18.12.0 || >= 20.0.0",
+      pnpm: "^8.6.11",
+    },
+  });
   assert.equal(packageJson.dependencies["npm-package-arg"], "13.0.2");
   assert.deepEqual(packageLock.packages["node_modules/npm-package-arg"], {
     version: "13.0.2",
@@ -513,10 +565,11 @@ test("dependency evidence distinguishes absent, malformed, wrong-shaped, dynamic
 
   const malformed = await extract(available([
     manifest("bad/package.json", "{"),
+    manifest("empty-url/pyproject.toml", '[project]\ndependencies = ["demo @"]\n'),
     manifest("invalid/pyproject.toml", '[project]\ndependencies = ["not a valid requirement !!!"]\n'),
   ]));
   assert.equal(malformed.state, "malformed");
-  assert.deepEqual(malformed.manifests.map((item: any) => item.state), ["malformed", "malformed"]);
+  assert.deepEqual(malformed.manifests.map((item: any) => item.state), ["malformed", "malformed", "malformed"]);
   assert.equal(malformed.facts.length, 0);
 
   const wrongShape = await extract(available([
