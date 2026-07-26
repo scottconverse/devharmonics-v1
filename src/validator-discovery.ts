@@ -149,8 +149,14 @@ async function boundedRegularFile(
         || afterStat.ctimeMs !== beforeStat.ctimeMs
       ) return { error: "unsafe_path" };
       const bytes = Buffer.concat(chunks, bytesRead);
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        return { error: "malformed" };
+      }
       return {
-        text: bytes.toString("utf8"),
+        text,
         digest: createHash("sha256").update(bytes).digest("hex"),
       };
     } finally {

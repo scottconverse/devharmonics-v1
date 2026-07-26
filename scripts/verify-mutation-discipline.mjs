@@ -64,6 +64,7 @@ async function proveAdditionalMutation({
   mutationTarget,
   mutationReplacement,
   sentinelName: additionalSentinelName,
+  expectedRedOutputIncludes = [additionalSentinelName],
 }) {
   const clean = await readFile(compiledPath, "utf8");
   const changed = replaceExactlyOnce(clean, mutationTarget, mutationReplacement);
@@ -82,11 +83,17 @@ async function proveAdditionalMutation({
     await writeFile(compiledPath, clean, "utf8");
   }
   console.log(`Expected RED output (${additionalSentinelName}):`);
-  console.log(`${expectedRed.stdout}${expectedRed.stderr}`.trim());
+  const expectedRedOutput = `${expectedRed.stdout}${expectedRed.stderr}`;
+  console.log(expectedRedOutput.trim());
+  for (const expectedText of expectedRedOutputIncludes) {
+    if (!expectedRedOutput.includes(expectedText)) {
+      throw new Error(`Mutation sentinel did not fail the expected test: ${expectedText}`);
+    }
+  }
   assertCiChildResult(
     expectedRed,
     { operation: "mutation sentinel", sentinelName: additionalSentinelName, phase: "expected RED", timeoutMs },
-    { exit: "nonzero", outputIncludes: additionalSentinelName },
+    { exit: "nonzero", outputIncludes: expectedRedOutputIncludes[0] },
   );
   const restoredGreen = await run();
   console.log(`Restored GREEN output (${additionalSentinelName}):`);
@@ -117,9 +124,21 @@ await proveAdditionalMutation({
 await proveAdditionalMutation({
   compiledPath: path.join(root, "dist", "src", "validator-discovery.js"),
   testPath: path.join(root, "dist", "test", "validator-discovery.test.js"),
+  mutationTarget: 'new TextDecoder("utf-8", { fatal: true }).decode(bytes)',
+  mutationReplacement: 'new TextDecoder("utf-8").decode(bytes)',
+  sentinelName: "malformed UTF-8 (package.json|pyproject.toml) reports malformed and yields no validator candidate",
+  expectedRedOutputIncludes: [
+    "malformed UTF-8 package.json reports malformed and yields no validator candidate",
+    "malformed UTF-8 pyproject.toml reports malformed and yields no validator candidate",
+  ],
+});
+
+await proveAdditionalMutation({
+  compiledPath: path.join(root, "dist", "src", "validator-discovery.js"),
+  testPath: path.join(root, "dist", "test", "validator-discovery.test.js"),
   mutationTarget: 'const document = parseTomlRecord("pyproject.toml", text);',
   mutationReplacement: "const document = {};",
   sentinelName: "malformed TOML reports malformed and yields no pyproject validator candidate",
 });
 
-console.log("Additional release-authority, UTF-8, and validator-malformed mutation sentinels passed.");
+console.log("Additional release-authority, immutable-manifest UTF-8, validator-source UTF-8, and validator-malformed mutation sentinels passed.");

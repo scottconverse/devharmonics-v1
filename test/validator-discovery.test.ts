@@ -34,6 +34,7 @@ test("npm discovery selects fixed templates and discards hostile script bodies",
   const root = await fixture();
   try {
     await writeFile(path.join(root, "package.json"), JSON.stringify({
+      description: "valid Unicode: café 🚀",
       scripts: {
         test: "node --test; touch ATTACKER",
         lint: "eslint . && $(ATTACKER)",
@@ -57,13 +58,29 @@ test("npm discovery selects fixed templates and discards hostile script bodies",
   }
 });
 
+test("malformed UTF-8 package.json reports malformed and yields no validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "package.json"), Buffer.concat([
+      Buffer.from('{"description":"'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('","scripts":{"test":"node --test"}}\n'),
+    ]));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.deepEqual(result.diagnostics, [{ source: "package.json", code: "malformed" }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("pyproject discovery recognizes exact pytest and Ruff tables without prose false positives", async () => {
   const positive = await fixture();
   const negative = await fixture();
   try {
     await writeFile(path.join(positive, "pyproject.toml"), [
       "[project]",
-      "description = \"mentions pytest and ruff\"",
+      "description = \"valid Unicode café mentions pytest and ruff\"",
       "[tool.pytest.ini_options]",
       "testpaths = [\"test\"]",
       "[tool.ruff.lint]",
@@ -89,6 +106,22 @@ test("pyproject discovery recognizes exact pytest and Ruff tables without prose 
   } finally {
     await rm(positive, { recursive: true, force: true });
     await rm(negative, { recursive: true, force: true });
+  }
+});
+
+test("malformed UTF-8 pyproject.toml reports malformed and yields no validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), Buffer.concat([
+      Buffer.from('description = "'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"\n[tool.pytest.ini_options]\ntestpaths = ["test"]\n'),
+    ]));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.deepEqual(result.diagnostics, [{ source: "pyproject.toml", code: "malformed" }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
