@@ -193,16 +193,27 @@ const dependencyRepositorySchema = z.object({
   }
 
   const factCounts = new Map<string, number>();
+  const factLocators = new Set<string>();
   for (const fact of repository.facts) {
     const key = dependencyEvidenceKey(fact.provenance);
     factCounts.set(key, (factCounts.get(key) ?? 0) + 1);
+    const locatorKey = `${key}\0${fact.provenance.locator}`;
+    if (factLocators.has(locatorKey)) {
+      context.addIssue({ code: "custom", path: ["facts"], message: "dependency facts cannot duplicate one structural manifest locator" });
+    }
+    factLocators.add(locatorKey);
   }
-  const manifestKeys = new Set(repository.manifests.map(dependencyEvidenceKey));
+  const manifestKeys = new Set<string>();
   for (const [index, manifest] of repository.manifests.entries()) {
+    const manifestKey = dependencyEvidenceKey(manifest);
+    if (manifestKeys.has(manifestKey)) {
+      context.addIssue({ code: "custom", path: ["manifests", index], message: "dependency manifest evidence cannot be duplicated" });
+    }
+    manifestKeys.add(manifestKey);
     if (repository.commit === null || manifest.commit !== repository.commit) {
       context.addIssue({ code: "custom", path: ["manifests", index, "commit"], message: "dependency manifest commit must match its repository snapshot" });
     }
-    if (manifest.factCount !== (factCounts.get(dependencyEvidenceKey(manifest)) ?? 0)) {
+    if (manifest.factCount !== (factCounts.get(manifestKey) ?? 0)) {
       context.addIssue({ code: "custom", path: ["manifests", index, "factCount"], message: "dependency manifest fact count does not match its retained facts" });
     }
     if (
@@ -221,6 +232,19 @@ const dependencyRepositorySchema = z.object({
     const expectedCommit = repository.commit ?? "";
     if (diagnostic.commit !== expectedCommit) {
       context.addIssue({ code: "custom", path: ["diagnostics", index, "commit"], message: "dependency diagnostic commit must match its repository snapshot" });
+    }
+    const location = [diagnostic.blobOid, diagnostic.path, diagnostic.cwd];
+    if (location.some((value) => value !== undefined)) {
+      if (location.some((value) => value === undefined)) {
+        context.addIssue({ code: "custom", path: ["diagnostics", index], message: "dependency diagnostic manifest provenance must be complete" });
+      } else if (!manifestKeys.has(dependencyEvidenceKey({
+        commit: diagnostic.commit,
+        blobOid: diagnostic.blobOid!,
+        path: diagnostic.path!,
+        cwd: diagnostic.cwd!,
+      }))) {
+        context.addIssue({ code: "custom", path: ["diagnostics", index], message: "dependency diagnostic provenance does not resolve to a retained manifest" });
+      }
     }
   }
   const retainedStates = [
@@ -323,8 +347,9 @@ const persistedSnapshotEnvelopeSchema = z.object({
   const dependencyAttention = snapshot.dependencyIntelligence?.state === "scanned"
     && snapshot.dependencyIntelligence.repositories.some((repository) =>
       !["detected", "absent"].includes(repository.state) || repository.diagnostics.length > 0);
-  if ((findingAttention || dependencyAttention) && snapshot.status !== "attention") {
-    context.addIssue({ code: "custom", path: ["status"], message: "retained intelligence failures require product attention" });
+  const expectedStatus = findingAttention || dependencyAttention ? "attention" : "ready";
+  if (snapshot.status !== expectedStatus) {
+    context.addIssue({ code: "custom", path: ["status"], message: `product intelligence status must be '${expectedStatus}' for its retained evidence` });
   }
   if (snapshot.dependencyIntelligence?.state === "scanned") {
     const summaries = new Map(snapshot.repositories.map((repository) => [repository.repositoryId, repository]));

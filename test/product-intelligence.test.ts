@@ -210,6 +210,27 @@ test("creates a source-backed product intelligence snapshot without inferring ma
         createdAt: "not-a-date",
       }),
     );
+    const cleanButAttention = {
+      id: "clean-but-attention",
+      productId: "fixture",
+      status: "attention",
+      repositories: [],
+      sources: [],
+      claims: [],
+      findings: [],
+      createdAt: "2026-07-26T00:00:00.000Z",
+    };
+    assert.throws(() => (productIntelligence as any).decodeProductIntelligenceSnapshot(cleanButAttention), /status must be 'ready'/);
+    const duplicateEvidence = structuredClone(snapshot) as any;
+    const duplicateRepository = duplicateEvidence.dependencyIntelligence.repositories.find((item: any) => item.repositoryId === "repo:module");
+    duplicateRepository.facts.push(structuredClone(duplicateRepository.facts[0]));
+    duplicateRepository.manifests.find((item: any) => item.path === "package.json").factCount += 1;
+    duplicateRepository.manifests.push(structuredClone(duplicateRepository.manifests.find((item: any) => item.path === "package.json")));
+    assert.throws(() => (productIntelligence as any).decodeProductIntelligenceSnapshot(duplicateEvidence), /cannot duplicate|cannot be duplicated/);
+    const orphanDiagnostic = structuredClone(snapshot) as any;
+    const diagnosticRepository = orphanDiagnostic.dependencyIntelligence.repositories.find((item: any) => item.repositoryId === "repo:module");
+    diagnosticRepository.diagnostics[0].blobOid = "f".repeat(40);
+    assert.throws(() => (productIntelligence as any).decodeProductIntelligenceSnapshot(orphanDiagnostic), /does not resolve to a retained manifest/);
 
     const dashboard = await startDashboard({ projectPath: modulePath, port: 0, open: false });
     try {
