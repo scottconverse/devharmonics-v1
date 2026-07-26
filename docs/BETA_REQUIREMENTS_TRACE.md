@@ -1,6 +1,7 @@
 # Beta requirements trace
 
 Source specification: candidate `docs/PRODUCT_SPEC.md`, v1.17, SHA-256 `F9B1ED2E721E462F53C999C3682BE37141070647A49BCE811BBA0EFFE020D730`.
+Implementation-plan status baseline: `docs/IMPLEMENTATION_PLAN.md`, v1.39.
 The normative-row inventory is generated mechanically from v1.17. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
 
 ## Machine-checkable totals
@@ -50,7 +51,8 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
    census after feature implementation but before integrated proof.
 2. Structurally enforce workflow and campaign-template contracts in parallel
    with P0-3 and other feature lanes they do not block.
-3. Build the restart-safe campaign kernel that owns Milestone C11 and C13:
+3. Build the restart-safe campaign kernel that owns C13 and co-owns C11 with
+   the DH-600 Campaign Control Room:
    campaign stages, representative pilots, promotion gates, resource-aware
    shards, diagnostic partitioning, test-integrity controls, differential
    evidence, regression accounting, restart reconciliation, and safe cleanup.
@@ -460,26 +462,26 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-MS-B09 | CivicSuite release-truth audit workflow. | MILESTONE | `docs/PRODUCT_SPEC.md:1306` | UNASSESSED | UNASSESSED |
 | PS-MS-B10 | Repository Workbench/objective refinement. | MILESTONE | `docs/PRODUCT_SPEC.md:1307` | UNASSESSED | UNASSESSED |
 | PS-MS-B11 | Successful bounded cross-repository CivicSuite objective. | MILESTONE | `docs/PRODUCT_SPEC.md:1308` | UNASSESSED | UNASSESSED |
-| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | PLANNED — DH-220 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C02 | Role-specific auditions/historical fixtures. | MILESTONE | `docs/PRODUCT_SPEC.md:1317` | PLANNED — DH-240 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | PARTIAL — DH-220 accountable; refresh and fingerprint foundations exist, signed compatibility and complete stale-data enforcement remain | PENDING IMPLEMENTATION |
+| PS-MS-C02 | Role-specific auditions/historical fixtures. | MILESTONE | `docs/PRODUCT_SPEC.md:1317` | PARTIAL — DH-240 accountable; qualification fixtures exist, complete historical audition and governed upgrade coverage remain | PENDING IMPLEMENTATION |
 | PS-MS-C03 | Empirical performance profiles. | MILESTONE | `docs/PRODUCT_SPEC.md:1318` | CLAIMED — DH-250 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-MS-C04 | Capacity-aware subscription/local scheduling. | MILESTONE | `docs/PRODUCT_SPEC.md:1319` | CLAIMED — DH-310 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
-| PS-MS-C05 | Critical-path/quota-window optimization. | MILESTONE | `docs/PRODUCT_SPEC.md:1320` | PLANNED — DH-310 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C06 | Controlled model upgrades/rollback. | MILESTONE | `docs/PRODUCT_SPEC.md:1321` | PLANNED — DH-240 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C07 | Dynamic splitting/replanning/handoff. | MILESTONE | `docs/PRODUCT_SPEC.md:1322` | PLANNED — DH-300 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C08 | ACP where it improves interoperability. | MILESTONE | `docs/PRODUCT_SPEC.md:1323` | PLANNED — DH-820 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C09 | Broader MCP/tool/skill registry. | MILESTONE | `docs/PRODUCT_SPEC.md:1324` | PLANNED — DH-440 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C10 | Learning coordinator policies without silent authority change. | MILESTONE | `docs/PRODUCT_SPEC.md:1325` | PLANNED — DH-660 accountable | PENDING IMPLEMENTATION |
-| PS-MS-C11 | Campaign stages/pilots/promotion/resource-aware shards. | MILESTONE | `docs/PRODUCT_SPEC.md:1326` | PLANNED — DH-350 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C05 | Critical-path/quota-window optimization. | MILESTONE | `docs/PRODUCT_SPEC.md:1320` | PARTIAL — DH-310 accountable; capacity, dependency, and quota foundations exist, critical-path/quota-window optimization remains | PENDING IMPLEMENTATION |
+| PS-MS-C06 | Controlled model upgrades/rollback. | MILESTONE | `docs/PRODUCT_SPEC.md:1321` | PARTIAL — DH-240 accountable; family tracking exists, governed candidate promotion and retained exact rollback remain | PENDING IMPLEMENTATION |
+| PS-MS-C07 | Dynamic splitting/replanning/handoff. | MILESTONE | `docs/PRODUCT_SPEC.md:1322` | PARTIAL — DH-300 accountable; attributed handoff foundations exist, versioned replanning and dynamic splitting remain | PENDING IMPLEMENTATION |
+| PS-MS-C08 | ACP where it improves interoperability. | MILESTONE | `docs/PRODUCT_SPEC.md:1323` | MISSING — DH-820 accountable; no completed transport implementation is claimed | PENDING IMPLEMENTATION |
+| PS-MS-C09 | Broader MCP/tool/skill registry. | MILESTONE | `docs/PRODUCT_SPEC.md:1324` | PARTIAL — DH-440 accountable; local tool/policy foundations exist, governed MCP/skill registry breadth remains | PENDING IMPLEMENTATION |
+| PS-MS-C10 | Learning coordinator policies without silent authority change. | MILESTONE | `docs/PRODUCT_SPEC.md:1325` | MISSING — DH-660 accountable; no completed governed-learning implementation is claimed | PENDING IMPLEMENTATION |
+| PS-MS-C11 | Campaign stages/pilots/promotion/resource-aware shards. | MILESTONE | `docs/PRODUCT_SPEC.md:1326` | MISSING — DH-350 kernel and DH-600 Control Room accountable; no completed campaign implementation is claimed | PENDING IMPLEMENTATION |
 | PS-MS-C12 | Configurable adversarial review/fix/re-review. | MILESTONE | `docs/PRODUCT_SPEC.md:1327` | CLAIMED — DH-460 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
-| PS-MS-C13 | Diagnostic partitioning/test integrity/differential evidence/regression accounting. | MILESTONE | `docs/PRODUCT_SPEC.md:1328` | PLANNED — DH-480 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C13 | Diagnostic partitioning/test integrity/differential evidence/regression accounting. | MILESTONE | `docs/PRODUCT_SPEC.md:1328` | PARTIAL — DH-480 accountable; test-integrity and comparison foundations exist, partitioning and complete regression accounting remain | PENDING IMPLEMENTATION |
 | PS-MS-D01 | Opt-in OpenRouter with OAuth/model/privacy/spending policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1340` | PARTIAL — DH-830 accountable; invocation foundation exists; OAuth/no-manual-key, activation, qualification, positive limits, and live-credit controls pending | PENDING IMPLEMENTATION |
 | PS-MS-D02 | Cost-aware routing/budgets. | MILESTONE | `docs/PRODUCT_SPEC.md:1341` | PARTIAL — DH-320 routing foundation; DH-650 counterfactual and complete DH-830 limit policy pending | PENDING IMPLEMENTATION |
-| PS-MS-D03 | Open Interpreter worker runtime and direct OpenAI API adapter, in addition to Ollama and OpenRouter. | MILESTONE | `docs/PRODUCT_SPEC.md:1342-1343` | PLANNED — DH-830 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D04 | ACP/ecosystem packaging for adapters/tools/workflows/skills/qualification. | MILESTONE | `docs/PRODUCT_SPEC.md:1344` | PLANNED — DH-815 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D05 | GitHub and optional Linear triggers under local policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1345` | PLANNED — DH-805 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D06 | Portable workflow, objective, evidence, and delivery-handoff bundles for a very small team. | MILESTONE | `docs/PRODUCT_SPEC.md:1346` | PLANNED — DH-840 accountable | PENDING IMPLEMENTATION |
-| PS-MS-D07 | Local analytics/evaluation-driven improvement. | MILESTONE | `docs/PRODUCT_SPEC.md:1347` | PLANNED — DH-660 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D03 | Open Interpreter worker runtime and direct OpenAI API adapter, in addition to Ollama and OpenRouter. | MILESTONE | `docs/PRODUCT_SPEC.md:1342-1343` | MISSING — DH-830 accountable with DH-825; neither required adapter has a completed implementation claim | PENDING IMPLEMENTATION |
+| PS-MS-D04 | ACP/ecosystem packaging for adapters/tools/workflows/skills/qualification. | MILESTONE | `docs/PRODUCT_SPEC.md:1344` | MISSING — DH-815 accountable; no completed ecosystem-package implementation is claimed | PENDING IMPLEMENTATION |
+| PS-MS-D05 | GitHub and optional Linear triggers under local policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1345` | MISSING — DH-805 accountable; no completed GitHub/Linear/local-schedule/monitoring trigger implementation is claimed | PENDING IMPLEMENTATION |
+| PS-MS-D06 | Portable workflow, objective, evidence, and delivery-handoff bundles for a very small team. | MILESTONE | `docs/PRODUCT_SPEC.md:1346` | MISSING — DH-840 accountable; no completed portable-handoff implementation is claimed | PENDING IMPLEMENTATION |
+| PS-MS-D07 | Local analytics/evaluation-driven improvement. | MILESTONE | `docs/PRODUCT_SPEC.md:1347` | PARTIAL — DH-660 accountable; empirical and cost-analysis foundations exist, complete evaluation-driven improvement remains | PENDING IMPLEMENTATION |
 | PS-MS-D08 | Exclude hosted execution, off-computer workers, enterprise admin, and mandatory team service. | NON-GOAL | `docs/PRODUCT_SPEC.md:1349` | UNASSESSED | UNASSESSED |
 | PS-ACC-L1-01 | Register organization local repositories. | ACCEPTANCE | `docs/PRODUCT_SPEC.md:1357` | UNASSESSED | UNASSESSED |
 | PS-ACC-L1-02 | Map repository roles/dependencies. | ACCEPTANCE | `docs/PRODUCT_SPEC.md:1358` | UNASSESSED | UNASSESSED |
