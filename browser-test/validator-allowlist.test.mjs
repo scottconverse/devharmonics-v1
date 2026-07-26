@@ -480,3 +480,135 @@ test("invalid immutable release authority is distinct and disables tagging in re
   assert.doesNotMatch(await help.textContent(), /no authoritative release version/i);
   assert.deepEqual(consoleErrors, []);
 });
+
+test("release-unit owner UI resolves ambiguity and repaired selections without unsafe shortcuts", { timeout: 60_000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-release-unit-browser-"));
+  const repository = path.join(root, "fixture");
+  await execFileAsync("git", ["init", "--initial-branch=main", repository], { windowsHide: true });
+  await git(repository, "config", "user.email", "release-unit-browser@example.invalid");
+  await git(repository, "config", "user.name", "Release Unit Browser Test");
+  await writeFile(path.join(repository, "README.md"), "# Release unit fixture\n", "utf8");
+  await git(repository, "add", "README.md");
+  await git(repository, "commit", "-m", "Create release unit fixture");
+  await initializeProject(repository);
+  const config = structuredClone(defaultConfig);
+  config.runPolicy.allowExternalWrites = true;
+  await writeFile(path.join(devHarmonicsDirectory(repository), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const ledger = new Ledger(path.join(devHarmonicsDirectory(repository), "devharmonics.db"));
+  const runId = ledger.createRun("Choose exact release authority", repository);
+  ledger.setRunStatus(runId, "running");
+  ledger.setRunStatus(runId, "ready", "READY");
+  ledger.upsertProduct({ id: "product:release-unit-browser", name: "Release Unit Browser", organizationUrl: "https://example.invalid/release-unit", description: "fixture", repositories: [] });
+  ledger.upsertRepository({
+    id: "repo:release-unit-browser", productId: "product:release-unit-browser", name: "release-unit", fullName: "fixture/release-unit",
+    url: "https://example.invalid/release-unit", cloneUrl: "https://example.invalid/release-unit.git", defaultBranch: "main",
+    visibility: "private", archived: false, sizeKb: 0, language: null, description: null, intelligence: {}, localPath: repository,
+    role: "release_truth", expectedBranch: "main", owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+  });
+  ledger.prepareDeliveryRepository({
+    runId,
+    repositoryId: "repo:release-unit-browser",
+    localPath: repository,
+    baseBranch: "main",
+    baseCommit: "a".repeat(40),
+    headCommit: "b".repeat(40),
+    branch: "devharmonics/release-unit-browser",
+  });
+  const blobs = new Map([
+    ["c".repeat(40), JSON.stringify({ name: "a", version: "1.2.3" })],
+    ["d".repeat(40), "[project]\nname = \"b\"\nversion = \"2.0.0\"\n"],
+    ["e".repeat(40), JSON.stringify({ name: "private", private: true })],
+    ["f".repeat(40), JSON.stringify({ name: "root", version: "9.0.0" })],
+  ]);
+  let rootDeclared = false;
+  let releaseAuthorityReady;
+  const releaseAuthorityGate = new Promise((resolve) => { releaseAuthorityReady = resolve; });
+  let holdInitialAuthorityRead = true;
+  const runner = async (request) => {
+    const result = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    if (request.command === "git" && request.args[0] === "cat-file" && request.args[1] === "-t") {
+      if (holdInitialAuthorityRead) {
+        holdInitialAuthorityRead = false;
+        await releaseAuthorityGate;
+      }
+      return { ...result, stdout: "commit\n" };
+    }
+    if (request.command === "git" && request.args[0] === "ls-tree") {
+      const entries = [
+        `100644 blob ${"c".repeat(40)}\tapps/<a>/package.json`,
+        `100644 blob ${"d".repeat(40)}\tpackages/b/pyproject.toml`,
+        `100644 blob ${"e".repeat(40)}\ttools/private/package.json`,
+        ...(rootDeclared ? [`100644 blob ${"f".repeat(40)}\tpackage.json`] : []),
+      ];
+      return { ...result, stdout: `${entries.join("\0")}\0` };
+    }
+    if (request.command === "git" && request.args[0] === "cat-file" && request.args[1] === "blob") {
+      return { ...result, stdout: blobs.get(request.args[2]) };
+    }
+    return result;
+  };
+  const dashboard = await startDashboard({ projectPath: repository, port: 0, open: false, deliveryRunner: runner });
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => {
+    releaseAuthorityReady();
+    await browser.close();
+    await dashboard.close();
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const page = await browser.newPage({ viewport: { width: 1024, height: 900 } });
+  const consoleErrors = [], pageErrors = [], errorResponses = [];
+  page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("response", (response) => { if (response.status() >= 400) errorResponses.push({ status: response.status(), url: response.url() }); });
+  const selectorRequests = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/release-unit")) selectorRequests.push(request.postDataJSON());
+  });
+
+  await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /Choose exact release authority/ }).click();
+  const card = page.locator('.delivery-repository-card:has([data-repository-id="repo:release-unit-browser"])');
+  const completeDelivery = card.getByRole("button", { name: /Do everything at once/ });
+  await completeDelivery.waitFor();
+  assert.equal(await completeDelivery.isDisabled(), true, "delivery fails closed while immutable authority is still loading");
+  releaseAuthorityReady();
+  await card.getByRole("button", { name: "Select release unit apps/<a>" }).waitFor();
+  assert.match(await card.textContent(), /Expected revision 0/);
+  assert.match(await card.textContent(), /private package/);
+  assert.equal(await card.locator("a").count(), 0, "authority values render as text, never hostile markup");
+  assert.equal(await completeDelivery.isDisabled(), true);
+  await card.getByRole("button", { name: "Select release unit apps/<a>" }).click();
+  await card.getByText("Selected unit apps/<a>", { exact: true }).waitFor();
+  assert.deepEqual(selectorRequests[0], { cwd: "apps/<a>", expectedRevision: 0, expectedHeadCommit: "b".repeat(40) });
+  assert.match(await card.textContent(), /Source apps\/<a>\/package\.json/);
+  assert.match(await card.textContent(), /Reason public static package version/);
+  assert.match(await card.textContent(), /Excluded packages\/b: static PEP 621 version/);
+  assert.equal(await completeDelivery.isDisabled(), false);
+
+  ledger.invalidateReleaseUnitSelection("repo:release-unit-browser", 1, "selected release unit was repaired");
+  await page.getByRole("button", { name: /Choose exact release authority/ }).click();
+  await card.getByText(/Expected revision 2/).waitFor();
+  await card.getByRole("button", { name: "Select release unit apps/<a>" }).click();
+  await card.getByText("Selected unit apps/<a>", { exact: true }).waitFor();
+  assert.deepEqual(selectorRequests[1], { cwd: "apps/<a>", expectedRevision: 2, expectedHeadCommit: "b".repeat(40) });
+
+  rootDeclared = true;
+  await page.getByRole("button", { name: /Choose exact release authority/ }).click();
+  await card.getByText(/Repair required/).waitFor();
+  assert.equal(await card.locator("[data-release-unit]").count(), 0);
+  assert.equal(await card.getByRole("button", { name: /delete|clear selection/i }).count(), 0);
+  assert.equal(await completeDelivery.isDisabled(), true);
+
+  ledger.database.prepare("UPDATE repositories SET intelligence_json = ? WHERE id = ?")
+    .run(JSON.stringify({ releaseUnitSelection: { version: 99, cwd: "apps/<a>" } }), "repo:release-unit-browser");
+  rootDeclared = false;
+  await page.getByRole("button", { name: /Choose exact release authority/ }).click();
+  await card.getByText(/Repair required/).waitFor();
+  assert.equal(await card.locator("[data-release-unit]").count(), 0);
+  assert.equal(await card.getByRole("button", { name: /delete|clear selection/i }).count(), 0);
+  assert.deepEqual(errorResponses, [{ status: 404, url: `${dashboard.url}/api/products/product%3Arelease-unit-browser/intelligence` }]);
+  assert.deepEqual(consoleErrors, ["Failed to load resource: the server responded with a status of 404 (Not Found)"]);
+  assert.deepEqual(pageErrors, []);
+});

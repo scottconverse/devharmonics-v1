@@ -48,6 +48,8 @@ button { cursor: pointer; }
 .delivery-done { color: var(--lime); font-size: 12px; margin: 6px 0 0; }
 .delivery-busy { opacity: .75; }
 .delivery-busy .plan-actions { pointer-events: none; }
+.release-unit-authority { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; padding: 10px; border: 1px solid #6d5838; border-radius: 9px; } .release-unit-authority p { color: var(--muted); }
+.release-unit-authority strong, .release-unit-authority p, .release-unit-authority > span { width: 100%; margin: 0; font-size: 11px; overflow-wrap: anywhere; } .release-unit-authority strong > span { display: block; margin-top: 3px; color: var(--muted); font-weight: 500; }
 .security-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--lime); margin-right: 7px; box-shadow: 0 0 12px rgba(200,245,96,.55); }
 .workspace-view { padding-bottom: 48px; }
 .view-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 12px 0 22px; }

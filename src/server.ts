@@ -1440,6 +1440,41 @@ async function route(
     sendJson(response, 200, { delivery: run.delivery ? { ...run.delivery, repositories } : null });
     return;
   }
+
+  const releaseUnitMatch = url.pathname.match(/^\/api\/runs\/([a-f0-9-]+)\/delivery\/([^/]+)\/release-unit$/i);
+  if (request.method === "PUT" && releaseUnitMatch?.[1] && releaseUnitMatch[2]) {
+    requireJsonRequest(request);
+    const body = await readJson(request) as Record<string, unknown> | null;
+    const repositoryId = decodeURIComponent(releaseUnitMatch[2]);
+    const cwd = body && typeof body.cwd === "string" ? body.cwd : "";
+    const expectedHeadCommit = body && typeof body.expectedHeadCommit === "string" ? body.expectedHeadCommit : "";
+    const expectedRevision = body?.expectedRevision;
+    if (!cwd || cwd !== cwd.trim() || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(expectedHeadCommit)
+      || !Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) {
+      sendJson(response, 400, { error: "Release-unit selection requires cwd, a full expectedHeadCommit, and a nonnegative integer expectedRevision" });
+      return;
+    }
+    const run = context.ledger.getRun(releaseUnitMatch[1]);
+    const deliveryRepository = run?.delivery?.repositories.find((item) => item.repositoryId === repositoryId);
+    const repository = context.ledger.getRepository(repositoryId);
+    if (!run || !deliveryRepository || !repository) {
+      sendJson(response, 404, { error: "Run delivery repository was not found" });
+      return;
+    }
+    if (deliveryRepository.headCommit !== expectedHeadCommit) {
+      sendJson(response, 409, { error: "The reviewed delivery commit changed after it was loaded; review the latest state and retry" });
+      return;
+    }
+    try {
+      sendJson(response, 200, await context.delivery.selectReleaseUnit(
+        repositoryId, deliveryRepository.localPath, expectedHeadCommit, cwd, Number(expectedRevision),
+      ));
+    } catch (error) {
+      sendJson(response, 409, { error: redactText(error instanceof Error ? error.message : String(error)) });
+    }
+    return;
+  }
+
   if (request.method === "POST" && deliveryMatch?.[1]) {
     requireJsonRequest(request);
     const body = await readJson(request) as { repositoryId?: unknown; action?: unknown; expectedHeadCommit?: unknown; tag?: unknown; confirmVersionMismatch?: unknown };
