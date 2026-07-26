@@ -973,7 +973,10 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
     // The tag-truth gate and the GET enrichment now read the version from the
     // IMMUTABLE commit via `git show <oid>:package.json`, not the checkout. This
     // fixture's commits (reviewed head and merge commit) declare 9.9.9.
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "fixture", version: "9.9.9" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && request.args[0] === "push" && !joined.includes("refs/tags/")) {
@@ -1063,6 +1066,96 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
     const agreed = await deliver({ action: "tag_release", tag: "v9.9.9" });
     assert.equal(agreed.status, 200, JSON.stringify(await agreed.clone().json()));
     assert.equal(((await agreed.json()) as { delivery: { status: string; releaseTag: string | null } }).delivery.releaseTag, "v9.9.9");
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("complete_delivery cannot bypass invalid release authority or create tag side effects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-complete-invalid-authority-"));
+  const project = await createRepository(root);
+  await writeFile(path.join(project, "package.json"), Buffer.concat([
+    Buffer.from('{"description":"'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('","version":"1.0.0"}\n'),
+  ]));
+  await git(project, ["add", "package.json"]);
+  await git(project, ["commit", "-m", "malformed utf8 package fixture"]);
+  const immutableCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  const baseCommit = (await git(project, ["rev-parse", "HEAD^"])).stdout.trim();
+  await initializeProject(project);
+  const config = await loadPlanningFixtureConfig(project);
+  config.runPolicy.allowExternalWrites = true;
+  await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const seedLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+  const runId = seedLedger.createRun("Complete but refuse an invalid tag", project);
+  seedLedger.setRunStatus(runId, "running");
+  seedLedger.setRunStatus(runId, "ready", "READY");
+  seedLedger.prepareDeliveryRepository({
+    runId,
+    repositoryId: "repo:invalid-composite",
+    localPath: project,
+    baseBranch: "main",
+    baseCommit,
+    headCommit: immutableCommit,
+    branch: "devharmonics/invalid-composite",
+  });
+  seedLedger.close();
+
+  const calls: Array<{ command: string; args: string[] }> = [];
+  let prState = "OPEN";
+  const runner = async (request: Parameters<typeof runProcess>[0]) => {
+    calls.push(request);
+    const joined = request.args.join(" ");
+    const ok = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    if (request.command === "git" && ["cat-file", "ls-tree", "show"].includes(request.args[0]!)) return runProcess(request);
+    if (request.command === "git" && joined === "remote get-url origin") return { ...ok, stdout: "https://github.com/civicsuite/invalid-composite.git\n" };
+    if (request.command === "gh" && request.args[1] === "create") return { ...ok, stdout: "https://github.com/civicsuite/invalid-composite/pull/4\n" };
+    if (request.command === "gh" && request.args[1] === "view" && joined.includes("state,isDraft,mergeable")) {
+      return { ...ok, stdout: JSON.stringify({ state: prState, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: immutableCommit, statusCheckRollup: [] }) };
+    }
+    if (request.command === "gh" && request.args[1] === "view" && joined.includes("mergeCommit")) {
+      return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: immutableCommit } }) };
+    }
+    if (request.command === "gh" && request.args[1] === "merge") {
+      prState = "MERGED";
+      return ok;
+    }
+    return ok;
+  };
+
+  const dashboard = await startDashboard({ projectPath: project, port: 0, open: false, deliveryRunner: runner as never });
+  try {
+    const response = await fetch(`${dashboard.url}/api/runs/${runId}/delivery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repositoryId: "repo:invalid-composite",
+        expectedHeadCommit: immutableCommit,
+        action: "complete_delivery",
+        tag: "v1.0.0",
+        confirmVersionMismatch: true,
+      }),
+    });
+    assert.equal(response.status, 409);
+    const body = await response.json() as { error: string; versionAuthority?: { state: string; source: string } };
+    assert.match(body.error, /package\.json is invalid/i);
+    assert.deepEqual(body.versionAuthority, {
+      state: "invalid",
+      source: "package.json",
+      detail: "package.json is not valid UTF-8",
+    });
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
+
+    const delivery = await fetch(`${dashboard.url}/api/runs/${runId}/delivery`).then((item) => item.json()) as {
+      delivery: { repositories: Array<{ status: string; releaseTag: string | null; versionAuthority: { state: string } }> };
+    };
+    assert.equal(delivery.delivery.repositories[0]?.status, "merged");
+    assert.equal(delivery.delivery.repositories[0]?.releaseTag, null);
+    assert.equal(delivery.delivery.repositories[0]?.versionAuthority.state, "invalid");
   } finally {
     await dashboard.close();
     await rm(root, { recursive: true, force: true });
@@ -1679,8 +1772,12 @@ test("the tag prefill follows the MERGE commit's declared version once merged, n
     }
     // The reviewed head commit declares 1.0.0; the merge commit declares 2.0.0.
     // The enrichment must resolve from whichever commit it asks `git show` about.
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
-      const version = joined.includes(mergeOid) ? "2.0.0" : "1.0.0";
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      const objectId = joined.includes(mergeOid) ? "d".repeat(40) : "e".repeat(40);
+      return { stdout: `100644 blob ${objectId}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "show" && ["d".repeat(40), "e".repeat(40)].includes(request.args[1]!)) {
+      const version = request.args[1] === "d".repeat(40) ? "2.0.0" : "1.0.0";
       return { stdout: JSON.stringify({ name: "fixture", version }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "gh" && request.args[1] === "create") {
@@ -1773,8 +1870,12 @@ test("a transient merge-time gh mergeCommit failure is repaired lazily at read t
     if (request.command === "git" && joined === "remote get-url origin") {
       return { stdout: "https://github.com/civicsuite/div.git\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
-      const version = joined.includes(mergeOid) ? "2.0.0" : "1.0.0";
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      const objectId = joined.includes(mergeOid) ? "d".repeat(40) : "e".repeat(40);
+      return { stdout: `100644 blob ${objectId}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "show" && ["d".repeat(40), "e".repeat(40)].includes(request.args[1]!)) {
+      const version = request.args[1] === "d".repeat(40) ? "2.0.0" : "1.0.0";
       return { stdout: JSON.stringify({ name: "fixture", version }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "gh" && request.args[1] === "create") {
@@ -1885,8 +1986,13 @@ test("a persisted merge OID whose object is not local is fetched at read time, n
       const present = joined.includes(mergeOid) ? mergeObjectLocal : true;
       return { stdout: present ? `${joined}\n` : "", stderr: present ? "" : "fatal: Not a valid object name\n", exitCode: present ? 0 : 1, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
-      if (joined.includes(mergeOid)) {
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      if (joined.includes(mergeOid) && !mergeObjectLocal) return { stdout: "", stderr: "fatal: invalid object name\n", exitCode: 128, durationMs: 1, timedOut: false };
+      const objectId = joined.includes(mergeOid) ? "d".repeat(40) : "e".repeat(40);
+      return { stdout: `100644 blob ${objectId}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "show" && ["d".repeat(40), "e".repeat(40)].includes(request.args[1]!)) {
+      if (request.args[1] === "d".repeat(40)) {
         if (!mergeObjectLocal) return { stdout: "", stderr: "fatal: invalid object name\n", exitCode: 128, durationMs: 1, timedOut: false };
         return { stdout: JSON.stringify({ name: "fixture", version: "2.0.0" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
       }

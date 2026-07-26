@@ -2117,6 +2117,30 @@ function renderDelivery(run) {
 // state. Pulled out as a pure function of the repository record so it can be
 // tested without the DOM.
 function deliveryTagCaption(repository) {
+  if (repository.versionAuthority?.state === "invalid") {
+    return {
+      prefill: null,
+      help: `${repository.versionAuthority.source} is invalid, so DevHarmonics cannot establish release authority and will not create a tag. Fix the manifest and refresh.`,
+    };
+  }
+  if (repository.versionAuthority?.state === "unavailable") {
+    return {
+      prefill: null,
+      help: `Release authority can't be read safely right now (${repository.versionAuthority.detail}). Refresh to retry; tagging stays disabled.`,
+    };
+  }
+  if (repository.versionAuthority?.state === "absent") {
+    return {
+      prefill: null,
+      help: "This repository declares no authoritative release version in its root manifests. Enter a tag to create one, or leave empty to skip tagging.",
+    };
+  }
+  if (repository.versionAuthority?.state === "declared") {
+    return {
+      prefill: `v${repository.versionAuthority.version.replace(/^v/i, "")}`,
+      help: `This repository declares version ${repository.versionAuthority.version} — the field is pre-filled to match. Edit it to tag differently (you will be asked to confirm a mismatch), or clear it to skip tagging.`,
+    };
+  }
   if (repository.mergeVersionUnavailable) {
     return {
       prefill: null,
@@ -2156,6 +2180,14 @@ async function fillDeclaredTagVersions(run) {
         continue;
       }
       const caption = deliveryTagCaption(repository);
+      const authorityBlocksTagging = ["invalid", "unavailable"].includes(repository.versionAuthority?.state);
+      const card = input.closest(".delivery-repository-card");
+      const tagButton = card?.querySelector('[data-delivery-action="tag_release"]');
+      if (authorityBlocksTagging) {
+        input.value = "";
+        input.disabled = true;
+        if (tagButton) tagButton.disabled = true;
+      }
       if (caption.prefill && !input.value && document.activeElement !== input) input.value = caption.prefill;
       if (help) help.textContent = caption.help;
     }

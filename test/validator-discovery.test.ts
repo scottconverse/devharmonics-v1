@@ -34,6 +34,7 @@ test("npm discovery selects fixed templates and discards hostile script bodies",
   const root = await fixture();
   try {
     await writeFile(path.join(root, "package.json"), JSON.stringify({
+      description: "valid Unicode: café 🚀",
       scripts: {
         test: "node --test; touch ATTACKER",
         lint: "eslint . && $(ATTACKER)",
@@ -57,13 +58,29 @@ test("npm discovery selects fixed templates and discards hostile script bodies",
   }
 });
 
+test("malformed UTF-8 package.json reports malformed and yields no validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "package.json"), Buffer.concat([
+      Buffer.from('{"description":"'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('","scripts":{"test":"node --test"}}\n'),
+    ]));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.deepEqual(result.diagnostics, [{ source: "package.json", code: "malformed" }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("pyproject discovery recognizes exact pytest and Ruff tables without prose false positives", async () => {
   const positive = await fixture();
   const negative = await fixture();
   try {
     await writeFile(path.join(positive, "pyproject.toml"), [
       "[project]",
-      "description = \"mentions pytest and ruff\"",
+      "description = \"valid Unicode café mentions pytest and ruff\"",
       "[tool.pytest.ini_options]",
       "testpaths = [\"test\"]",
       "[tool.ruff.lint]",
@@ -89,6 +106,58 @@ test("pyproject discovery recognizes exact pytest and Ruff tables without prose 
   } finally {
     await rm(positive, { recursive: true, force: true });
     await rm(negative, { recursive: true, force: true });
+  }
+});
+
+test("malformed UTF-8 pyproject.toml reports malformed and yields no validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), Buffer.concat([
+      Buffer.from('description = "'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"\n[tool.pytest.ini_options]\ntestpaths = ["test"]\n'),
+    ]));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.deepEqual(result.diagnostics, [{ source: "pyproject.toml", code: "malformed" }]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pyproject discovery uses standards TOML for quoted and dotted validator tables", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), [
+      "tool.ruff.lint.select = [\"E\"]",
+      '["tool"."pytest"."ini_options"]',
+      "testpaths = [\"test\"]",
+    ].join("\n"));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {
+      pytest: { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000 },
+      ruff: { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000 },
+    });
+    assert.deepEqual(result.diagnostics, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed TOML reports malformed and yields no pyproject validator candidate", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "pyproject.toml"), [
+      'decoy = """',
+      "[tool.pytest.ini_options]",
+      '"""',
+      "[tool.ruff",
+    ].join("\n"));
+    const result = await discoverRepositoryValidators(root);
+    assert.deepEqual(discoveredValidatorMap(result), {});
+    assert.ok(result.diagnostics.some((item) => item.source === "pyproject.toml" && item.code === "malformed"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -255,6 +324,51 @@ test("workflow aggregate byte limit accepts exactly 4 MiB and rejects 4 MiB plus
       )));
     }
     await writeFile(path.join(oversized, ".github", "workflows", "boundary-plus-one.yml"), "x");
+
+    const exactResult = await discoverRepositoryValidators(exact);
+    assert.deepEqual(Object.keys(discoveredValidatorMap(exactResult)), ["pytest"]);
+    assert.equal(
+      exactResult.diagnostics.some((item) => item.source === ".github/workflows" && item.code === "limit_reached"),
+      false,
+    );
+
+    const oversizedResult = await discoverRepositoryValidators(oversized);
+    assert.deepEqual(discoveredValidatorMap(oversizedResult), {});
+    assert.ok(
+      oversizedResult.diagnostics.some(
+        (item) => item.source === ".github/workflows" && item.code === "limit_reached",
+      ),
+    );
+  } finally {
+    await rm(exact, { recursive: true, force: true });
+    await rm(oversized, { recursive: true, force: true });
+  }
+});
+
+test("workflow aggregate byte limit counts UTF-8 BOM bytes and discards candidates above the cap", async () => {
+  const exact = await fixture();
+  const oversized = await fixture();
+  try {
+    const aggregateLimit = 4 * 1024 * 1024;
+    const sharedWorkflowBytes = 500_000;
+    const boundaryWorkflowBytes = aggregateLimit - (8 * sharedWorkflowBytes);
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const workflowPrefix = "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n#";
+    const workflow = (rawBytes: number): Buffer => Buffer.concat([
+      bom,
+      Buffer.from(`${workflowPrefix}${"x".repeat(rawBytes - bom.length - workflowPrefix.length)}`),
+    ]);
+    const sharedWorkflow = workflow(sharedWorkflowBytes);
+    for (const root of [exact, oversized]) {
+      const workflows = path.join(root, ".github", "workflows");
+      await mkdir(workflows, { recursive: true });
+      await Promise.all(Array.from({ length: 8 }, (_, index) => writeFile(
+        path.join(workflows, `boundary-${index}.yml`),
+        sharedWorkflow,
+      )));
+    }
+    await writeFile(path.join(exact, ".github", "workflows", "boundary-8.yml"), workflow(boundaryWorkflowBytes));
+    await writeFile(path.join(oversized, ".github", "workflows", "boundary-8.yml"), workflow(boundaryWorkflowBytes + 1));
 
     const exactResult = await discoverRepositoryValidators(exact);
     assert.deepEqual(Object.keys(discoveredValidatorMap(exactResult)), ["pytest"]);

@@ -40,6 +40,7 @@ Selected components — the modules that carry the architecture's load-bearing d
 - `src/cli.ts`: command entry point for `serve`, `init`, `doctor`, and `run`.
 - `src/server.ts`: loopback-only HTTP server and static dashboard delivery.
 - `src/delivery.ts`: READY-run delivery service — separately approved exact-SHA branch pushes, draft GitHub pull requests, gated pull-request merges, and release tags; every external action requires its own owner approval.
+- `src/toml.ts`: thin standards-parser adapter for bounded read-only TOML evidence, with typed, bounded parse failures and own-property structural access.
 - `src/workflows.ts`: versioned parameterized workflow documents — fail-closed parsing, canonical-JSON content-hash identity, and typed instantiation into ordinary objectives.
 - `src/doctor.ts`: provider installation and authentication inspection.
 - `src/providers.ts`: provider-specific process adapters and credential stripping.
@@ -79,6 +80,8 @@ Each run persists an autonomy mode. Observe planning is fail-closed: every task 
 Every concrete routing decision retains its individual score sources rather than only a total. The dashboard replays those sources as **Why this model** evidence, including workload tier, qualification, pins, established reliability and latency, relative catalog price among comparable paid candidates, and provider independence for review. Attempt receipts are aggregated by exact model and workload class across completion, first-pass success, retries, latency, billed cost, malformed envelopes, classified failures, validator failures, and attempt-linked integration conflicts. Run-level NOT READY participation is displayed as non-causal evidence and cannot penalize a model without task-linked findings. Profiles below 5 observations are insufficient, 5–19 are emerging, and 20 or more are established; only established workload slices may alter reliability or latency routing. Users can advance an observation baseline or exclude empirical history without deleting the ledger evidence.
 
 Workers can edit only within their assigned worktrees using the selected CLI's restricted editing mode. Architect and reviewer calls are read-only. Git and configured validators remain local trusted executables.
+
+Release authority reads the exact immutable commit through a closed `git ls-tree -z` protocol, accepts only one root regular-file blob, and bounds both tree and blob output. A valid authoritative public `package.json` short-circuits lower evidence; otherwise a standards TOML parser reads only the structural PEP 621 `project.version` path. The result is explicit: `declared`, `absent`, `invalid`, or `unavailable`. Tag creation is allowed only for declared authority (subject to the existing mismatch confirmation) or genuine absence. Invalid syntax or structure and any timeout, nonzero exit, truncation, rejected process, malformed tree record, unsafe object type, or unconfirmed process-tree termination fail closed before any tag side effect. Validator discovery uses the same TOML adapter but retains DevHarmonics-owned command and argument templates.
 
 ## Persistence
 

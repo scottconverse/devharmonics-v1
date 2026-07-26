@@ -27,7 +27,7 @@ import { redactText } from "./redaction.js";
 import { createRunEvidenceExport, createRunReport } from "./reporter.js";
 import { observeLocalResources } from "./resources.js";
 import { inspectLocalRepository } from "./repository-intelligence.js";
-import { DeliveryRefusal, DeliveryService, VersionMismatchRefusal, type DeliveryAction } from "./delivery.js";
+import { DeliveryRefusal, DeliveryService, VersionAuthorityRefusal, VersionMismatchRefusal, type DeliveryAction } from "./delivery.js";
 import { reconcileDelivery, type RepositoryReconciliationResult } from "./reconciliation.js";
 import { INBOX_RELEVANT_RUN_STATUSES, projectInbox } from "./inbox.js";
 import { projectProgramStatus } from "./program-status.js";
@@ -1432,6 +1432,7 @@ async function route(
       return {
         ...repository,
         mergeCommitOid: resolved.mergeCommitOid,
+        versionAuthority: resolved.authority,
         declaredVersion: resolved.declaredVersion,
         ...(resolved.mergeVersionUnavailable ? { mergeVersionUnavailable: true } : {}),
       };
@@ -1504,6 +1505,10 @@ async function route(
         // Tag-truth gate: the cockpit shows both values and takes an explicit
         // second confirmation before a contradicting tag is ever minted.
         sendJson(response, 409, { error: redactText(error.message), versionMismatch: { declaredVersion: error.declaredVersion, requestedTag: error.requestedTag } });
+        return;
+      }
+      if (error instanceof VersionAuthorityRefusal) {
+        sendJson(response, 409, { error: redactText(error.message), versionAuthority: error.authority });
         return;
       }
       if (error instanceof DeliveryRefusal) {

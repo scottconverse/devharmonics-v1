@@ -31,3 +31,39 @@ export const validatorDiscoveryCorpusManifest = Object.freeze([
   Object.freeze([...validators]),
   Object.freeze([...signals]),
 ])));
+
+const versionByRepository = Object.freeze({
+  civic311: "0.1.1",
+  civicboards: "0.1.1",
+  civicbudget: "0.1.2",
+  civicclerk: "1.0.4",
+  civiccode: "1.0.8",
+  civiccomms: "0.1.1",
+  civiccontracts: "0.1.1",
+  civiccore: "1.2.1",
+  civiccourt: "0.1.2",
+  civicdata: "0.1.2",
+  civicelections: "0.1.1",
+  civicgrants: "0.2.0",
+  civichr: "0.1.1",
+  civicinspect: "0.2.2",
+  civiclegal: "0.1.2",
+  civiclibrary: "0.1.1",
+  civicparks: "0.1.1",
+  civicpermit: "0.2.2",
+  civicplan: "0.2.2",
+  civicprocure: "0.2.0",
+  civicsafety: "0.1.1",
+  civicutility: "0.1.1",
+  civiczone: "0.2.2",
+});
+
+export const versionAuthorityCorpusManifest = Object.freeze(
+  validatorDiscoveryCorpusManifest.map(([name, oid]) => Object.freeze([
+    name,
+    oid,
+    Object.prototype.hasOwnProperty.call(versionByRepository, name)
+      ? Object.freeze({ state: "declared", source: "pyproject.toml", version: versionByRepository[name] })
+      : Object.freeze({ state: "absent" }),
+  ])),
+);

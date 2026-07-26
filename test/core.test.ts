@@ -30,7 +30,7 @@ import {
 } from "../src/runtime.js";
 import type { DecisionRecord, DeliveryRepositoryRecord, DeliveryRepositoryStatus, DevHarmonicsConfig, ObjectiveRecord, PlannedTask, RunPlan, RunSummary, SteeringDirectiveRecord } from "../src/types.js";
 import { decisionRecordCreateSchema, decisionRecordSupersedeSchema, devHarmonicsConfigSchema, manualModelSchema, objectiveInputSchema, runPlanSchema, steeringPayloadSchema } from "../src/schemas.js";
-import { runProcess, subscriptionEnvironment } from "../src/process.js";
+import { runProcess, subscriptionEnvironment, type ProcessRequest, type ProcessResult } from "../src/process.js";
 import { REDACTED, redactText } from "../src/redaction.js";
 import { parseNvidiaSmi } from "../src/resources.js";
 import { empiricalLatencyScore, empiricalReliabilityScore, ModelRouter } from "../src/routing.js";
@@ -3167,15 +3167,313 @@ test("a private-only package exposes no authoritative release version", async ()
   );
 });
 
-test("package release authority changes only for boolean private=true", async () => {
-  const { parseDeclaredVersion } = await import("../src/delivery.js");
+test("package release authority validates typed fields before precedence", async () => {
+  const { parseDeclaredVersion, parseVersionAuthority } = await import("../src/delivery.js");
   const pyproject = '[project]\nname = "python-product"\nversion = "3.4.5"\n';
   assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1" }), pyproject), "1.2.1", "an absent private field preserves package precedence");
   assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: false }), pyproject), "1.2.1", "private=false preserves package precedence");
-  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: "true" }), pyproject), "1.2.1", "a non-boolean private field does not change the existing behavior");
-  assert.equal(parseDeclaredVersion("{ malformed", pyproject), "3.4.5", "malformed package JSON still falls through to pyproject");
+  assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: "true" }), pyproject), null, "a non-boolean private field is not authoritative");
+  assert.equal(parseVersionAuthority(JSON.stringify({ version: "1.2.1", private: "true" }), pyproject).state, "invalid");
+  assert.equal(parseDeclaredVersion("{ malformed", pyproject), null, "malformed package JSON never falls through");
+  assert.equal(parseVersionAuthority("{ malformed", pyproject).state, "invalid");
   assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: true }), '[project]\ndynamic = ["version"]\n'), null, "a private package plus dynamic-only PEP 621 metadata makes no static release claim");
   assert.equal(parseDeclaredVersion(JSON.stringify({ version: "1.2.1", private: true }), '[tool.release]\nversion = "8.8.8"\n'), null, "a private package never falls through to a non-project TOML version");
+});
+
+async function parseVersionAuthorityForFoundationTest(packageJson: string | null, pyproject: string | null) {
+  const delivery = await import("../src/delivery.js") as Record<string, any>;
+  if (typeof delivery.parseVersionAuthority === "function") {
+    return delivery.parseVersionAuthority(packageJson, pyproject);
+  }
+  const legacy = delivery.parseDeclaredVersion(packageJson, pyproject) as string | null;
+  return legacy === null
+    ? { state: "absent" as const }
+    : { state: "declared" as const, version: legacy };
+}
+
+test("standards TOML release parsing accepts quoted and dotted PEP 621 keys", async () => {
+  assert.deepEqual(
+    await parseVersionAuthorityForFoundationTest(null, '["project"]\n"version" = "1.2.3"\n'),
+    { state: "declared", source: "pyproject.toml", version: "1.2.3" },
+  );
+  assert.deepEqual(
+    await parseVersionAuthorityForFoundationTest(null, 'project.version = "2.3.4"\n'),
+    { state: "declared", source: "pyproject.toml", version: "2.3.4" },
+  );
+});
+
+test("standards TOML release parsing accepts multiline and escaped strings without table-like decoys", async () => {
+  assert.deepEqual(
+    await parseVersionAuthorityForFoundationTest(null, 'decoy = """\n[project]\nversion = "9.9.9"\n"""\n[project]\nversion = """1.2.3"""\n'),
+    { state: "declared", source: "pyproject.toml", version: "1.2.3" },
+  );
+  assert.deepEqual(
+    await parseVersionAuthorityForFoundationTest(null, '[project]\nversion = "1.2.\\u0033"\n'),
+    { state: "declared", source: "pyproject.toml", version: "1.2.3" },
+  );
+});
+
+test("release authority distinguishes invalid manifests from genuine absence", async () => {
+  assert.deepEqual((await parseVersionAuthorityForFoundationTest("{ malformed", '[project]\nversion = "9.9.9"\n')).state, "invalid");
+  assert.deepEqual((await parseVersionAuthorityForFoundationTest(JSON.stringify({ version: 123 }), null)).state, "invalid");
+  assert.deepEqual((await parseVersionAuthorityForFoundationTest(JSON.stringify({ private: "true" }), null)).state, "invalid");
+  const invalidToml = await parseVersionAuthorityForFoundationTest(null, "[project\nversion = \"1.0.0\"\n");
+  assert.equal(invalidToml.state, "invalid");
+  assert.match("detail" in invalidToml ? invalidToml.detail : "", /line 1, column 9/i, "toml@5 source location survives bounded diagnostics");
+  assert.deepEqual((await parseVersionAuthorityForFoundationTest(null, '[project]\ndynamic = ["version"]\n')).state, "absent");
+  assert.deepEqual((await parseVersionAuthorityForFoundationTest(null, null)).state, "absent");
+});
+
+test("immutable package and pyproject blobs reject malformed UTF-8 before parsing", async () => {
+  const cases = [
+    {
+      source: "package.json",
+      bytes: Buffer.concat([
+        Buffer.from('{"description":"'),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.from('","version":"1.2.3"}\n'),
+      ]),
+    },
+    {
+      source: "pyproject.toml",
+      bytes: Buffer.concat([
+        Buffer.from('description = "'),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.from('"\n[project]\nversion = "1.2.3"\n'),
+      ]),
+    },
+  ] as const;
+
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `devharmonics-invalid-utf8-${fixture.source.replace(".", "-")}-`));
+    const ledger = new Ledger(path.join(root, "devharmonics.db"));
+    try {
+      assert.equal((await runProcess({ command: "git", args: ["init", "-b", "main"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+      await writeFile(path.join(root, fixture.source), fixture.bytes);
+      assert.equal((await runProcess({ command: "git", args: ["add", fixture.source], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+      assert.equal((await runProcess({
+        command: "git",
+        args: ["-c", "user.name=DevHarmonics Tests", "-c", "user.email=devharmonics-tests@local", "commit", "-m", "malformed utf8 fixture"],
+        cwd: root,
+        timeoutMs: 30_000,
+      })).exitCode, 0);
+      const commit = (await runProcess({ command: "git", args: ["rev-parse", "HEAD"], cwd: root, timeoutMs: 30_000 })).stdout.trim();
+      const authority = await new DeliveryService(ledger).versionAuthorityAtCommit(root, commit);
+      assert.deepEqual(
+        authority,
+        { state: "invalid", source: fixture.source, detail: `${fixture.source} is not valid UTF-8` },
+        `${fixture.source} bytes must be validated before JSON/TOML parsing`,
+      );
+    } finally {
+      ledger.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an authoritative public package version short-circuits lower pyproject failure", async () => {
+  assert.deepEqual(
+    await parseVersionAuthorityForFoundationTest(JSON.stringify({ version: "4.5.6" }), "[project\nbroken"),
+    { state: "declared", source: "package.json", version: "4.5.6" },
+  );
+  assert.equal(
+    (await parseVersionAuthorityForFoundationTest(JSON.stringify({ private: true, version: "4.5.6" }), "[project\nbroken")).state,
+    "invalid",
+  );
+  assert.equal(
+    (await parseVersionAuthorityForFoundationTest(JSON.stringify({ name: "tooling" }), "[project]\n")).state,
+    "absent",
+  );
+});
+
+test("immutable release authority uses a closed bounded git tree protocol", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-version-tree-protocol-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const calls: Array<{ command: string; args: string[]; maxOutputBytes?: number }> = [];
+  const runner = async (request: { command: string; args: string[]; maxOutputBytes?: number }) => {
+    calls.push(request);
+    return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+  };
+  try {
+    const service = new DeliveryService(ledger, runner as never) as DeliveryService & {
+      versionAuthorityAtCommit?: (localPath: string, commitish: string) => Promise<{ state: string }>;
+    };
+    const authority = service.versionAuthorityAtCommit
+      ? await service.versionAuthorityAtCommit(root, "a".repeat(40))
+      : { state: (await service.declaredVersionAtCommit(root, "a".repeat(40))) === null ? "absent" : "declared" };
+    assert.equal(authority.state, "absent");
+    assert.ok(calls.some((call) => call.command === "git" && call.args[0] === "ls-tree" && call.args.includes("-z")), "manifest presence uses git ls-tree -z");
+    assert.ok(calls.every((call) => call.command !== "git" || call.args[0] !== "show"), "an absent tree entry is never read with git show");
+    assert.ok(calls.filter((call) => call.args[0] === "ls-tree").every((call) => call.maxOutputBytes !== undefined), "tree protocol output is bounded");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("immutable authority classifies every unsafe git query and blob outcome as unavailable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-version-unavailable-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const base = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+  const cases = [
+    { name: "timeout", result: { ...base, timedOut: true } },
+    { name: "nonzero", result: { ...base, exitCode: 128 } },
+    { name: "stdout truncation", result: { ...base, stdoutTruncated: true } },
+    { name: "stderr truncation", result: { ...base, stderrTruncated: true } },
+    { name: "unconfirmed termination", result: { ...base, treeKillUnconfirmed: true } },
+    { name: "symlink", result: { ...base, stdout: `120000 blob ${"d".repeat(40)}\tpackage.json\0` } },
+    { name: "tree", result: { ...base, stdout: `040000 tree ${"d".repeat(40)}\tpackage.json\0` } },
+    { name: "submodule", result: { ...base, stdout: `160000 commit ${"d".repeat(40)}\tpackage.json\0` } },
+    { name: "wrong path", result: { ...base, stdout: `100644 blob ${"d".repeat(40)}\tother.json\0` } },
+    { name: "multiple", result: { ...base, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0extra\0` } },
+  ];
+  try {
+    for (const item of cases) {
+      const service = new DeliveryService(ledger, (async () => item.result) as never);
+      const authority = await service.versionAuthorityAtCommit(root, "a".repeat(40));
+      assert.equal(authority.state, "unavailable", item.name);
+    }
+    const rejected = new DeliveryService(ledger, (async () => { throw new Error("spawn rejected"); }) as never);
+    assert.equal((await rejected.versionAuthorityAtCommit(root, "a".repeat(40))).state, "unavailable");
+
+    const blobFailure = new DeliveryService(ledger, (async (request: { args: string[] }) => (
+      request.args[0] === "ls-tree"
+        ? { ...base, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` }
+        : { ...base, timedOut: true }
+    )) as never);
+    assert.equal((await blobFailure.versionAuthorityAtCommit(root, "a".repeat(40))).state, "unavailable");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TOML parsing does not expose inherited properties or pollute global prototypes", async () => {
+  const { parseTomlRecord, ownTomlValue } = await import("../src/toml.js");
+  const before = (Object.prototype as Record<string, unknown>).polluted;
+  const document = parseTomlRecord("hostile.toml", '["__proto__"]\npolluted = true\n["constructor"."prototype"]\nowned = true\n');
+  assert.equal(ownTomlValue(document, "polluted"), undefined);
+  assert.equal((Object.prototype as Record<string, unknown>).polluted, before);
+  assert.equal(({} as Record<string, unknown>).owned, undefined);
+  assert.ok(Object.prototype.hasOwnProperty.call(document, "__proto__") || ownTomlValue(document, "__proto__") === undefined);
+});
+
+test("invalid release authority refuses tagging even with mismatch confirmation and records no tag side effects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-invalid-tag-authority-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const runner = async (request: { command: string; args: string[] }) => {
+    calls.push(request);
+    const joined = request.args.join(" ");
+    const ok = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    if (request.command === "git" && joined === "remote get-url origin") return { ...ok, stdout: "https://github.com/civicsuite/invalid.git\n" };
+    if (request.command === "gh" && request.args[1] === "view") {
+      return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: "c".repeat(40) } }) };
+    }
+    if (request.command === "git" && request.args[0] === "ls-tree") {
+      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
+    }
+    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) return { ...ok, stdout: "{ malformed" };
+    return ok;
+  };
+  try {
+    const runId = ledger.createRun("Refuse invalid release authority", root);
+    ledger.setRunStatus(runId, "running");
+    ledger.setRunStatus(runId, "ready", "READY");
+    ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:invalid", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: "b".repeat(40), branch: "devharmonics/invalid" });
+    ledger.updateDeliveryRepository(runId, "repo:invalid", {
+      status: "merged",
+      remoteUrl: "https://github.com/civicsuite/invalid",
+      pullRequestUrl: "https://github.com/civicsuite/invalid/pull/1",
+      mergeCommitOid: "c".repeat(40),
+    });
+    const config = structuredClone(defaultConfig);
+    config.runPolicy.allowExternalWrites = true;
+    const service = new DeliveryService(ledger, runner as never);
+    await assert.rejects(
+      () => service.execute({
+        runId,
+        repositoryId: "repo:invalid",
+        action: "tag_release",
+        tag: "v1.0.0",
+        confirmVersionMismatch: true,
+        config,
+        approval: { id: "invalid-authority", kind: "external_write", approvedBy: "local-owner", approvedAt: new Date().toISOString() },
+      }),
+      /package\.json is invalid/i,
+    );
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
+    assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged");
+    assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.releaseTag, null);
+    assert.equal(ledger.listEvents(runId).some((event) => event.kind === "delivery.tagged"), false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed UTF-8 in an immutable pyproject refuses direct tagging before tag side effects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-invalid-utf8-direct-tag-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const calls: Array<{ command: string; args: string[] }> = [];
+  try {
+    assert.equal((await runProcess({ command: "git", args: ["init", "-b", "main"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+    await writeFile(path.join(root, "pyproject.toml"), Buffer.concat([
+      Buffer.from('description = "'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"\n[project]\nversion = "1.2.3"\n'),
+    ]));
+    assert.equal((await runProcess({ command: "git", args: ["add", "pyproject.toml"], cwd: root, timeoutMs: 30_000 })).exitCode, 0);
+    assert.equal((await runProcess({
+      command: "git",
+      args: ["-c", "user.name=DevHarmonics Tests", "-c", "user.email=devharmonics-tests@local", "commit", "-m", "malformed utf8 fixture"],
+      cwd: root,
+      timeoutMs: 30_000,
+    })).exitCode, 0);
+    const commit = (await runProcess({ command: "git", args: ["rev-parse", "HEAD"], cwd: root, timeoutMs: 30_000 })).stdout.trim();
+    const ok = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    const runner = async (request: ProcessRequest): Promise<ProcessResult> => {
+      calls.push(request);
+      if (request.command === "git" && ["ls-tree", "show", "cat-file"].includes(request.args[0]!)) return runProcess(request);
+      if (request.command === "git" && request.args.join(" ") === "remote get-url origin") {
+        return { ...ok, stdout: "https://github.com/civicsuite/invalid-utf8.git\n" };
+      }
+      if (request.command === "gh" && request.args[1] === "view") {
+        return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: commit } }) };
+      }
+      return ok;
+    };
+    const runId = ledger.createRun("Refuse malformed UTF-8 tag", root);
+    ledger.setRunStatus(runId, "running");
+    ledger.setRunStatus(runId, "ready", "READY");
+    ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:utf8", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: commit, branch: "devharmonics/utf8" });
+    ledger.updateDeliveryRepository(runId, "repo:utf8", {
+      status: "merged",
+      remoteUrl: "https://github.com/civicsuite/invalid-utf8",
+      pullRequestUrl: "https://github.com/civicsuite/invalid-utf8/pull/1",
+      mergeCommitOid: commit,
+    });
+    const config = structuredClone(defaultConfig);
+    config.runPolicy.allowExternalWrites = true;
+    await assert.rejects(
+      () => new DeliveryService(ledger, runner).execute({
+        runId,
+        repositoryId: "repo:utf8",
+        action: "tag_release",
+        tag: "v1.2.3",
+        confirmVersionMismatch: true,
+        config,
+        approval: { id: "utf8-direct", kind: "external_write", approvedBy: "local-owner", approvedAt: new Date().toISOString() },
+      }),
+      /pyproject\.toml is invalid.*UTF-8/i,
+    );
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
+    assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("immutable commit lookup ignores a private package version in favor of PEP 621", async () => {
@@ -3183,10 +3481,17 @@ test("immutable commit lookup ignores a private package version in favor of PEP 
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   const commit = "d".repeat(40);
   const runner = async (request: { command: string; args: string[] }) => {
-    if (request.command === "git" && request.args.join(" ") === `show ${commit}:package.json`) {
+    const manifest = request.args.at(-1);
+    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "package.json") {
+      return { stdout: `100644 blob ${"e".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "pyproject.toml") {
+      return { stdout: `100644 blob ${"f".repeat(40)}\tpyproject.toml\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args.join(" ") === `show ${"e".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args.join(" ") === `show ${commit}:pyproject.toml`) {
+    if (request.command === "git" && request.args.join(" ") === `show ${"f".repeat(40)}`) {
       return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     return { stdout: "", stderr: "unexpected command", exitCode: 1, durationMs: 1, timedOut: false };
@@ -3228,10 +3533,16 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     // ("c" * 40) via `git show <oid>:package.json`, not the checkout: this
     // commit has a private frontend package at 1.0.0 and declares the product
     // release as 1.2.1 in PEP 621 metadata.
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "pyproject.toml") {
+      return { stdout: `100644 blob ${"e".repeat(40)}\tpyproject.toml\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "truth-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":pyproject.toml")) {
+    if (request.command === "git" && joined === `show ${"e".repeat(40)}`) {
       return { stdout: '[project]\nname = "truth"\nversion = "1.2.1"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
@@ -3323,7 +3634,11 @@ test("the tag-truth gate judges by the version in the merge COMMIT, not the muta
     // that asks before fetching silently no-ops and this test goes red
     // (boss-review ordering finding, 2026-07-22).
     if (request.command === "git" && request.args[0] === "fetch") mergeCommitFetched = true;
-    if (request.command === "git" && request.args[0] === "show" && joined.endsWith(":package.json")) {
+    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+      if (!mergeCommitFetched) return { stdout: "", stderr: `fatal: invalid object name '${"c".repeat(40)}'`, exitCode: 128, durationMs: 1, timedOut: false };
+      return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    }
+    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
       if (!mergeCommitFetched) return { stdout: "", stderr: `fatal: invalid object name '${"c".repeat(40)}'`, exitCode: 128, durationMs: 1, timedOut: false };
       return { stdout: JSON.stringify({ name: "truth", version: "2.0.0" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
@@ -3515,6 +3830,17 @@ test("delivery tag caption never claims 'declares no version' during a mergeVers
   const staleButUnavailable = deliveryTagCaption({ repositoryId: "repo:truth", declaredVersion: "1.0.0", mergeVersionUnavailable: true });
   assert.equal(staleButUnavailable.prefill, null, "mergeVersionUnavailable suppresses prefill even over a present declaredVersion");
   assert.doesNotMatch(staleButUnavailable.help, /declares version/, "the outage guidance is never masked by a stale declaredVersion");
+
+  const invalid = deliveryTagCaption({ versionAuthority: { state: "invalid", source: "pyproject.toml", detail: "line 2" } });
+  assert.match(invalid.help, /invalid/i);
+  assert.doesNotMatch(invalid.help, /no authoritative release version/i);
+  const unavailableAuthority = deliveryTagCaption({ versionAuthority: { state: "unavailable", source: "package.json", detail: "git tree query timed out" } });
+  assert.match(unavailableAuthority.help, /can't be read safely|tagging stays disabled/i);
+  assert.doesNotMatch(unavailableAuthority.help, /no authoritative release version/i);
+  const absent = deliveryTagCaption({ versionAuthority: { state: "absent" } });
+  assert.match(absent.help, /no authoritative release version/i);
+  const declared = deliveryTagCaption({ versionAuthority: { state: "declared", source: "package.json", version: "3.2.1" } });
+  assert.equal(declared.prefill, "v3.2.1");
 });
 
 test("review finding fields are HTML-escaped before they reach innerHTML (M1 security fix)", async () => {

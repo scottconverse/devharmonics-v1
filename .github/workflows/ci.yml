@@ -84,7 +84,7 @@ jobs:
         run: npm run test:mutation
 
   validator-discovery-corpus:
-    name: Frozen validator-discovery corpus
+    name: Frozen CivicSuite authority corpus
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -102,6 +102,8 @@ jobs:
         run: node scripts/provision-validator-discovery-corpus.mjs "$RUNNER_TEMP/validator-discovery-corpus"
       - name: Run the default frozen-corpus verifier
         run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:validator-discovery-corpus
+      - name: Verify immutable release authority
+        run: CIVICSUITE_ORG_READALL="$RUNNER_TEMP/validator-discovery-corpus" npm run verify:version-authority-corpus
 
   validator-browser:
     name: Validator allowlist browser journey
