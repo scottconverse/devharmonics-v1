@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectLegacyProvider } from "./compatibility.js";
@@ -205,6 +205,39 @@ export interface RepositoryInspectionInput {
 
 export interface RepositoryInspectionRecord extends Omit<RepositoryInspectionInput, "checkedAt"> {
   checkedAt: string;
+}
+
+export interface ReleaseUnitSelection {
+  version: 1; cwd: string; state: "active" | "invalidated"; revision: number; selectedAt: string; invalidatedAt: string | null; invalidationReason: string | null;
+}
+export type ReleaseUnitSelectionDecode = { kind: "absent" } | { kind: "valid"; value: ReleaseUnitSelection } | { kind: "malformed"; detail: string };
+export type ReleaseUnitLock = { readonly key: string; readonly token: symbol }; type ReleaseUnitLockOwner = { key: string; nonce: string; dev: bigint; ino: bigint }; const releaseUnitTokens = new Map<symbol, ReleaseUnitLockOwner>(); function releaseUnitDiagnostic(detail: string): void { try { console.error(`DEGRADED: ${detail}`); } catch {} }
+
+const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
+function exactIso(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+function normalizedReleaseUnitCwd(value: unknown): value is string {
+  return typeof value === "string" && value !== "." && value.length <= 2_000 && !value.startsWith("/")
+    && !value.includes("\\") && !/^[A-Za-z]:\//.test(value) && !/[\u0000-\u001f\u007f]/.test(value)
+    && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+export function decodeReleaseUnitSelection(intelligence: Record<string, unknown>): ReleaseUnitSelectionDecode {
+  if (!Object.prototype.hasOwnProperty.call(intelligence, "releaseUnitSelection")) return { kind: "absent" };
+  const value = intelligence.releaseUnitSelection;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { kind: "malformed", detail: "selection must be an object" };
+  const item = value as Record<string, unknown>;
+  const exact = JSON.stringify(Object.keys(item).sort()) === JSON.stringify(SELECTION_KEYS);
+  const active = item.state === "active" && item.invalidatedAt === null && item.invalidationReason === null;
+  const invalidated = item.state === "invalidated" && exactIso(item.invalidatedAt)
+    && typeof item.invalidationReason === "string" && item.invalidationReason.trim().length > 0;
+  if (!exact || item.version !== 1 || !normalizedReleaseUnitCwd(item.cwd)
+    || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || !exactIso(item.selectedAt)
+    || (!active && !invalidated)) {
+    return { kind: "malformed", detail: "selection is not an exact supported version-1 record" };
+  }
+  return { kind: "valid", value: item as unknown as ReleaseUnitSelection };
 }
 
 export interface RepositoryUpsertInput {
@@ -3162,13 +3195,13 @@ export class Ledger {
         archived, size_kb, language, description, intelligence_json, observed_at,
         local_path, repository_role, expected_branch, owners_json, dependency_repository_ids_json,
         validators_json, governance_sources_json, governance_rules_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_remove(?, '$.releaseUnitSelection'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         product_id = excluded.product_id, name = excluded.name, full_name = excluded.full_name,
         url = excluded.url, clone_url = excluded.clone_url, default_branch = excluded.default_branch,
         visibility = excluded.visibility, archived = excluded.archived, size_kb = excluded.size_kb,
         language = excluded.language, description = excluded.description,
-        intelligence_json = excluded.intelligence_json, observed_at = excluded.observed_at,
+        intelligence_json = CASE WHEN json_type(repositories.intelligence_json, '$.releaseUnitSelection') IS NULL THEN excluded.intelligence_json ELSE json_set(excluded.intelligence_json, '$.releaseUnitSelection', repositories.intelligence_json -> '$.releaseUnitSelection') END, observed_at = excluded.observed_at,
         local_path = excluded.local_path, repository_role = excluded.repository_role,
         expected_branch = excluded.expected_branch, owners_json = excluded.owners_json,
         dependency_repository_ids_json = excluded.dependency_repository_ids_json,
@@ -3199,6 +3232,55 @@ export class Ledger {
       JSON.stringify(repository.governanceRules.map(redactText)),
     );
     return this.getRepository(repository.id)!;
+  }
+
+  private releaseUnitLockKey(repositoryId: string): string { if (statSync(this.filename, { bigint: true }).nlink !== 1n) throw new Error("Release-unit locking refuses a hard-linked ledger database"); return `${realpathSync.native(this.filename)}.release-unit-${createHash("sha256").update(repositoryId).digest("hex")}.lock`; }
+  private acquireReleaseUnitLock(repositoryId: string): ReleaseUnitLock { const lock = Object.freeze({ key: this.releaseUnitLockKey(repositoryId), token: Symbol() }), nonce = randomUUID(); try { const descriptor = openSync(lock.key, "wx"); try { writeFileSync(descriptor, nonce, "utf8"); } finally { closeSync(descriptor); } } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Release-unit selection or tagging is already in progress"); throw error; } const identity = statSync(lock.key, { bigint: true }); releaseUnitTokens.set(lock.token, { key: lock.key, nonce, dev: identity.dev, ino: identity.ino }); return lock; }
+  private ownsReleaseUnitLock(lock: ReleaseUnitLock): boolean { const owner = releaseUnitTokens.get(lock.token); if (!owner || owner.key !== lock.key) return false; try { const current = statSync(lock.key, { bigint: true }); return current.isFile() && current.dev === owner.dev && current.ino === owner.ino && readFileSync(lock.key, "utf8") === owner.nonce; } catch { return false; } }
+  private releaseReleaseUnitLock(lock: ReleaseUnitLock): void { const owner = releaseUnitTokens.get(lock.token); try { if (!owner || owner.key !== lock.key) { if (owner) releaseUnitDiagnostic(`release-unit lock ownership mismatch for '${lock.key}'; owner repair is required`); return; } let exact = false; try { const current = statSync(lock.key, { bigint: true }); exact = current.isFile() && current.dev === owner.dev && current.ino === owner.ino && readFileSync(lock.key, "utf8") === owner.nonce; } catch (error) { releaseUnitDiagnostic(`release-unit lock '${lock.key}' could not be verified and requires owner repair (${error instanceof Error ? error.message : String(error)})`); return; } if (!exact) { releaseUnitDiagnostic(`release-unit lock '${lock.key}' was replaced and requires owner repair`); return; } try { unlinkSync(lock.key); } catch (error) { releaseUnitDiagnostic(`stale release-unit lock '${lock.key}' requires owner repair after proving no selector or tag operation remains active (${error instanceof Error ? error.message : String(error)})`); } } finally { releaseUnitTokens.delete(lock.token); } }
+  async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> { const lock = this.acquireReleaseUnitLock(repositoryId); try { return await action(lock); } finally { this.releaseReleaseUnitLock(lock); } }
+
+  updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number, lock?: ReleaseUnitLock): ReleaseUnitSelection {
+    if (!normalizedReleaseUnitCwd(cwd) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw new Error("Release-unit selection requires a normalized nested cwd and nonnegative expected revision");
+    }
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, lock, (revision, now) => ({
+      version: 1, cwd, state: "active", revision, selectedAt: now, invalidatedAt: null, invalidationReason: null,
+    }));
+  }
+
+  invalidateReleaseUnitSelection(repositoryId: string, expectedRevision: number, reason: string, lock?: ReleaseUnitLock): ReleaseUnitSelection {
+    if (!reason.trim()) throw new Error("Release-unit invalidation requires a reason");
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, lock, (revision, now, current) => {
+      if (current.kind !== "valid" || current.value.state !== "active") throw new Error("Release-unit selection is not active");
+      return { ...current.value, state: "invalidated", revision, invalidatedAt: now, invalidationReason: redactText(reason).slice(0, 500) };
+    });
+  }
+
+  private writeReleaseUnitSelection(repositoryId: string, expectedRevision: number, lock: ReleaseUnitLock | undefined,
+    create: (revision: number, now: string, current: ReleaseUnitSelectionDecode) => ReleaseUnitSelection): ReleaseUnitSelection {
+    const own = !lock, holder = lock ?? this.acquireReleaseUnitLock(repositoryId);
+    try {
+    const key = this.releaseUnitLockKey(repositoryId);
+    if (holder.key !== key || !this.ownsReleaseUnitLock(holder)) throw new Error("Release-unit selection or tagging is already in progress");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const repository = this.getRepository(repositoryId);
+      if (!repository) throw new Error(`Repository '${repositoryId}' was not found`);
+      const current = decodeReleaseUnitSelection(repository.intelligence);
+      const matches = expectedRevision === 0 ? current.kind === "absent"
+        : current.kind === "valid" && current.value.revision === expectedRevision;
+      if (!matches) throw new Error(`Release-unit selection revision conflict: expected ${expectedRevision}`);
+      const selection = create(expectedRevision + 1, new Date().toISOString(), current);
+      this.database.prepare("UPDATE repositories SET intelligence_json = ? WHERE id = ?")
+        .run(JSON.stringify({ ...repository.intelligence, releaseUnitSelection: selection }), repositoryId);
+      this.database.exec("COMMIT");
+      return selection;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    } finally { if (own) this.releaseReleaseUnitLock(holder); }
   }
 
   getRepository(repositoryId: string): RepositoryRecord | null {
@@ -3301,12 +3383,13 @@ export class Ledger {
         INSERT INTO repositories
           (id, product_id, name, full_name, url, clone_url, default_branch, visibility,
            archived, size_kb, language, description, intelligence_json, observed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json_remove(?, '$.releaseUnitSelection'), ?)
         ON CONFLICT(id) DO UPDATE SET product_id = excluded.product_id, name = excluded.name,
           full_name = excluded.full_name, url = excluded.url, clone_url = excluded.clone_url,
           default_branch = excluded.default_branch, visibility = excluded.visibility,
           archived = excluded.archived, size_kb = excluded.size_kb, language = excluded.language,
-          description = excluded.description, intelligence_json = excluded.intelligence_json,
+          description = excluded.description,
+          intelligence_json = CASE WHEN json_type(repositories.intelligence_json, '$.releaseUnitSelection') IS NULL THEN excluded.intelligence_json ELSE json_set(excluded.intelligence_json, '$.releaseUnitSelection', repositories.intelligence_json -> '$.releaseUnitSelection') END,
           observed_at = excluded.observed_at
       `);
       for (const item of input.repositories) {

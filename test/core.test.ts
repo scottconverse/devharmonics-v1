@@ -3259,11 +3259,9 @@ test("immutable package and pyproject blobs reject malformed UTF-8 before parsin
       })).exitCode, 0);
       const commit = (await runProcess({ command: "git", args: ["rev-parse", "HEAD"], cwd: root, timeoutMs: 30_000 })).stdout.trim();
       const authority = await new DeliveryService(ledger).versionAuthorityAtCommit(root, commit);
-      assert.deepEqual(
-        authority,
-        { state: "invalid", source: fixture.source, detail: `${fixture.source} is not valid UTF-8` },
-        `${fixture.source} bytes must be validated before JSON/TOML parsing`,
-      );
+      assert.deepEqual({ state: authority.state, source: "source" in authority ? authority.source : null, detail: "detail" in authority ? authority.detail : null },
+        { state: "unavailable", source: fixture.source, detail: "manifest is not valid UTF-8" },
+        `${fixture.source} bytes must be validated before JSON/TOML parsing`);
     } finally {
       ledger.close();
       await rm(root, { recursive: true, force: true });
@@ -3292,7 +3290,7 @@ test("immutable release authority uses a closed bounded git tree protocol", asyn
   const calls: Array<{ command: string; args: string[]; maxOutputBytes?: number }> = [];
   const runner = async (request: { command: string; args: string[]; maxOutputBytes?: number }) => {
     calls.push(request);
-    return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
+    return { stdout: request.args[1] === "-t" ? "commit\n" : "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
   };
   try {
     const service = new DeliveryService(ledger, runner as never) as DeliveryService & {
@@ -3370,13 +3368,22 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
     if (request.command === "gh" && request.args[1] === "view") {
       return { ...ok, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: "c".repeat(40) } }) };
     }
+    if (request.command === "git" && request.args[1] === "-t") return { ...ok, stdout: "commit\n" };
     if (request.command === "git" && request.args[0] === "ls-tree") {
-      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
+      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0${`100644 blob ${"e".repeat(40)}\tbackend/package.json\0`}` };
     }
-    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) return { ...ok, stdout: "{ malformed" };
+    if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) return { ...ok, stdout: "{ malformed" };
+    if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) return { ...ok, stdout: '{"version":"2.0.0"}' };
     return ok;
   };
   try {
+    ledger.upsertProduct({ id: "product:invalid", name: "Invalid", organizationUrl: "https://example.invalid", description: "fixture", repositories: [] });
+    ledger.upsertRepository({ id: "repo:invalid", productId: "product:invalid", name: "invalid", fullName: "civicsuite/invalid",
+      url: "https://example.invalid/repo", cloneUrl: "https://example.invalid/repo.git", defaultBranch: "main", visibility: "private",
+      archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+      intelligence: {} });
+    ledger.updateReleaseUnitSelection("repo:invalid", "backend", 0);
     const runId = ledger.createRun("Refuse invalid release authority", root);
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
@@ -3402,6 +3409,14 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
       }),
       /package\.json is invalid/i,
     );
+    const evidence = ledger.listEvents(runId).find((event) => event.kind === "delivery.tag_authority")?.data as any;
+    assert.deepEqual({ commit: evidence.commit, revision: evidence.selectionRevision, state: evidence.selectionState,
+      cwd: evidence.selectionCwd, provenance: evidence.provenance, selected: evidence.selectedUnit, source: evidence.selectedSource },
+    { commit: "c".repeat(40), revision: 1, state: "active", cwd: "backend", provenance: null,
+      selected: "backend", source: "backend/package.json" });
+    assert.deepEqual(evidence.units[0], { cwd: ".", state: "invalid", reason: "invalid package",
+      source: null, diagnostics: [{ cwd: ".", path: "package.json", detail: "JSON parser rejected the document" }] });
+    assert.equal(evidence.units[1].source, "backend/package.json");
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged");
@@ -3466,7 +3481,7 @@ test("malformed UTF-8 in an immutable pyproject refuses direct tagging before ta
         config,
         approval: { id: "utf8-direct", kind: "external_write", approvedBy: "local-owner", approvedAt: new Date().toISOString() },
       }),
-      /pyproject\.toml is invalid.*UTF-8/i,
+      /pyproject\.toml could not be read safely.*UTF-8/i,
     );
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
@@ -3481,19 +3496,11 @@ test("immutable commit lookup ignores a private package version in favor of PEP 
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   const commit = "d".repeat(40);
   const runner = async (request: { command: string; args: string[] }) => {
-    const manifest = request.args.at(-1);
-    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "package.json") {
-      return { stdout: `100644 blob ${"e".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "pyproject.toml") {
-      return { stdout: `100644 blob ${"f".repeat(40)}\tpyproject.toml\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args.join(" ") === `show ${"e".repeat(40)}`) {
-      return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args.join(" ") === `show ${"f".repeat(40)}`) {
-      return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
+    const joined = request.args.join(" ");
+    if (request.command === "git" && request.args[1] === "-t") return { stdout: "commit\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "ls-tree") return { stdout: `100644 blob ${"e".repeat(40)}\tpackage.json\0${`100644 blob ${"f".repeat(40)}\tpyproject.toml\0`}`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     return { stdout: "", stderr: "unexpected command", exitCode: 1, durationMs: 1, timedOut: false };
   };
   try {
@@ -3512,8 +3519,10 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
   // contradiction unless the mismatch is explicitly confirmed.
   const workflows = await import("../src/delivery.js") as Record<string, any>;
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-tag-truth-"));
-  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const filename = path.join(root, "devharmonics.db"), alias = `${root}-alias`;
+  const ledger = new Ledger(filename);
   let prState = "OPEN";
+  const selectionAttempt: { value: Promise<ProcessResult> | null } = { value: null };
   const runner = async (request: { command: string; args: string[] }) => {
     const joined = request.args.join(" ");
     if (request.command === "git" && joined === "remote get-url origin") {
@@ -3529,24 +3538,24 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
       return { stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: "c".repeat(40) } }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "gh" && request.args[1] === "merge") prState = "MERGED";
+    if (request.command === "git" && request.args[1] === "-t") return { stdout: "commit\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     // The tag-truth gate reads the version from the IMMUTABLE merge commit
     // ("c" * 40) via `git show <oid>:package.json`, not the checkout: this
     // commit has a private frontend package at 1.0.0 and declares the product
     // release as 1.2.1 in PEP 621 metadata.
-    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
-      return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "ls-tree") {
+      return { stdout: `100644 blob ${"d".repeat(40)}\ta/package.json\0${`100644 blob ${"e".repeat(40)}\ta/pyproject.toml\0`}${`100644 blob ${"f".repeat(40)}\tb/package.json\0`}`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "pyproject.toml") {
-      return { stdout: `100644 blob ${"e".repeat(40)}\tpyproject.toml\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
+    if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "truth-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && joined === `show ${"e".repeat(40)}`) {
+    if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) {
       return { stdout: '[project]\nname = "truth"\nversion = "1.2.1"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
-      return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
+    if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '{"version":"9.9.9"}', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "push" && joined.includes("refs/tags/")) {
+      selectionAttempt.value ??= runProcess({ command: process.execPath, args: ["--input-type=module", "--eval", `import { Ledger } from "./dist/src/ledger.js"; const ledger = new Ledger(${JSON.stringify(path.join(alias, "devharmonics.db"))}); try { ledger.updateReleaseUnitSelection("repo:truth", "b", 1); } catch (error) { console.error(String(error)); process.exitCode = 2; } finally { ledger.close(); }`], cwd: process.cwd(), timeoutMs: 30_000 }); await selectionAttempt.value; return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
   };
@@ -3558,6 +3567,14 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     assert.equal(workflows.parseDeclaredVersion(JSON.stringify({ name: "truth", version: "1.2.1" }), '[project]\nversion = "3.4.5"\n'), "1.2.1", "package.json wins when both exist");
 
     const runId = ledger.createRun("Tag truthfully", root);
+    ledger.upsertProduct({ id: "product:truth", name: "Truth", organizationUrl: "https://example.invalid", description: "fixture", repositories: [] });
+    ledger.upsertRepository({ id: "repo:truth", productId: "product:truth", name: "truth", fullName: "civicsuite/truth",
+      url: "https://example.invalid/truth", cloneUrl: "https://example.invalid/truth.git", defaultBranch: "main", visibility: "private",
+      archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+      intelligence: {} });
+    ledger.updateReleaseUnitSelection("repo:truth", "a", 0);
+    await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
     ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:truth", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: "b".repeat(40), branch: "devharmonics/truth" });
@@ -3576,11 +3593,15 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     );
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged", "the refused tag changed nothing");
     // An explicitly confirmed mismatch is the owner's deliberate decision.
-    const confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true });
-    assert.equal(confirmed.status, "tagged");
-    assert.equal(confirmed.releaseTag, "v1.0.0");
+    const ledgerApi = ledger as any, updateDelivery = ledgerApi.updateDeliveryRepository.bind(ledger), addEvent = ledgerApi.addEvent.bind(ledger); let statusCalls = 0, eventCalls = 0, confirmed: any;
+    ledgerApi.updateDeliveryRepository = (...args: any[]) => { if (args[2]?.status === "tagged" && ++statusCalls === 1) throw new Error("post-push status sentinel"); return updateDelivery(...args); }; ledgerApi.addEvent = (...args: any[]) => { if (args[1] === "delivery.tagged" && ++eventCalls === 1) throw new Error("post-push event sentinel"); return addEvent(...args); }; try { confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true }); } finally { ledgerApi.updateDeliveryRepository = updateDelivery; ledgerApi.addEvent = addEvent; }
+    assert.deepEqual({ status: confirmed.status, tag: confirmed.releaseTag, stored: ledger.getRun(runId)?.delivery?.repositories[0]?.status, statusCalls, eventCalls, taggedEvents: ledger.listEvents(runId).filter((event) => event.kind === "delivery.tagged").length }, { status: "tagged", tag: "v1.0.0", stored: "tagged", statusCalls: 2, eventCalls: 1, taggedEvents: 0 }, "post-push status retries once and an attempted tagged event never retries");
+    assert.notEqual((await selectionAttempt.value)?.exitCode, 0, "a separate Node process cannot change selection between evidence and tag push");
+    assert.match(`${(await selectionAttempt.value)?.stdout}${(await selectionAttempt.value)?.stderr}`, /already in progress/i);
+    assert.equal((ledger.getRepository("repo:truth")!.intelligence.releaseUnitSelection as any).revision, 1);
+    assert.equal((ledger.listEvents(runId).filter((event) => event.kind === "delivery.tag_authority").at(-1)?.data as any).selectionRevision, 1);
   } finally {
-    ledger.close();
+    ledger.close(); await rm(alias, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -3634,11 +3655,11 @@ test("the tag-truth gate judges by the version in the merge COMMIT, not the muta
     // that asks before fetching silently no-ops and this test goes red
     // (boss-review ordering finding, 2026-07-22).
     if (request.command === "git" && request.args[0] === "fetch") mergeCommitFetched = true;
-    if (request.command === "git" && request.args[0] === "ls-tree" && request.args.at(-1) === "package.json") {
+    if (request.command === "git" && request.args[0] === "ls-tree") {
       if (!mergeCommitFetched) return { stdout: "", stderr: `fatal: invalid object name '${"c".repeat(40)}'`, exitCode: 128, durationMs: 1, timedOut: false };
       return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
+    if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) {
       if (!mergeCommitFetched) return { stdout: "", stderr: `fatal: invalid object name '${"c".repeat(40)}'`, exitCode: 128, durationMs: 1, timedOut: false };
       return { stdout: JSON.stringify({ name: "truth", version: "2.0.0" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
@@ -3652,6 +3673,7 @@ test("the tag-truth gate judges by the version in the merge COMMIT, not the muta
       return { stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: "c".repeat(40) } }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "gh" && request.args[1] === "merge") prState = "MERGED";
+    if (request.command === "git" && request.args[1] === "-t") return { stdout: "commit\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
       return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
     }
@@ -4911,6 +4933,7 @@ test("delivery completes from the cockpit: receipted merge and tag, never blind"
   const runner = async (request: { command: string; args: string[] }) => {
     commands.push({ command: request.command, args: [...request.args] });
     const joined = request.args.join(" ");
+    if (request.command === "git" && request.args[1] === "-t") return { stdout: "commit\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     if (request.command === "git" && joined === "remote get-url origin") {
       return { stdout: "https://github.com/civicsuite/example.git\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }

@@ -1,6 +1,8 @@
-import type { Ledger } from "./ledger.js";
+import path from "node:path";
+import { decodeReleaseUnitSelection, type Ledger, type ReleaseUnitLock, type ReleaseUnitSelectionDecode } from "./ledger.js";
 import { evaluateToolRequest, type ToolApprovalReceipt } from "./policy.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
+import { inventoryManifestsAtCommit, resolveReleaseAuthority, type ReleaseAuthority } from "./release-units.js";
 import type { DeliveryRepositoryRecord, DevHarmonicsConfig } from "./types.js";
 import { isTomlRecord, ownTomlValue, parseTomlRecord, TomlParseFailure } from "./toml.js";
 
@@ -28,11 +30,14 @@ const RELEASE_TAG_PATTERN = /^v?[0-9A-Za-z][0-9A-Za-z_.-]{0,63}$/;
 const MANIFEST_OUTPUT_LIMIT = 1024 * 1024;
 const TREE_OUTPUT_LIMIT = 4096;
 
-export type VersionAuthority =
-  | { state: "declared"; source: "package.json" | "pyproject.toml"; version: string }
+type AuthorityEvidence = { cwd?: string; reason?: string; units?: ReleaseAuthority["units"];
+  diagnostics?: ReleaseAuthority["diagnostics"]; commit?: string; selection?: ReleaseUnitSelectionDecode };
+export type VersionAuthority = (
+  | { state: "declared"; source: string; version: string }
   | { state: "absent" }
-  | { state: "invalid"; source: "package.json" | "pyproject.toml"; detail: string }
-  | { state: "unavailable"; source: "package.json" | "pyproject.toml" | "root manifests"; detail: string };
+  | { state: "invalid"; source?: string; detail: string }
+  | { state: "unavailable"; source?: string; detail: string }
+) & AuthorityEvidence;
 
 function githubRemote(value: string): { webUrl: string; repository: string } {
   const remote = value.trim();
@@ -55,6 +60,7 @@ function githubRemote(value: string): { webUrl: string; repository: string } {
 function failureMessage(result: ProcessResult, fallback: string): string {
   return result.stderr.trim() || result.stdout.trim() || fallback;
 }
+function deliveryDiagnostic(detail: string): void { try { console.error(`DEGRADED: ${detail}`); } catch {} }
 
 /**
  * A refusal grounded in delivery STATE — wrong order, live pull-request
@@ -81,8 +87,8 @@ export class VersionMismatchRefusal extends DeliveryRefusal {
 export class VersionAuthorityRefusal extends DeliveryRefusal {
   constructor(public readonly authority: Extract<VersionAuthority, { state: "invalid" | "unavailable" }>) {
     super(authority.state === "invalid"
-      ? `Release tagging is disabled because ${authority.source} is invalid: ${authority.detail}`
-      : `Release tagging is disabled because ${authority.source} could not be read safely: ${authority.detail}`);
+      ? `Release tagging is disabled because ${authority.source ?? "release authority"} is invalid: ${authority.detail}`
+      : `Release tagging is disabled because ${authority.source ?? "release authority"} could not be read safely: ${authority.detail}`);
   }
 }
 
@@ -238,6 +244,16 @@ function versionsAgree(tag: string, declared: string): boolean {
 export class DeliveryService {
   constructor(private readonly ledger: Ledger, private readonly runner: ProcessRunner = runProcess) {}
 
+  async selectReleaseUnit(repositoryId: string, localPath: string, commit: string, cwd: string, expectedRevision: number): Promise<{ authority: VersionAuthority; repository: ReturnType<Ledger["getRepository"]> }> {
+    return this.ledger.withReleaseUnitLock(repositoryId, async (lock) => {
+      const inspected = await this.versionAuthorityAtCommit(localPath, commit, repositoryId, lock);
+      if (inspected.units?.some((unit) => unit.cwd === "." && unit.state === "declared")) throw new DeliveryRefusal("A declared root release authority must be used; nested selection is not permitted");
+      if (!inspected.units?.some((unit) => unit.cwd === cwd && unit.cwd !== "." && unit.state === "declared")) throw new DeliveryRefusal("Release-unit selection must name an exact declared nested candidate at the requested commit");
+      this.ledger.updateReleaseUnitSelection(repositoryId, cwd, expectedRevision, lock);
+      return { authority: await this.versionAuthorityAtCommit(localPath, commit, repositoryId, lock), repository: this.ledger.getRepository(repositoryId) };
+    });
+  }
+
   /**
    * The version an IMMUTABLE commit declares about itself, read from that
    * commit's own regular blobs through a closed `git ls-tree -z` query followed
@@ -250,19 +266,53 @@ export class DeliveryService {
     return authority.state === "declared" ? authority.version : null;
   }
 
-  async versionAuthorityAtCommit(localPath: string, commitish: string): Promise<VersionAuthority> {
-    const packageRead = await readManifestAtCommit(this.runner, localPath, commitish, "package.json");
-    if (packageRead.state === "invalid" || packageRead.state === "unavailable") return packageRead;
-    if (packageRead.state === "present") {
-      const authority = packageAuthority(packageRead.text);
-      if (authority.state !== "absent") return authority;
+  async versionAuthorityAtCommit(localPath: string, commitish: string, repositoryId?: string, lock?: ReleaseUnitLock): Promise<VersionAuthority> {
+    const inventory = await inventoryManifestsAtCommit(localPath, commitish, this.runner);
+    const canonical = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    const direct = repositoryId ? this.ledger.getRepository(repositoryId) : null;
+    const identities = [localPath, ...(repositoryId && path.isAbsolute(repositoryId) ? [repositoryId] : [])].map(canonical);
+    const matches = direct ? [direct] : this.ledger.listRepositories()
+      .filter((item) => item.localPath && identities.includes(canonical(item.localPath)));
+    const configured = matches.filter((item) => decodeReleaseUnitSelection(item.intelligence).kind !== "absent");
+    let selection: ReleaseUnitSelectionDecode = matches.length === 1
+      ? decodeReleaseUnitSelection(matches[0]!.intelligence)
+      : configured.length ? { kind: "malformed", detail: "repository identity is ambiguous for configured release-unit selection" } : { kind: "absent" };
+    let base = resolveReleaseAuthority(inventory,
+      selection.kind === "valid" && selection.value.state === "active" ? selection.value.cwd : undefined);
+    if (selection.kind === "malformed") {
+      return { ...base, state: "invalid", source: "release-unit selection", detail: selection.detail,
+        commit: commitish, selection };
     }
-    const pyprojectRead = await readManifestAtCommit(this.runner, localPath, commitish, "pyproject.toml");
-    if (pyprojectRead.state === "invalid" || pyprojectRead.state === "unavailable") return pyprojectRead;
-    return parseVersionAuthority(
-      packageRead.state === "present" ? packageRead.text : null,
-      pyprojectRead.state === "present" ? pyprojectRead.text : null,
-    );
+    if (selection.kind === "valid" && selection.value.state === "invalidated") {
+      return { ...base, state: "invalid", source: "release-unit selection",
+        detail: `release-unit selection is invalidated: ${selection.value.invalidationReason}`, commit: commitish, selection };
+    }
+    if (selection.kind === "valid" && base.invalidationNeeded && matches.length === 1) {
+      try {
+        const value = this.ledger.invalidateReleaseUnitSelection(matches[0]!.id, selection.value.revision,
+          base.detail ?? "selected release unit is no longer authoritative", lock);
+        selection = { kind: "valid", value };
+      } catch {
+        selection = decodeReleaseUnitSelection(this.ledger.getRepository(matches[0]!.id)?.intelligence ?? {});
+        const reinventory = await inventoryManifestsAtCommit(localPath, commitish, this.runner);
+        if (selection.kind !== "valid" || selection.value.state !== "active") {
+          return { ...resolveReleaseAuthority(reinventory), state: "unavailable",
+            detail: "release-unit selection changed during invalidation and could not be resolved", commit: commitish, selection };
+        }
+        base = resolveReleaseAuthority(reinventory, selection.value.cwd);
+        if (base.invalidationNeeded) {
+          try {
+            selection = { kind: "valid", value: this.ledger.invalidateReleaseUnitSelection(matches[0]!.id,
+              selection.value.revision, base.detail ?? "selected release unit is no longer authoritative", lock) };
+          } catch {
+            return { ...base, state: "unavailable",
+              detail: "release-unit selection changed again during invalidation", commit: commitish, selection };
+          }
+        }
+      }
+    }
+    if (base.state !== "declared" && base.diagnostics[0]) base.source = base.diagnostics[0].path;
+    return { ...base, commit: commitish, selection } as VersionAuthority;
   }
 
   /** Is the object for `oid` present in the local object store? Bounded, read-only. */
@@ -316,7 +366,7 @@ export class DeliveryService {
     const merged = delivery.status === "merged" || delivery.status === "tagged";
     if (!merged) {
       // Before a merge commit exists, the reviewed head is the only truth.
-      const authority = await this.versionAuthorityAtCommit(delivery.localPath, delivery.headCommit);
+      const authority = await this.versionAuthorityAtCommit(delivery.localPath, delivery.headCommit, delivery.repositoryId);
       return {
         authority,
         declaredVersion: authority.state === "declared" ? authority.version : null,
@@ -345,7 +395,7 @@ export class DeliveryService {
         return { authority, declaredVersion: null, mergeVersionUnavailable: true, mergeCommitOid: mergeOid };
       }
     }
-    const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergeOid);
+    const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergeOid, delivery.repositoryId);
     return {
       authority,
       declaredVersion: authority.state === "declared" ? authority.version : null,
@@ -544,7 +594,8 @@ export class DeliveryService {
 
       // tag_release: the tag lands on the ACTUAL merge commit GitHub reports,
       // never on an assumed head.
-      const mergedView = await this.runner({ command: "gh", args: ["pr", "view", delivery.pullRequestUrl, "--json", "state,mergeCommit"], cwd: delivery.localPath, timeoutMs: 60_000 });
+      return await this.ledger.withReleaseUnitLock(input.repositoryId, async (lock) => {
+      const mergedView = await this.runner({ command: "gh", args: ["pr", "view", delivery.pullRequestUrl!, "--json", "state,mergeCommit"], cwd: delivery.localPath, timeoutMs: 60_000 });
       if (mergedView.exitCode !== 0) throw new Error(failureMessage(mergedView, "Could not read the merged pull request"));
       const mergedState = JSON.parse(mergedView.stdout) as { state: string; mergeCommit: { oid: string } | null };
       if (mergedState.state !== "MERGED" || !mergedState.mergeCommit?.oid) throw new DeliveryRefusal("The pull request has no merge commit to tag");
@@ -556,7 +607,20 @@ export class DeliveryService {
       // not exist locally beforehand. When the merged artifact's own files
       // contradict the requested tag, refuse with both values unless the owner
       // explicitly confirmed the mismatch.
-      const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergedState.mergeCommit.oid);
+      const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergedState.mergeCommit.oid, delivery.repositoryId, lock);
+      const selected = authority.selection?.kind === "valid" ? authority.selection.value : null;
+      const selectedCwd = selected?.cwd ?? authority.cwd ?? null, selectedUnit = authority.units?.find((unit) => unit.cwd === selectedCwd);
+      this.ledger.addEvent(input.runId, "delivery.tag_authority",
+        `${input.repositoryId}: release authority checked at ${mergedState.mergeCommit.oid.slice(0, 12)}`, {
+          commit: mergedState.mergeCommit.oid, selectionRevision: selected?.revision ?? null,
+          selectionState: selected?.state ?? authority.selection?.kind ?? "absent", selectionCwd: selected?.cwd ?? null,
+          provenance: authority.state === "declared" ? authority.reason : null,
+          selectedUnit: selectedCwd,
+          selectedSource: selectedUnit?.source ?? selectedUnit?.diagnostics[0]?.path ?? null,
+          units: authority.units?.map((unit) => ({ cwd: unit.cwd, state: unit.state,
+            source: unit.source ?? null, reason: unit.reason, diagnostics: unit.diagnostics })) ?? [],
+          rejection: authority.state === "invalid" || authority.state === "unavailable" ? authority.detail : null,
+        });
       if (authority.state === "invalid" || authority.state === "unavailable") {
         throw new VersionAuthorityRefusal(authority);
       }
@@ -577,11 +641,15 @@ export class DeliveryService {
       }
       const pushTag = await this.runner({ command: "git", args: ["push", "origin", `refs/tags/${input.tag}`], cwd: delivery.localPath, timeoutMs: 120_000 });
       if (pushTag.exitCode !== 0) throw new Error(failureMessage(pushTag, "Release tag push failed"));
+      const truthful: DeliveryRepositoryRecord = { ...delivery, status: "tagged", remoteUrl: remote.webUrl, approvalId: input.approval.id, error: null, releaseTag: input.tag!, updatedAt: delivery.updatedAt }; try { let eventAttempted = false; const persistTagged = () => {
       const updated = this.ledger.updateDeliveryRepository(input.runId, input.repositoryId, {
         status: "tagged", remoteUrl: remote.webUrl, approvalId: input.approval.id, error: null, releaseTag: input.tag!,
       });
+      eventAttempted = true;
       this.ledger.addEvent(input.runId, "delivery.tagged", `${input.repositoryId}: pushed release tag ${input.tag} on the merge commit under owner approval`, requestRecord);
       return updated;
+      }; try { return persistTagged(); } catch (error) { if (eventAttempted) { deliveryDiagnostic(`release tag '${input.tag}' was pushed but its delivery.tagged event could not be recorded (${error instanceof Error ? error.message : String(error)})`); return truthful; } deliveryDiagnostic(`release tag '${input.tag}' was pushed but tagged status persistence failed; retrying once (${error instanceof Error ? error.message : String(error)})`); try { return persistTagged(); } catch (retryError) { deliveryDiagnostic(eventAttempted ? `release tag '${input.tag}' was pushed but its delivery.tagged event could not be recorded (${retryError instanceof Error ? retryError.message : String(retryError)})` : `release tag '${input.tag}' is public but tagged status reconciliation still requires owner repair (${retryError instanceof Error ? retryError.message : String(retryError)})`); return truthful; } } } catch { deliveryDiagnostic(`release tag '${input.tag}' is public but local reconciliation encountered an unexpected failure`); return truthful; }
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A failed later step falls back to the last durable state it verifiably

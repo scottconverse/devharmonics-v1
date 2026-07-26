@@ -446,11 +446,11 @@ test("invalid immutable release authority is distinct and disables tagging in re
 
   const runner = async (request) => {
     const result = { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false, treeKillUnconfirmed: false };
-    if (request.command === "git" && request.args[0] === "cat-file") return result;
+    if (request.command === "git" && request.args[0] === "cat-file" && request.args[1] === "-t") return { ...result, stdout: "commit\n" };
     if (request.command === "git" && request.args[0] === "ls-tree") {
       return { ...result, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
     }
-    if (request.command === "git" && request.args.join(" ") === `show ${"d".repeat(40)}`) {
+    if (request.command === "git" && request.args.join(" ") === `cat-file blob ${"d".repeat(40)}`) {
       return { ...result, stdout: "{ malformed" };
     }
     return result;

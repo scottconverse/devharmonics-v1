@@ -1155,7 +1155,10 @@ Release authority is factory comprehension, not a routine approval:
   becomes unreadable or malformed, becomes private/versionless/dynamic-only, or
   a new root declaration conflicts with the nested selection. Invalidation is
   durable across restarts and never silently reactivates; re-resolution is then
-  an owner decision.
+  an owner decision. A root conflict requires explicit topology repair before
+  any new nested selection. A malformed or unknown selection record requires
+  explicit data repair; DevHarmonics must not silently delete, coerce, clear,
+  or replace it to restore authority.
 - Every result exposes durable provenance: automatic root, automatic sole
   nested, or configured nested; selected unit and source manifest; and the
   reason each other release unit was not selected.
@@ -1167,9 +1170,33 @@ and re-selection use compare-and-swap against the expected revision: revision
 zero means and requires true absence for the first write; later writes require
 the exact current positive revision. The API accepts only an exact candidate
 from an immutable commit inventory and rejects stale competing owner actions.
-The tag gate always re-resolves the exact merge commit against the current
-selection revision and records the commit, revision, selected unit, source
-manifest, provenance, and rejection reasons in delivery evidence.
+Only the typed selector CAS may create or replace the reserved selection.
+Generic repository insertion or metadata refresh removes an incoming reserved
+value when none exists, while atomically preserving an existing raw value —
+valid, null, string, or malformed — so refresh cannot seed or restore a
+revision. The tag gate always re-resolves the exact merge commit against the
+current selection revision. From that final resolution through tag creation
+and publication, an atomic filesystem lock keyed by the canonical database
+identity and repository prevents a competing selection write from any local
+process or filesystem alias from changing the authority. A ledger database
+with a filesystem link count other than one fails closed with an explicit
+hard-link refusal. Lock handles are runtime-frozen; their opaque token binds
+the canonical key, a random nonce, and the exact regular lock file's device and
+inode. Holder writes and cleanup require that same identity and nonce. Cleanup
+always revokes the token and never replaces the callback result or original
+error; any mismatch, read/stat failure, or unlink failure emits a nonthrowing
+`DEGRADED` owner-repair diagnostic without removing a replacement path. A
+crash-stale lock is never aged out, stolen, or silently deleted. Only the owner
+may remove that exact lock after independently proving that no selector or tag
+operation for that database and repository remains active. Delivery evidence
+records the commit, selection state and revision, selected unit, source manifest,
+provenance, and every inventoried unit's selection reason and diagnostics.
+Once the remote tag push succeeds, publication is irreversible locally:
+DevHarmonics returns truthful tagged state and never falls back to merged.
+Tagged-status persistence gets one bounded idempotent reconciliation retry;
+continued status failure, `delivery.tagged` event failure, and any unexpected
+post-publication local reconciliation error are nonfatal `DEGRADED` conditions
+requiring owner repair, and an attempted event is never retried.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from
