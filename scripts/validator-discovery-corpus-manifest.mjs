@@ -62,7 +62,11 @@ export const versionAuthorityCorpusManifest = Object.freeze(
   validatorDiscoveryCorpusManifest.map(([name, oid]) => Object.freeze([
     name,
     oid,
-    Object.prototype.hasOwnProperty.call(versionByRepository, name)
+    name === "civicrecords-ai"
+      ? Object.freeze({ state: "declared", source: "backend/pyproject.toml", version: "1.7.3",
+        cwd: "backend", reason: "automatic-sole-nested",
+        units: Object.freeze([["backend", "declared"], ["docs", "versionless"], ["frontend", "private"]].map(Object.freeze)) })
+      : Object.prototype.hasOwnProperty.call(versionByRepository, name)
       ? Object.freeze({ state: "declared", source: "pyproject.toml", version: versionByRepository[name] })
       : Object.freeze({ state: "absent" }),
   ])),

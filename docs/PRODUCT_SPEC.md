@@ -1155,7 +1155,10 @@ Release authority is factory comprehension, not a routine approval:
   becomes unreadable or malformed, becomes private/versionless/dynamic-only, or
   a new root declaration conflicts with the nested selection. Invalidation is
   durable across restarts and never silently reactivates; re-resolution is then
-  an owner decision.
+  an owner decision. A root conflict requires explicit topology repair before
+  any new nested selection. A malformed or unknown selection record requires
+  explicit data repair; DevHarmonics must not silently delete, coerce, clear,
+  or replace it to restore authority.
 - Every result exposes durable provenance: automatic root, automatic sole
   nested, or configured nested; selected unit and source manifest; and the
   reason each other release unit was not selected.
@@ -1168,8 +1171,9 @@ zero means and requires true absence for the first write; later writes require
 the exact current positive revision. The API accepts only an exact candidate
 from an immutable commit inventory and rejects stale competing owner actions.
 The tag gate always re-resolves the exact merge commit against the current
-selection revision and records the commit, revision, selected unit, source
-manifest, provenance, and rejection reasons in delivery evidence.
+selection revision and records the commit, selection state and revision,
+selected unit, source manifest, provenance, and every inventoried unit's
+selection reason and diagnostics in delivery evidence.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from

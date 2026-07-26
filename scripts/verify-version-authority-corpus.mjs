@@ -118,8 +118,13 @@ try {
       await git(repositoryPath, ["cat-file", "-e", `${oid}^{commit}`]);
 
       const actual = await delivery.versionAuthorityAtCommit(repositoryPath, oid);
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-        throw new Error(`expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+      const comparable = "cwd" in expected
+        ? { state: actual.state, source: actual.source, version: actual.version, cwd: actual.cwd, reason: actual.reason,
+          units: actual.units?.map((unit) => [unit.cwd, unit.state]) }
+        : actual.state === "declared" ? { state: actual.state, source: actual.source, version: actual.version }
+          : { state: actual.state };
+      if (JSON.stringify(comparable) !== JSON.stringify(expected)) {
+        throw new Error(`expected ${JSON.stringify(expected)}, received ${JSON.stringify(comparable)}`);
       }
 
       const statusAfter = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all"]);

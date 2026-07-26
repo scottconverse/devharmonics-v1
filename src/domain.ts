@@ -167,6 +167,7 @@ export const RUN_EVENT_KINDS = [
   "delivery.branch_pushed",
   "delivery.draft_pr_created",
   "delivery.merged",
+  "delivery.tag_authority",
   "delivery.tagged",
   "delivery.failed",
   "steering.requested",

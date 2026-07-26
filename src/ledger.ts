@@ -207,6 +207,42 @@ export interface RepositoryInspectionRecord extends Omit<RepositoryInspectionInp
   checkedAt: string;
 }
 
+export interface ReleaseUnitSelection {
+  version: 1; cwd: string; state: "active" | "invalidated"; revision: number; selectedAt: string;
+  invalidatedAt: string | null; invalidationReason: string | null;
+}
+export type ReleaseUnitSelectionDecode =
+  | { kind: "absent" }
+  | { kind: "valid"; value: ReleaseUnitSelection }
+  | { kind: "malformed"; detail: string };
+
+const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
+function exactIso(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+function normalizedReleaseUnitCwd(value: unknown): value is string {
+  return typeof value === "string" && value !== "." && value.length <= 2_000 && !value.startsWith("/")
+    && !value.includes("\\") && !/^[A-Za-z]:\//.test(value) && !/[\u0000-\u001f\u007f]/.test(value)
+    && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+export function decodeReleaseUnitSelection(intelligence: Record<string, unknown>): ReleaseUnitSelectionDecode {
+  if (!Object.prototype.hasOwnProperty.call(intelligence, "releaseUnitSelection")) return { kind: "absent" };
+  const value = intelligence.releaseUnitSelection;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { kind: "malformed", detail: "selection must be an object" };
+  const item = value as Record<string, unknown>;
+  const exact = JSON.stringify(Object.keys(item).sort()) === JSON.stringify(SELECTION_KEYS);
+  const active = item.state === "active" && item.invalidatedAt === null && item.invalidationReason === null;
+  const invalidated = item.state === "invalidated" && exactIso(item.invalidatedAt)
+    && typeof item.invalidationReason === "string" && item.invalidationReason.trim().length > 0;
+  if (!exact || item.version !== 1 || !normalizedReleaseUnitCwd(item.cwd)
+    || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || !exactIso(item.selectedAt)
+    || (!active && !invalidated)) {
+    return { kind: "malformed", detail: "selection is not an exact supported version-1 record" };
+  }
+  return { kind: "valid", value: item as unknown as ReleaseUnitSelection };
+}
+
 export interface RepositoryUpsertInput {
   id: string;
   productId: string;
@@ -3155,6 +3191,11 @@ export class Ledger {
     const repository = repositoryUpsertSchema.parse(input) as RepositoryUpsertInput;
     const product = this.database.prepare("SELECT 1 AS present FROM products WHERE id = ?").get(repository.productId);
     if (!product) throw new Error(`Product '${repository.productId}' was not found`);
+    const existingIntelligence = this.getRepository(repository.id)?.intelligence;
+    const intelligence = { ...repository.intelligence };
+    if (existingIntelligence && Object.prototype.hasOwnProperty.call(existingIntelligence, "releaseUnitSelection")) {
+      intelligence.releaseUnitSelection = existingIntelligence.releaseUnitSelection;
+    }
     const now = new Date().toISOString();
     this.database.prepare(`
       INSERT INTO repositories (
@@ -3187,7 +3228,7 @@ export class Ledger {
       repository.sizeKb,
       repository.language,
       repository.description === null ? null : redactText(repository.description),
-      JSON.stringify(redactValue(repository.intelligence)),
+      JSON.stringify(redactValue(intelligence)),
       now,
       repository.localPath,
       repository.role,
@@ -3199,6 +3240,44 @@ export class Ledger {
       JSON.stringify(repository.governanceRules.map(redactText)),
     );
     return this.getRepository(repository.id)!;
+  }
+
+  updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number): ReleaseUnitSelection {
+    if (!normalizedReleaseUnitCwd(cwd) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw new Error("Release-unit selection requires a normalized nested cwd and nonnegative expected revision");
+    }
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, (revision, now) => ({
+      version: 1, cwd, state: "active", revision, selectedAt: now, invalidatedAt: null, invalidationReason: null,
+    }));
+  }
+
+  invalidateReleaseUnitSelection(repositoryId: string, expectedRevision: number, reason: string): ReleaseUnitSelection {
+    if (!reason.trim()) throw new Error("Release-unit invalidation requires a reason");
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, (revision, now, current) => {
+      if (current.kind !== "valid" || current.value.state !== "active") throw new Error("Release-unit selection is not active");
+      return { ...current.value, state: "invalidated", revision, invalidatedAt: now, invalidationReason: redactText(reason).slice(0, 500) };
+    });
+  }
+
+  private writeReleaseUnitSelection(repositoryId: string, expectedRevision: number,
+    create: (revision: number, now: string, current: ReleaseUnitSelectionDecode) => ReleaseUnitSelection): ReleaseUnitSelection {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const repository = this.getRepository(repositoryId);
+      if (!repository) throw new Error(`Repository '${repositoryId}' was not found`);
+      const current = decodeReleaseUnitSelection(repository.intelligence);
+      const matches = expectedRevision === 0 ? current.kind === "absent"
+        : current.kind === "valid" && current.value.revision === expectedRevision;
+      if (!matches) throw new Error(`Release-unit selection revision conflict: expected ${expectedRevision}`);
+      const selection = create(expectedRevision + 1, new Date().toISOString(), current);
+      this.database.prepare("UPDATE repositories SET intelligence_json = ? WHERE id = ?")
+        .run(JSON.stringify({ ...repository.intelligence, releaseUnitSelection: selection }), repositoryId);
+      this.database.exec("COMMIT");
+      return selection;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getRepository(repositoryId: string): RepositoryRecord | null {
@@ -3310,9 +3389,15 @@ export class Ledger {
           observed_at = excluded.observed_at
       `);
       for (const item of input.repositories) {
+        const prior = this.database.prepare("SELECT intelligence_json FROM repositories WHERE id = ?").get(item.id) as { intelligence_json?: string } | undefined;
+        const priorIntelligence = prior?.intelligence_json ? JSON.parse(prior.intelligence_json) as Record<string, unknown> : null;
+        const intelligence = { ...item.intelligence };
+        if (priorIntelligence && Object.prototype.hasOwnProperty.call(priorIntelligence, "releaseUnitSelection")) {
+          intelligence.releaseUnitSelection = priorIntelligence.releaseUnitSelection;
+        }
         repository.run(item.id, input.id, redactText(item.name), item.fullName, item.url, item.cloneUrl,
           item.defaultBranch, item.visibility, item.archived ? 1 : 0, item.sizeKb, item.language,
-          item.description === null ? null : redactText(item.description), JSON.stringify(redactValue(item.intelligence)), now);
+          item.description === null ? null : redactText(item.description), JSON.stringify(redactValue(intelligence)), now);
       }
       this.database.exec("COMMIT");
     } catch (error) {
