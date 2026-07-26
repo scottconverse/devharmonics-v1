@@ -1126,6 +1126,64 @@ Beta readiness requires all of the following:
    - one coordinated module + CivicCore delivery; and
    - one delivery in which divergence is detected honestly and contained.
 
+#### P0-2 normative release-unit contract
+
+DevHarmonics treats recognized root and nested `package.json` and
+`pyproject.toml` files as an immutable inventory of release units for the exact
+commit being delivered. A release unit is keyed by its normalized
+repository-relative directory and records its manifest sources, effective
+public static version, privacy or dynamic/versionless status, diagnostics, and
+selection rationale. Private npm packages and versionless manifests may supply
+validator evidence but cannot supply release authority.
+
+Release authority is factory comprehension, not a routine approval:
+
+- A valid public root package version remains the automatic highest-precedence
+  authority, with the existing same-directory package-before-pyproject rules.
+- When root authority is genuinely absent and exactly one nested release unit
+  has a valid public static version, DevHarmonics automatically selects it,
+  pre-fills its version for tagging, and applies the normal mismatch gate.
+- When multiple nested release units could be authoritative, matching version
+  text does not remove the ambiguity. Tagging fails closed until the product
+  owner makes one consequential selection. DevHarmonics persists that
+  release-unit selection and reuses it for later commits and deliveries without
+  asking again.
+- A persisted nested selection remains authoritative when its version changes
+  or other nested units exist. Defects in unrelated units remain visible
+  diagnostics but do not override the configured unit. The selection is
+  invalidated only by a material topology change: the selected unit disappears,
+  becomes unreadable or malformed, becomes private/versionless/dynamic-only, or
+  a new root declaration conflicts with the nested selection. Invalidation is
+  durable across restarts and never silently reactivates; re-resolution is then
+  an owner decision.
+- Every result exposes durable provenance: automatic root, automatic sole
+  nested, or configured nested; selected unit and source manifest; and the
+  reason each other release unit was not selected.
+
+The durable selection record is a runtime-decoded version-1 object with an
+active or invalidated state and a positive monotonic revision. Malformed or
+unknown records fail closed and are never treated as “no selection.” Selection
+and re-selection use compare-and-swap against the expected revision: revision
+zero means and requires true absence for the first write; later writes require
+the exact current positive revision. The API accepts only an exact candidate
+from an immutable commit inventory and rejects stale competing owner actions.
+The tag gate always re-resolves the exact merge commit against the current
+selection revision and records the commit, revision, selected unit, source
+manifest, provenance, and rejection reasons in delivery evidence.
+
+For the pinned CivicRecords AI acceptance repository, this contract
+automatically selects `backend`, declares `1.7.3` from
+`backend/pyproject.toml`, records `frontend` as private and `docs` as
+versionless, and requires no per-delivery approval. Its backend and frontend
+validators execute only from their contained working directories. All
+manifest, workflow, and release-script evidence attributed to a discovery
+snapshot must come from the same immutable commit.
+
+Human approvals attach to consequential product and publication actions:
+approving the plan, resolving genuine release-unit ambiguity, merging, and
+tagging. Routine repository comprehension, validator discovery, and reuse of a
+still-valid persisted decision proceed autonomously.
+
 The Block 0a beta audit proves the four critical comprehension foundations
 needed for this deliberately narrow beta. It is not the full Phase 0 exit gate.
 The later Phase 0 gate covers Blocks 0a, 0b, and 0c across the full local
