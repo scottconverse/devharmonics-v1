@@ -345,6 +345,51 @@ test("workflow aggregate byte limit accepts exactly 4 MiB and rejects 4 MiB plus
   }
 });
 
+test("workflow aggregate byte limit counts UTF-8 BOM bytes and discards candidates above the cap", async () => {
+  const exact = await fixture();
+  const oversized = await fixture();
+  try {
+    const aggregateLimit = 4 * 1024 * 1024;
+    const sharedWorkflowBytes = 500_000;
+    const boundaryWorkflowBytes = aggregateLimit - (8 * sharedWorkflowBytes);
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const workflowPrefix = "jobs:\n  tests:\n    steps:\n      - run: python -m pytest\n#";
+    const workflow = (rawBytes: number): Buffer => Buffer.concat([
+      bom,
+      Buffer.from(`${workflowPrefix}${"x".repeat(rawBytes - bom.length - workflowPrefix.length)}`),
+    ]);
+    const sharedWorkflow = workflow(sharedWorkflowBytes);
+    for (const root of [exact, oversized]) {
+      const workflows = path.join(root, ".github", "workflows");
+      await mkdir(workflows, { recursive: true });
+      await Promise.all(Array.from({ length: 8 }, (_, index) => writeFile(
+        path.join(workflows, `boundary-${index}.yml`),
+        sharedWorkflow,
+      )));
+    }
+    await writeFile(path.join(exact, ".github", "workflows", "boundary-8.yml"), workflow(boundaryWorkflowBytes));
+    await writeFile(path.join(oversized, ".github", "workflows", "boundary-8.yml"), workflow(boundaryWorkflowBytes + 1));
+
+    const exactResult = await discoverRepositoryValidators(exact);
+    assert.deepEqual(Object.keys(discoveredValidatorMap(exactResult)), ["pytest"]);
+    assert.equal(
+      exactResult.diagnostics.some((item) => item.source === ".github/workflows" && item.code === "limit_reached"),
+      false,
+    );
+
+    const oversizedResult = await discoverRepositoryValidators(oversized);
+    assert.deepEqual(discoveredValidatorMap(oversizedResult), {});
+    assert.ok(
+      oversizedResult.diagnostics.some(
+        (item) => item.source === ".github/workflows" && item.code === "limit_reached",
+      ),
+    );
+  } finally {
+    await rm(exact, { recursive: true, force: true });
+    await rm(oversized, { recursive: true, force: true });
+  }
+});
+
 test("source byte limits accept exact boundaries and reject the first oversized byte", async () => {
   const exact = await fixture();
   const oversized = await fixture();

@@ -112,7 +112,7 @@ async function boundedRegularFile(
   root: string,
   relativePath: string,
   limit: number,
-): Promise<{ text: string; digest: string } | { error: ValidatorDiscoveryDiagnostic["code"] } | null> {
+): Promise<{ text: string; digest: string; bytesRead: number } | { error: ValidatorDiscoveryDiagnostic["code"] } | null> {
   const absolute = path.join(root, ...relativePath.split("/"));
   let before: string;
   try {
@@ -158,6 +158,7 @@ async function boundedRegularFile(
       return {
         text,
         digest: createHash("sha256").update(bytes).digest("hex"),
+        bytesRead,
       };
     } finally {
       await handle.close();
@@ -400,7 +401,7 @@ export async function discoverRepositoryValidators(rootPath: string): Promise<Va
       continue;
     }
     workflowSourceDigests.push([source, result.digest]);
-    workflowBytes += Buffer.byteLength(result.text);
+    workflowBytes += result.bytesRead;
     if (workflowBytes > WORKFLOW_TOTAL_LIMIT) {
       diagnostics.push({ source: ".github/workflows", code: "limit_reached" });
       workflowAggregateLimited = true;
