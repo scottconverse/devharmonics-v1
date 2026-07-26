@@ -62,20 +62,22 @@ export async function inventoryManifestsAtCommit(
   if (!EXACT_OID.test(commit)) return unavailable(commit, "commit must be an exact 40- or 64-hex object ID");
   let result: ProcessResult;
   try {
-    result = await runner(request(root, ["cat-file", "-e", `${commit}^{commit}`]));
+    result = await runner(request(root, ["cat-file", "-t", commit]));
   } catch {
     return unavailable(commit, "commit object proof could not be started");
   }
   if (failed(result)) return unavailable(commit, failure(result, "commit object proof"));
+  if (result.stdout.trim() !== "commit") return unavailable(commit, "requested object is not a commit");
   try {
     result = await runner(request(root, [
-      "ls-tree", "-r", "-z", "--full-tree",
+      "ls-tree", "-r", "-t", "-z", "--full-tree",
       "--format=%(objectmode) %(objecttype) %(objectname)%x09%(path)", commit,
     ]));
   } catch {
     return unavailable(commit, "recursive tree enumeration could not be started");
   }
   if (failed(result)) return unavailable(commit, failure(result, "recursive tree enumeration"));
+  if (result.stdoutUtf8Valid === false) return unavailable(commit, "recursive tree enumeration is not valid UTF-8");
   const records = result.stdout === "" ? [] : result.stdout.split("\0");
   if (records.length > 0 && records.pop() !== "") {
     return unavailable(commit, "recursive tree enumeration was not NUL-terminated");
