@@ -2050,6 +2050,26 @@ const DELIVERY_STATUS_DEFINITIONS = {
   failed: "The last delivery step for this repository didn't complete — see the error below.",
 };
 
+function renderReleaseUnitAuthority(repository) {
+  const authority = repository.versionAuthority;
+  if (!authority?.units?.length) return "";
+  const selection = authority.selection, selected = authority.units.find((unit) => unit.cwd === authority.cwd);
+  const rootDeclared = authority.units.some((unit) => unit.cwd === "." && unit.state === "declared");
+  const selectable = !rootDeclared && authority.state === "invalid" && (authority.detail === "ambiguous nested release authority" || (selection?.kind === "valid" && selection.value?.state === "invalidated"));
+  const expectedRevision = selection?.kind === "valid" ? selection.value.revision : 0;
+  const candidates = selectable ? authority.units.filter((unit) => unit.cwd !== "." && unit.state === "declared") : [];
+  const excluded = authority.units.filter((unit) => unit !== selected && !candidates.includes(unit));
+  const heading = selected ? `Selected unit ${escapeHtml(selected.cwd)}`
+    : candidates.length ? `Choose the release unit <span>Expected revision ${escapeHtml(expectedRevision)}</span>`
+      : ["invalid", "unavailable"].includes(authority.state) ? `Repair required <span>${escapeHtml(authority.detail || "Release authority is unresolved")}</span>` : "No release unit selected";
+  return `<section class="release-unit-authority" data-release-authority><strong>${heading}</strong>
+    ${selected ? `<p>Source ${escapeHtml(selected.source || "none")} · Reason ${escapeHtml(selected.reason)} · Authority ${escapeHtml(authority.reason || "configured")}</p>` : ""}
+    ${candidates.map((unit) => `<button class="secondary small" type="button" data-release-unit data-repository-id="${escapeHtml(repository.repositoryId)}" data-cwd="${escapeHtml(unit.cwd)}" data-expected-revision="${escapeHtml(expectedRevision)}" data-head-commit="${escapeHtml(repository.headCommit)}">Select release unit ${escapeHtml(unit.cwd)}</button>`).join("")}
+    ${excluded.map((unit) => `<p>Excluded ${escapeHtml(unit.cwd)}: ${escapeHtml(unit.reason)}</p>`).join("")}
+    <span class="error" data-release-unit-error></span>
+  </section>`;
+}
+
 function renderDelivery(run) {
   const panel = $("#delivery-panel");
   const delivery = run.delivery;
@@ -2073,7 +2093,8 @@ function renderDelivery(run) {
     // would mean asking about an artifact that was never delivered.
     const reconcilable = pushed;
     const reconciliation = state.reconciliationByRepo[reconciliationKey(run.id, repository.repositoryId)];
-    return `<article class="integration-repository-card delivery-repository-card">
+    const authorityLoaded = Boolean(repository.versionAuthority);
+    return `<article class="integration-repository-card delivery-repository-card" data-repository-id="${escapeHtml(repository.repositoryId)}">
       <header><strong>${escapeHtml(repository.repositoryId)}</strong><span class="lifecycle ${created ? "qualified" : repository.status === "failed" ? "degraded" : ""}" title="${escapeHtml(DELIVERY_STATUS_DEFINITIONS[repository.status] || "")}">${escapeHtml(repository.status.replaceAll("_", " "))}</span></header>
       <small class="muted">commit range</small>
       <code class="integration-commit-range">${escapeHtml(repository.baseBranch)}: ${escapeHtml(repository.baseCommit)} → ${escapeHtml(repository.headCommit)}</code>
@@ -2081,6 +2102,7 @@ function renderDelivery(run) {
       ${repository.remoteUrl ? `<a href="${escapeHtml(repository.remoteUrl)}" target="_blank" rel="noreferrer">${escapeHtml(repository.remoteUrl)}</a>` : ""}
       ${repository.pullRequestUrl ? `<a class="delivery-pr-link" href="${escapeHtml(repository.pullRequestUrl)}" target="_blank" rel="noreferrer">${merged ? "View merged pull request" : "Open draft pull request"}</a>` : ""}
       ${repository.error ? `<p class="error">${escapeHtml(repository.error)}</p>` : ""}
+      <div data-release-authority></div>
       ${tagged ? `<p class="delivery-done">Delivered, merged, and tagged${repository.releaseTag ? ` as ${escapeHtml(repository.releaseTag)}` : ""} — this repository is fully shipped.</p>` : merged ? `<p class="delivery-done">Merged under your approval. Tag the release below when you are ready.</p>` : ""}
       ${reconcilable ? `<div class="plan-actions delivery-reconcile-row">
         <button class="secondary small" type="button" data-reconcile-check data-repository-id="${escapeHtml(repository.repositoryId)}">Check against GitHub</button>
@@ -2092,9 +2114,9 @@ function renderDelivery(run) {
         <button class="${merged ? "secondary" : "primary"} small" type="button" data-delivery-action="merge_pr" data-repository-id="${escapeHtml(repository.repositoryId)}" data-head-commit="${escapeHtml(repository.headCommit)}" ${!externalWritesAllowed || !created || merged ? "disabled" : ""}>${merged ? "Merged ✓" : "Approve &amp; merge"}</button>
       </div>
       <div class="plan-actions delivery-tag-row">
-        <input class="delivery-tag-input" type="text" placeholder="leave blank to skip tagging" aria-label="Release tag for ${escapeHtml(repository.repositoryId)}" data-tag-for="${escapeHtml(repository.repositoryId)}" ${!externalWritesAllowed || !merged || tagged ? "disabled" : ""}>
-        <button class="${merged && !tagged ? "primary" : "secondary"} small" type="button" data-delivery-action="tag_release" data-repository-id="${escapeHtml(repository.repositoryId)}" data-head-commit="${escapeHtml(repository.headCommit)}" ${!externalWritesAllowed || !merged || tagged ? "disabled" : ""}>${tagged ? "Tagged ✓" : "Approve &amp; tag release"}</button>
-        ${merged ? "" : `<button class="primary small" type="button" data-delivery-action="complete_delivery" data-repository-id="${escapeHtml(repository.repositoryId)}" data-head-commit="${escapeHtml(repository.headCommit)}" ${!externalWritesAllowed ? "disabled" : ""} title="One approval covers push, open PR, and merge — plus tag, only if you've filled in the tag field. Leave it blank to skip tagging.">Do everything at once (push, open PR, merge — and tag if you've filled one in)</button>`}
+        <input class="delivery-tag-input" type="text" placeholder="leave blank to skip tagging" aria-label="Release tag for ${escapeHtml(repository.repositoryId)}" data-tag-for="${escapeHtml(repository.repositoryId)}" ${!externalWritesAllowed || !authorityLoaded || !merged || tagged ? "disabled" : ""}>
+        <button class="${merged && !tagged ? "primary" : "secondary"} small" type="button" data-delivery-action="tag_release" data-repository-id="${escapeHtml(repository.repositoryId)}" data-head-commit="${escapeHtml(repository.headCommit)}" ${!externalWritesAllowed || !authorityLoaded || !merged || tagged ? "disabled" : ""}>${tagged ? "Tagged ✓" : "Approve &amp; tag release"}</button>
+        ${merged ? "" : `<button class="primary small" type="button" data-delivery-action="complete_delivery" data-repository-id="${escapeHtml(repository.repositoryId)}" data-head-commit="${escapeHtml(repository.headCommit)}" ${!externalWritesAllowed || !authorityLoaded ? "disabled" : ""} title="One approval covers push, open PR, and merge — plus tag, only if you've filled in the tag field. Leave it blank to skip tagging.">Do everything at once (push, open PR, merge — and tag if you've filled one in)</button>`}
       </div>
       <p class="field-help delivery-tag-help" data-tag-help-for="${escapeHtml(repository.repositoryId)}">${tagged ? `Tagged ${escapeHtml(repository.releaseTag || "")}.` : "Empty tag field = no tag is created. Reading this repository's declared version…"}</p>
     </article>`;
@@ -2170,23 +2192,30 @@ function deliveryTagCaption(repository) {
 
 async function fillDeclaredTagVersions(run) {
   if (!run?.delivery?.repositories?.length) return;
+  const externalWritesAllowed = Boolean(state.bootstrap?.config?.runPolicy?.allowExternalWrites);
   try {
     const { delivery } = await api(`/api/runs/${run.id}/delivery`);
     for (const repository of delivery?.repositories ?? []) {
       const input = document.querySelector(`[data-tag-for="${CSS.escape(repository.repositoryId)}"]`);
       const help = document.querySelector(`[data-tag-help-for="${CSS.escape(repository.repositoryId)}"]`);
-      if (!input || input.disabled) {
-        if (help && repository.status === "tagged") help.textContent = `Tagged ${repository.releaseTag || ""}.`;
+      const card = document.querySelector(`.delivery-repository-card[data-repository-id="${CSS.escape(repository.repositoryId)}"]`);
+      const authorityPanel = card?.querySelector("[data-release-authority]");
+      if (authorityPanel) authorityPanel.outerHTML = renderReleaseUnitAuthority(repository) || "<div data-release-authority></div>";
+      const authorityBlocksDelivery = ["invalid", "unavailable"].includes(repository.versionAuthority?.state);
+      const completeButton = card?.querySelector('[data-delivery-action="complete_delivery"]');
+      if (completeButton) completeButton.disabled = !externalWritesAllowed || authorityBlocksDelivery;
+      if (!input) continue;
+      if (repository.status === "tagged") {
+        if (help) help.textContent = `Tagged ${repository.releaseTag || ""}.`;
         continue;
       }
       const caption = deliveryTagCaption(repository);
-      const authorityBlocksTagging = ["invalid", "unavailable"].includes(repository.versionAuthority?.state);
-      const card = input.closest(".delivery-repository-card");
       const tagButton = card?.querySelector('[data-delivery-action="tag_release"]');
-      if (authorityBlocksTagging) {
+      const tagAllowed = externalWritesAllowed && repository.status === "merged" && !authorityBlocksDelivery;
+      input.disabled = !tagAllowed;
+      if (tagButton) tagButton.disabled = !tagAllowed;
+      if (!tagAllowed) {
         input.value = "";
-        input.disabled = true;
-        if (tagButton) tagButton.disabled = true;
       }
       if (caption.prefill && !input.value && document.activeElement !== input) input.value = caption.prefill;
       if (help) help.textContent = caption.help;
@@ -3193,6 +3222,18 @@ $("#board").addEventListener("click", (event) => {
   if (button) openTask(button.dataset.taskId);
 });
 $("#delivery-repositories").addEventListener("click", async (event) => {
+  const selectorButton = event.target.closest("[data-release-unit]");
+  if (selectorButton) {
+    const error = selectorButton.closest(".release-unit-authority")?.querySelector("[data-release-unit-error]");
+    await withOperation(selectorButton, "Selecting release unit", async () => {
+      await api(`/api/runs/${state.selectedRunId}/delivery/${encodeURIComponent(selectorButton.dataset.repositoryId)}/release-unit`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: selectorButton.dataset.cwd, expectedRevision: Number(selectorButton.dataset.expectedRevision), expectedHeadCommit: selectorButton.dataset.headCommit }),
+      });
+      await refreshRuns();
+    }, { onError: (message) => { if (error) error.textContent = `Repair required: ${message}`; }, busyLabel: "Selecting…" });
+    return;
+  }
   // DH-645 S3: a separate, non-destructive action — no confirm() dialog,
   // because unlike every other control in this panel it changes nothing;
   // it only asks GitHub a question and shows the honest answer.

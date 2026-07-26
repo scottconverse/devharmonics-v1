@@ -4227,6 +4227,100 @@ test("two dashboard owners cannot lose validator mutations across a shared ledge
   }
 });
 
+test("release-unit selection HTTP CAS accepts only the delivery commit's exact nested candidate and current revision", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-selector-http-"));
+  const project = await createRepository(root);
+  const initialCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  await mkdir(path.join(project, "a"), { recursive: true });
+  await mkdir(path.join(project, "b"), { recursive: true });
+  await writeFile(path.join(project, "a", "package.json"), '{"version":"1.0.0"}\n');
+  await writeFile(path.join(project, "b", "package.json"), '{"version":"2.0.0"}\n');
+  await git(project, ["add", "."]);
+  await git(project, ["commit", "-m", "add nested release units"]);
+  const nestedCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  await rm(path.join(project, "a"), { recursive: true });
+  await git(project, ["add", "-A"]);
+  await git(project, ["commit", "-m", "remove selected release unit"]);
+  const invalidatingCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  await mkdir(path.join(project, "a"));
+  await writeFile(path.join(project, "a", "package.json"), '{"version":"1.1.0"}\n');
+  await git(project, ["add", "."]);
+  await git(project, ["commit", "-m", "repair selected release unit"]);
+  const repairedCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  await writeFile(path.join(project, "package.json"), '{"version":"9.0.0"}\n');
+  await git(project, ["add", "package.json"]);
+  await git(project, ["commit", "-m", "add root release authority"]);
+  const rootCommit = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+  await initializeProject(project);
+
+  const dashboard = await startDashboard({ projectPath: project, port: 0, open: false });
+  try {
+    assert.equal((await fetch(`${dashboard.url}/api/products`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "selector", name: "Selector", organizationUrl: "https://example.invalid/selector", repositories: [] }),
+    })).status, 201);
+    const attached = await fetch(`${dashboard.url}/api/products/selector/repositories`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ localPath: project }),
+    });
+    assert.equal(attached.status, 201, await attached.clone().text());
+    const repositoryId = ((await attached.json()) as { repository: { id: string } }).repository.id;
+    const seed = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
+    const runFor = (commit: string) => {
+      const runId = seed.createRun(`Select at ${commit}`, project);
+      seed.prepareDeliveryRepository({ runId, repositoryId, localPath: project, baseBranch: "main", baseCommit: initialCommit,
+        headCommit: commit, branch: `devharmonics/${commit.slice(0, 8)}` });
+      return runId;
+    };
+    const runs = { nested: runFor(nestedCommit), invalidating: runFor(invalidatingCommit), repaired: runFor(repairedCommit), root: runFor(rootCommit) };
+    seed.close();
+    const select = (runId: string, body: Record<string, unknown>, id = repositoryId) => fetch(
+      `${dashboard.url}/api/runs/${runId}/delivery/${encodeURIComponent(id)}/release-unit`,
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    );
+    const body = (commit: string, cwd: string, expectedRevision: number) => ({ expectedHeadCommit: commit, cwd, expectedRevision });
+
+    assert.equal((await select(runs.nested, body("short", "a", 0))).status, 400, "the commit must be a full immutable OID");
+    assert.equal((await select(runs.nested, body("f".repeat(40), "a", 0))).status, 409, "a different full commit is stale");
+    assert.equal((await select(runs.nested, body(nestedCommit, " a", 0))).status, 400, "cwd must be exact and normalized");
+    assert.equal((await select(runs.nested, body(nestedCommit, "a", 0), "repo:missing")).status, 404);
+    assert.equal((await select(runs.nested, body(nestedCommit, "missing", 0))).status, 409, "a noncandidate is refused");
+    assert.equal((await select(runs.root, body(rootCommit, "a", 0))).status, 409, "root authority refuses nested selection");
+    assert.equal((await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as any)
+      .products[0].repositories.find((repository: any) => repository.id === repositoryId).intelligence.releaseUnitSelection,
+    undefined, "malformed, stale, missing, noncandidate, and root-authority requests do not create selection authority");
+
+    const selected = await select(runs.nested, body(nestedCommit, "a", 0));
+    assert.equal(selected.status, 200, await selected.clone().text());
+    const selectedBody = await selected.json() as { authority: any; repository: { intelligence: { releaseUnitSelection: any } } };
+    assert.deepEqual({
+      state: selectedBody.authority.state, cwd: selectedBody.authority.cwd, source: selectedBody.authority.source,
+      reason: selectedBody.authority.reason, commit: selectedBody.authority.commit,
+      revision: selectedBody.authority.selection.value.revision,
+      units: selectedBody.authority.units.map((unit: any) => [unit.cwd, unit.state, unit.reason]),
+    }, {
+      state: "declared", cwd: "a", source: "a/package.json", reason: "configured-nested", commit: nestedCommit, revision: 1,
+      units: [["a", "declared", "public static package version"], ["b", "declared", "public static package version"]],
+    });
+    assert.equal((await select(runs.nested, body(nestedCommit, "b", 0))).status, 409, "a stale first-write revision cannot replace authority");
+    assert.deepEqual(selectedBody.repository.intelligence.releaseUnitSelection, selectedBody.authority.selection.value);
+
+    assert.equal((await select(runs.invalidating, body(invalidatingCommit, "b", 1))).status, 409, "invalidation advances the revision before reselection");
+    const invalidated = (await fetch(`${dashboard.url}/api/products`).then((response) => response.json()) as any)
+      .products[0].repositories.find((repository: any) => repository.id === repositoryId).intelligence.releaseUnitSelection;
+    assert.deepEqual({ state: invalidated.state, revision: invalidated.revision }, { state: "invalidated", revision: 2 });
+    const reselected = await select(runs.repaired, body(repairedCommit, "a", 2));
+    assert.equal(reselected.status, 200, await reselected.clone().text());
+    const reselectedValue = ((await reselected.json()) as any).authority.selection.value;
+    assert.deepEqual({ cwd: reselectedValue.cwd, state: reselectedValue.state, revision: reselectedValue.revision,
+      invalidatedAt: reselectedValue.invalidatedAt, invalidationReason: reselectedValue.invalidationReason },
+    { cwd: "a", state: "active", revision: 3, invalidatedAt: null, invalidationReason: null });
+  } finally {
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("product registry inspects and retains a local repository without changing or running it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-product-registry-api-"));
   const project = await createRepository(root);
