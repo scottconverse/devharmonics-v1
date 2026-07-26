@@ -10,9 +10,28 @@ import { setTimeout as delay } from "node:timers/promises";
 import { runPlanSchema } from "./schemas.js";
 import { loadConfig, loadConstitution, resolveProviderCommand, devHarmonicsDirectory } from "./config.js";
 import { inspectProviders } from "./doctor.js";
-import { Ledger, type ReviewEvidenceBinding } from "./ledger.js";
+import { dependencyPlanningContext } from "./product-intelligence.js";
+import { Ledger, type ProductRecord, type ReviewEvidenceBinding } from "./ledger.js";
 import { OllamaAdapter, syncOllamaRuntimes } from "./ollama.js";
 import { createRuntimeAdapter, providerSupportsToolDenial } from "./providers.js";
+
+export function requiredProductImpactIds(product: ProductRecord, selectedRepositoryIds: readonly string[]): string[] {
+  const byId = new Map(product.repositories.map((repository) => [repository.id, repository]));
+  const selected = selectedRepositoryIds.map((id) => byId.get(id)).filter((item) => item !== undefined);
+  const required = new Set(selectedRepositoryIds);
+  for (const repository of selected) {
+    repository.dependencyRepositoryIds.forEach((id) => { if (byId.has(id)) required.add(id); });
+    for (const candidate of product.repositories) {
+      if (candidate.dependencyRepositoryIds.includes(repository.id)) required.add(candidate.id);
+    }
+  }
+  if (selected.some((repository) => ["umbrella", "shared_platform"].includes(repository.role))) {
+    for (const candidate of product.repositories) {
+      if (["documentation", "installer", "release_truth"].includes(candidate.role)) required.add(candidate.id);
+    }
+  }
+  return [...required];
+}
 import {
   architectPrompt,
   CLAIMS_CHUNK_JSON_CONTRACT,
@@ -2646,19 +2665,7 @@ export class Orchestrator {
       const found = new Set(selected.map((repository) => repository.id));
       throw new Error(`Objective references repositories no longer registered in ${product.name}: ${objective.repositoryIds.filter((id) => !found.has(id)).join(", ")}`);
     }
-    const required = new Set(objective.repositoryIds);
-    for (const repository of selected) {
-      repository.dependencyRepositoryIds.forEach((id) => { if (byId.has(id)) required.add(id); });
-      for (const candidate of product.repositories) {
-        if (candidate.dependencyRepositoryIds.includes(repository.id)) required.add(candidate.id);
-      }
-    }
-    if (selected.some((repository) => ["umbrella", "shared_platform"].includes(repository.role))) {
-      for (const candidate of product.repositories) {
-        if (["documentation", "installer", "release_truth"].includes(candidate.role)) required.add(candidate.id);
-      }
-    }
-    const requiredImpactIds = [...required];
+    const requiredImpactIds = requiredProductImpactIds(product, objective.repositoryIds);
     const lines = requiredImpactIds.map((id) => {
       const repository = byId.get(id)!;
       const relationships = [
@@ -2700,10 +2707,12 @@ export class Orchestrator {
     const relevant = (repositoryId: string | null) => repositoryId === null || relevantRepositoryIds.has(repositoryId);
     const claims = snapshot.claims.filter((claim) => relevant(claim.repositoryId)).slice(0, 30);
     const findings = snapshot.findings.filter((finding) => relevant(finding.repositoryId)).slice(0, 30);
+    const dependencies = dependencyPlanningContext(snapshot.dependencyIntelligence, relevantRepositoryIds);
     const lines = [
       `Source-backed product intelligence snapshot ${snapshot.id} (${snapshot.createdAt}; ${snapshot.status}).`,
       ...findings.map((finding) => `Finding [${finding.severity}/${finding.kind}]: ${finding.message}${finding.citations.length ? ` Citations: ${finding.citations.join(", ")}` : ""}`),
       ...claims.map((claim) => `Claim ${claim.subject}.${claim.kind}=${claim.value}; citation=${claim.repositoryId}:${claim.sourcePath}:${claim.line}; revision=${claim.revision}; contentSha256=${claim.contentSha256}; workingTree=${claim.workingTree}`),
+      ...dependencies,
     ];
     return lines.join("\n");
   }

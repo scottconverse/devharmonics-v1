@@ -26,7 +26,7 @@ import {
   workbenchSessionInputSchema,
 } from "./schemas.js";
 import type { ReviewFinding, StructuredReview } from "./review.js";
-import type { ProductIntelligenceSnapshot } from "./product-intelligence.js";
+import { decodeProductIntelligenceSnapshot, type ProductIntelligenceSnapshot } from "./product-intelligence.js";
 import { aggregateModelPerformance, type ModelPerformanceObservation, type ModelPerformanceProfile } from "./model-performance.js";
 import { classifyWorkload } from "./model-intelligence.js";
 import {
@@ -4017,7 +4017,7 @@ export class Ledger {
       SELECT snapshot_json FROM product_intelligence_snapshots
       WHERE product_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
     `).get(productId) as { snapshot_json: string } | undefined;
-    return row ? JSON.parse(row.snapshot_json) as ProductIntelligenceSnapshot : null;
+    return row ? decodeProductIntelligenceSnapshot(JSON.parse(row.snapshot_json) as ProductIntelligenceSnapshot) : null;
   }
 
   recordToolPolicyReceipt(input: ToolPolicyReceiptInput): number {

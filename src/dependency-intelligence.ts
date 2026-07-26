@@ -62,6 +62,12 @@ export interface DependencyFact {
   provenance: DependencyProvenance;
 }
 
+export interface DependencyPackageIdentity {
+  ecosystem: DependencyEcosystem;
+  packageName: string;
+  provenance: DependencyProvenance;
+}
+
 export interface DependencyManifestEvidence {
   state: DependencyEvidenceState;
   ecosystem: DependencyEcosystem;
@@ -86,6 +92,7 @@ export interface DependencyExtraction {
   state: DependencyEvidenceState;
   commit: string;
   facts: DependencyFact[];
+  identities: DependencyPackageIdentity[];
   manifests: DependencyManifestEvidence[];
   diagnostics: DependencyDiagnostic[];
 }
@@ -451,6 +458,28 @@ function markerSeparatorIndex(value: string): number {
     if (character === ";") separator = index;
   }
   return separator;
+}
+
+function manifestPackageIdentities(entry: ManifestInventoryEntry, commit: string): DependencyPackageIdentity[] {
+  if (entry.diagnostic || entry.text === undefined) return [];
+  try {
+    if (entry.kind === "package.json") {
+      const value = JSON.parse(entry.text) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const name = (value as Record<string, unknown>).name;
+      return typeof name === "string" && name.trim()
+        ? [{ ecosystem: "npm", packageName: normalizeNpmName(name), provenance: provenance(entry, commit, "/name") }]
+        : [];
+    }
+    const document = parseTomlRecord(entry.path, entry.text);
+    const project = ownTomlValue(document, "project");
+    const name = isTomlRecord(project) ? ownTomlValue(project, "name") : undefined;
+    return typeof name === "string" && name.trim()
+      ? [{ ecosystem: "pypi", packageName: normalizePythonName(name), provenance: provenance(entry, commit, "/project/name") }]
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function withoutTrailingVersionComma(value: string): string | null {
@@ -895,6 +924,7 @@ export function extractDependencyDeclarations(inventory: ManifestInventory): Dep
       state: "unavailable",
       commit: inventory.commit,
       facts: [],
+      identities: [],
       manifests: [],
       diagnostics: [{ state: "unavailable", commit: inventory.commit, detail: inventory.detail }],
     };
@@ -904,12 +934,13 @@ export function extractDependencyDeclarations(inventory: ManifestInventory): Dep
   ));
   const manifests = parsed.map((item) => item.evidence);
   const facts = parsed.flatMap((item) => item.facts);
+  const identities = inventory.entries.flatMap((entry) => manifestPackageIdentities(entry, inventory.commit));
   const diagnostics = parsed.flatMap((item) => item.diagnostics).sort(compareDiagnostics);
   const state = manifests.reduce<DependencyEvidenceState>(
     (current, item) => STATE_RANK[item.state] > STATE_RANK[current] ? item.state : current,
     facts.length ? "detected" : "absent",
   );
-  return { state, commit: inventory.commit, facts, manifests, diagnostics };
+  return { state, commit: inventory.commit, facts, identities, manifests, diagnostics };
 }
 
 export async function discoverDependenciesAtCommit(
