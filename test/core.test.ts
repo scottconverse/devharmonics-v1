@@ -3370,12 +3370,20 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
     }
     if (request.command === "git" && request.args[1] === "-t") return { ...ok, stdout: "commit\n" };
     if (request.command === "git" && request.args[0] === "ls-tree") {
-      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0` };
+      return { ...ok, stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0${`100644 blob ${"e".repeat(40)}\tbackend/package.json\0`}` };
     }
     if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) return { ...ok, stdout: "{ malformed" };
+    if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) return { ...ok, stdout: '{"version":"2.0.0"}' };
     return ok;
   };
   try {
+    ledger.upsertProduct({ id: "product:invalid", name: "Invalid", organizationUrl: "https://example.invalid", description: "fixture", repositories: [] });
+    ledger.upsertRepository({ id: "repo:invalid", productId: "product:invalid", name: "invalid", fullName: "civicsuite/invalid",
+      url: "https://example.invalid/repo", cloneUrl: "https://example.invalid/repo.git", defaultBranch: "main", visibility: "private",
+      archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+      intelligence: { releaseUnitSelection: { version: 1, cwd: "backend", state: "active", revision: 1,
+        selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null } } });
     const runId = ledger.createRun("Refuse invalid release authority", root);
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
@@ -3403,10 +3411,12 @@ test("invalid release authority refuses tagging even with mismatch confirmation 
     );
     const evidence = ledger.listEvents(runId).find((event) => event.kind === "delivery.tag_authority")?.data as any;
     assert.deepEqual({ commit: evidence.commit, revision: evidence.selectionRevision, state: evidence.selectionState,
-      cwd: evidence.selectionCwd, provenance: evidence.provenance, selected: evidence.selectedUnit },
-    { commit: "c".repeat(40), revision: null, state: "absent", cwd: null, provenance: null, selected: null });
+      cwd: evidence.selectionCwd, provenance: evidence.provenance, selected: evidence.selectedUnit, source: evidence.selectedSource },
+    { commit: "c".repeat(40), revision: 1, state: "active", cwd: "backend", provenance: null,
+      selected: "backend", source: "backend/package.json" });
     assert.deepEqual(evidence.units[0], { cwd: ".", state: "invalid", reason: "invalid package",
-      diagnostics: [{ cwd: ".", path: "package.json", detail: "JSON parser rejected the document" }] });
+      source: null, diagnostics: [{ cwd: ".", path: "package.json", detail: "JSON parser rejected the document" }] });
+    assert.equal(evidence.units[1].source, "backend/package.json");
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "tag"), false);
     assert.equal(calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.some((arg) => arg.includes("refs/tags/"))), false);
     assert.equal(ledger.getRun(runId)?.delivery?.repositories[0]?.status, "merged");
@@ -3486,19 +3496,11 @@ test("immutable commit lookup ignores a private package version in favor of PEP 
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   const commit = "d".repeat(40);
   const runner = async (request: { command: string; args: string[] }) => {
-    const manifest = request.args.at(-1);
-    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "package.json") {
-      return { stdout: `100644 blob ${"e".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args[0] === "ls-tree" && manifest === "pyproject.toml") {
-      return { stdout: `100644 blob ${"f".repeat(40)}\tpyproject.toml\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args.join(" ") === `show ${"e".repeat(40)}`) {
-      return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
-    if (request.command === "git" && request.args.join(" ") === `show ${"f".repeat(40)}`) {
-      return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
-    }
+    const joined = request.args.join(" ");
+    if (request.command === "git" && request.args[1] === "-t") return { stdout: "commit\n", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && request.args[0] === "ls-tree") return { stdout: `100644 blob ${"e".repeat(40)}\tpackage.json\0${`100644 blob ${"f".repeat(40)}\tpyproject.toml\0`}`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) return { stdout: JSON.stringify({ name: "private-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+    if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '[project]\nname = "released-product"\nversion = "1.0.8"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     return { stdout: "", stderr: "unexpected command", exitCode: 1, durationMs: 1, timedOut: false };
   };
   try {
@@ -3517,8 +3519,10 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
   // contradiction unless the mismatch is explicitly confirmed.
   const workflows = await import("../src/delivery.js") as Record<string, any>;
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-tag-truth-"));
-  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const filename = path.join(root, "devharmonics.db");
+  const ledger = new Ledger(filename);
   let prState = "OPEN";
+  let competingLedger: Ledger | null = null, competing: DeliveryService, selectionAttempt: Promise<unknown> | null = null;
   const runner = async (request: { command: string; args: string[] }) => {
     const joined = request.args.join(" ");
     if (request.command === "git" && joined === "remote get-url origin") {
@@ -3540,7 +3544,7 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     // commit has a private frontend package at 1.0.0 and declares the product
     // release as 1.2.1 in PEP 621 metadata.
     if (request.command === "git" && request.args[0] === "ls-tree") {
-      return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0${`100644 blob ${"e".repeat(40)}\tpyproject.toml\0`}`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
+      return { stdout: `100644 blob ${"d".repeat(40)}\ta/package.json\0${`100644 blob ${"e".repeat(40)}\ta/pyproject.toml\0`}${`100644 blob ${"f".repeat(40)}\tb/package.json\0`}`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "truth-frontend", version: "1.0.0", private: true }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
@@ -3548,7 +3552,10 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     if (request.command === "git" && joined === `cat-file blob ${"e".repeat(40)}`) {
       return { stdout: '[project]\nname = "truth"\nversion = "1.2.1"\n', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
+    if (request.command === "git" && joined === `cat-file blob ${"f".repeat(40)}`) return { stdout: '{"version":"9.9.9"}', stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     if (request.command === "git" && request.args[0] === "rev-parse" && joined.includes("refs/tags/")) {
+      selectionAttempt ??= competing.selectReleaseUnit("repo:truth", root, "c".repeat(40), "b", 1).then(() => null, (error) => error);
+      await selectionAttempt;
       return { stdout: "", stderr: "", exitCode: 1, durationMs: 1, timedOut: false };
     }
     return { stdout: "", stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
@@ -3561,6 +3568,15 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     assert.equal(workflows.parseDeclaredVersion(JSON.stringify({ name: "truth", version: "1.2.1" }), '[project]\nversion = "3.4.5"\n'), "1.2.1", "package.json wins when both exist");
 
     const runId = ledger.createRun("Tag truthfully", root);
+    ledger.upsertProduct({ id: "product:truth", name: "Truth", organizationUrl: "https://example.invalid", description: "fixture", repositories: [] });
+    ledger.upsertRepository({ id: "repo:truth", productId: "product:truth", name: "truth", fullName: "civicsuite/truth",
+      url: "https://example.invalid/truth", cloneUrl: "https://example.invalid/truth.git", defaultBranch: "main", visibility: "private",
+      archived: false, sizeKb: 0, language: null, description: null, localPath: root, role: "release_truth", expectedBranch: "main",
+      owners: [], dependencyRepositoryIds: [], validators: {}, governanceSources: [], governanceRules: [],
+      intelligence: { releaseUnitSelection: { version: 1, cwd: "a", state: "active", revision: 1,
+        selectedAt: "2026-07-25T00:00:00.000Z", invalidatedAt: null, invalidationReason: null } } });
+    competingLedger = new Ledger(filename);
+    competing = new DeliveryService(competingLedger, runner as never);
     ledger.setRunStatus(runId, "running");
     ledger.setRunStatus(runId, "ready", "READY");
     ledger.prepareDeliveryRepository({ runId, repositoryId: "repo:truth", localPath: root, baseBranch: "main", baseCommit: "a".repeat(40), headCommit: "b".repeat(40), branch: "devharmonics/truth" });
@@ -3582,8 +3598,11 @@ test("the tag-truth gate refuses a tag the repository's own files contradict unl
     const confirmed = await service.execute({ runId, repositoryId: "repo:truth", action: "tag_release", tag: "v1.0.0", config, approval: approval("a-tag2"), confirmVersionMismatch: true });
     assert.equal(confirmed.status, "tagged");
     assert.equal(confirmed.releaseTag, "v1.0.0");
+    assert.match(String(await selectionAttempt), /already in progress/i, "a second Ledger cannot change selection between evidence and tag push");
+    assert.equal((ledger.getRepository("repo:truth")!.intelligence.releaseUnitSelection as any).revision, 1);
+    assert.equal((ledger.listEvents(runId).filter((event) => event.kind === "delivery.tag_authority").at(-1)?.data as any).selectionRevision, 1);
   } finally {
-    ledger.close();
+    competingLedger?.close(); ledger.close();
     await rm(root, { recursive: true, force: true });
   }
 });

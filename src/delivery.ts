@@ -1,5 +1,5 @@
 import path from "node:path";
-import { decodeReleaseUnitSelection, type Ledger, type ReleaseUnitSelectionDecode } from "./ledger.js";
+import { decodeReleaseUnitSelection, type Ledger, type ReleaseUnitLock, type ReleaseUnitSelectionDecode } from "./ledger.js";
 import { evaluateToolRequest, type ToolApprovalReceipt } from "./policy.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
 import { inventoryManifestsAtCommit, resolveReleaseAuthority, type ReleaseAuthority } from "./release-units.js";
@@ -243,16 +243,14 @@ function versionsAgree(tag: string, declared: string): boolean {
 export class DeliveryService {
   constructor(private readonly ledger: Ledger, private readonly runner: ProcessRunner = runProcess) {}
 
-  async selectReleaseUnit(repositoryId: string, localPath: string, commit: string,
-    cwd: string, expectedRevision: number): Promise<{ authority: VersionAuthority; repository: ReturnType<Ledger["getRepository"]> }> {
-    const inspected = await this.versionAuthorityAtCommit(localPath, commit, repositoryId);
-    const candidate = inspected.units?.find((unit) => unit.cwd === cwd && unit.cwd !== "." && unit.state === "declared");
-    if (!candidate) throw new DeliveryRefusal("Release-unit selection must name an exact declared nested candidate at the requested commit");
-    this.ledger.updateReleaseUnitSelection(repositoryId, cwd, expectedRevision);
-    return {
-      authority: await this.versionAuthorityAtCommit(localPath, commit, repositoryId),
-      repository: this.ledger.getRepository(repositoryId),
-    };
+  async selectReleaseUnit(repositoryId: string, localPath: string, commit: string, cwd: string, expectedRevision: number): Promise<{ authority: VersionAuthority; repository: ReturnType<Ledger["getRepository"]> }> {
+    return this.ledger.withReleaseUnitLock(repositoryId, async (lock) => {
+      const inspected = await this.versionAuthorityAtCommit(localPath, commit, repositoryId, lock);
+      if (inspected.units?.some((unit) => unit.cwd === "." && unit.state === "declared")) throw new DeliveryRefusal("A declared root release authority must be used; nested selection is not permitted");
+      if (!inspected.units?.some((unit) => unit.cwd === cwd && unit.cwd !== "." && unit.state === "declared")) throw new DeliveryRefusal("Release-unit selection must name an exact declared nested candidate at the requested commit");
+      this.ledger.updateReleaseUnitSelection(repositoryId, cwd, expectedRevision, lock);
+      return { authority: await this.versionAuthorityAtCommit(localPath, commit, repositoryId, lock), repository: this.ledger.getRepository(repositoryId) };
+    });
   }
 
   /**
@@ -267,7 +265,7 @@ export class DeliveryService {
     return authority.state === "declared" ? authority.version : null;
   }
 
-  async versionAuthorityAtCommit(localPath: string, commitish: string, repositoryId?: string): Promise<VersionAuthority> {
+  async versionAuthorityAtCommit(localPath: string, commitish: string, repositoryId?: string, lock?: ReleaseUnitLock): Promise<VersionAuthority> {
     const inventory = await inventoryManifestsAtCommit(localPath, commitish, this.runner);
     const canonical = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
     const direct = repositoryId ? this.ledger.getRepository(repositoryId) : null;
@@ -291,7 +289,7 @@ export class DeliveryService {
     if (selection.kind === "valid" && base.invalidationNeeded && matches.length === 1) {
       try {
         const value = this.ledger.invalidateReleaseUnitSelection(matches[0]!.id, selection.value.revision,
-          base.detail ?? "selected release unit is no longer authoritative");
+          base.detail ?? "selected release unit is no longer authoritative", lock);
         selection = { kind: "valid", value };
       } catch {
         selection = decodeReleaseUnitSelection(this.ledger.getRepository(matches[0]!.id)?.intelligence ?? {});
@@ -304,7 +302,7 @@ export class DeliveryService {
         if (base.invalidationNeeded) {
           try {
             selection = { kind: "valid", value: this.ledger.invalidateReleaseUnitSelection(matches[0]!.id,
-              selection.value.revision, base.detail ?? "selected release unit is no longer authoritative") };
+              selection.value.revision, base.detail ?? "selected release unit is no longer authoritative", lock) };
           } catch {
             return { ...base, state: "unavailable",
               detail: "release-unit selection changed again during invalidation", commit: commitish, selection };
@@ -595,7 +593,8 @@ export class DeliveryService {
 
       // tag_release: the tag lands on the ACTUAL merge commit GitHub reports,
       // never on an assumed head.
-      const mergedView = await this.runner({ command: "gh", args: ["pr", "view", delivery.pullRequestUrl, "--json", "state,mergeCommit"], cwd: delivery.localPath, timeoutMs: 60_000 });
+      return await this.ledger.withReleaseUnitLock(input.repositoryId, async (lock) => {
+      const mergedView = await this.runner({ command: "gh", args: ["pr", "view", delivery.pullRequestUrl!, "--json", "state,mergeCommit"], cwd: delivery.localPath, timeoutMs: 60_000 });
       if (mergedView.exitCode !== 0) throw new Error(failureMessage(mergedView, "Could not read the merged pull request"));
       const mergedState = JSON.parse(mergedView.stdout) as { state: string; mergeCommit: { oid: string } | null };
       if (mergedState.state !== "MERGED" || !mergedState.mergeCommit?.oid) throw new DeliveryRefusal("The pull request has no merge commit to tag");
@@ -607,17 +606,18 @@ export class DeliveryService {
       // not exist locally beforehand. When the merged artifact's own files
       // contradict the requested tag, refuse with both values unless the owner
       // explicitly confirmed the mismatch.
-      const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergedState.mergeCommit.oid, delivery.repositoryId);
+      const authority = await this.versionAuthorityAtCommit(delivery.localPath, mergedState.mergeCommit.oid, delivery.repositoryId, lock);
       const selected = authority.selection?.kind === "valid" ? authority.selection.value : null;
+      const selectedCwd = selected?.cwd ?? authority.cwd ?? null, selectedUnit = authority.units?.find((unit) => unit.cwd === selectedCwd);
       this.ledger.addEvent(input.runId, "delivery.tag_authority",
         `${input.repositoryId}: release authority checked at ${mergedState.mergeCommit.oid.slice(0, 12)}`, {
           commit: mergedState.mergeCommit.oid, selectionRevision: selected?.revision ?? null,
           selectionState: selected?.state ?? authority.selection?.kind ?? "absent", selectionCwd: selected?.cwd ?? null,
           provenance: authority.state === "declared" ? authority.reason : null,
-          selectedUnit: authority.state === "declared" ? authority.cwd : null,
-          selectedSource: authority.state === "declared" ? authority.source : null,
+          selectedUnit: selectedCwd,
+          selectedSource: selectedUnit?.source ?? selectedUnit?.diagnostics[0]?.path ?? null,
           units: authority.units?.map((unit) => ({ cwd: unit.cwd, state: unit.state,
-            reason: unit.reason, diagnostics: unit.diagnostics })) ?? [],
+            source: unit.source ?? null, reason: unit.reason, diagnostics: unit.diagnostics })) ?? [],
           rejection: authority.state === "invalid" || authority.state === "unavailable" ? authority.detail : null,
         });
       if (authority.state === "invalid" || authority.state === "unavailable") {
@@ -645,6 +645,7 @@ export class DeliveryService {
       });
       this.ledger.addEvent(input.runId, "delivery.tagged", `${input.repositoryId}: pushed release tag ${input.tag} on the merge commit under owner approval`, requestRecord);
       return updated;
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A failed later step falls back to the last durable state it verifiably

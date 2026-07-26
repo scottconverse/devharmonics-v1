@@ -114,10 +114,10 @@ await proveAdditionalMutation({
 });
 
 await proveAdditionalMutation({
-  compiledPath: path.join(root, "dist", "src", "delivery.js"),
+  compiledPath: path.join(root, "dist", "src", "release-units.js"),
   testPath: path.join(root, "dist", "test", "core.test.js"),
-  mutationTarget: "if (blob.stdoutUtf8Valid === false)",
-  mutationReplacement: "if (false && blob.stdoutUtf8Valid === false)",
+  mutationTarget: "else if (result.stdoutUtf8Valid === false)",
+  mutationReplacement: "else if (false && result.stdoutUtf8Valid === false)",
   sentinelName: "immutable package and pyproject blobs reject malformed UTF-8 before parsing",
 });
 

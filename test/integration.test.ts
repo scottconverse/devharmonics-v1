@@ -977,7 +977,7 @@ test("the delivery HTTP route serializes per repository, types its refusals, and
     if (request.command === "git" && request.args[0] === "ls-tree") {
       return { stdout: `100644 blob ${"d".repeat(40)}\tpackage.json\0`, stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
-    if (request.command === "git" && joined === `show ${"d".repeat(40)}`) {
+    if (request.command === "git" && joined === `cat-file blob ${"d".repeat(40)}`) {
       return { stdout: JSON.stringify({ name: "fixture", version: "9.9.9" }), stderr: "", exitCode: 0, durationMs: 1, timedOut: false };
     }
     if (request.command === "git" && request.args[0] === "push" && !joined.includes("refs/tags/")) {

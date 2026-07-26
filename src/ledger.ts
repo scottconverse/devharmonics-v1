@@ -215,6 +215,8 @@ export type ReleaseUnitSelectionDecode =
   | { kind: "absent" }
   | { kind: "valid"; value: ReleaseUnitSelection }
   | { kind: "malformed"; detail: string };
+export type ReleaseUnitLock = { readonly key: string; readonly token: symbol };
+const releaseUnitLocks = new Map<string, symbol>();
 
 const SELECTION_KEYS = ["cwd", "invalidatedAt", "invalidationReason", "revision", "selectedAt", "state", "version"];
 function exactIso(value: unknown): value is string {
@@ -3191,11 +3193,6 @@ export class Ledger {
     const repository = repositoryUpsertSchema.parse(input) as RepositoryUpsertInput;
     const product = this.database.prepare("SELECT 1 AS present FROM products WHERE id = ?").get(repository.productId);
     if (!product) throw new Error(`Product '${repository.productId}' was not found`);
-    const existingIntelligence = this.getRepository(repository.id)?.intelligence;
-    const intelligence = { ...repository.intelligence };
-    if (existingIntelligence && Object.prototype.hasOwnProperty.call(existingIntelligence, "releaseUnitSelection")) {
-      intelligence.releaseUnitSelection = existingIntelligence.releaseUnitSelection;
-    }
     const now = new Date().toISOString();
     this.database.prepare(`
       INSERT INTO repositories (
@@ -3209,7 +3206,7 @@ export class Ledger {
         url = excluded.url, clone_url = excluded.clone_url, default_branch = excluded.default_branch,
         visibility = excluded.visibility, archived = excluded.archived, size_kb = excluded.size_kb,
         language = excluded.language, description = excluded.description,
-        intelligence_json = excluded.intelligence_json, observed_at = excluded.observed_at,
+        intelligence_json = CASE WHEN json_type(repositories.intelligence_json, '$.releaseUnitSelection') IS NULL THEN excluded.intelligence_json ELSE json_set(excluded.intelligence_json, '$.releaseUnitSelection', repositories.intelligence_json -> '$.releaseUnitSelection') END, observed_at = excluded.observed_at,
         local_path = excluded.local_path, repository_role = excluded.repository_role,
         expected_branch = excluded.expected_branch, owners_json = excluded.owners_json,
         dependency_repository_ids_json = excluded.dependency_repository_ids_json,
@@ -3228,7 +3225,7 @@ export class Ledger {
       repository.sizeKb,
       repository.language,
       repository.description === null ? null : redactText(repository.description),
-      JSON.stringify(redactValue(intelligence)),
+      JSON.stringify(redactValue(repository.intelligence)),
       now,
       repository.localPath,
       repository.role,
@@ -3242,25 +3239,37 @@ export class Ledger {
     return this.getRepository(repository.id)!;
   }
 
-  updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number): ReleaseUnitSelection {
+  async withReleaseUnitLock<T>(repositoryId: string, action: (lock: ReleaseUnitLock) => Promise<T>): Promise<T> {
+    const filename = process.platform === "win32" ? path.resolve(this.filename).toLowerCase() : path.resolve(this.filename);
+    const lock = { key: `${filename}\0${repositoryId}`, token: Symbol() };
+    if (releaseUnitLocks.has(lock.key)) throw new Error("Release-unit selection or tagging is already in progress");
+    releaseUnitLocks.set(lock.key, lock.token);
+    try { return await action(lock); } finally { if (releaseUnitLocks.get(lock.key) === lock.token) releaseUnitLocks.delete(lock.key); }
+  }
+
+  updateReleaseUnitSelection(repositoryId: string, cwd: string, expectedRevision: number, lock?: ReleaseUnitLock): ReleaseUnitSelection {
     if (!normalizedReleaseUnitCwd(cwd) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new Error("Release-unit selection requires a normalized nested cwd and nonnegative expected revision");
     }
-    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, (revision, now) => ({
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, lock, (revision, now) => ({
       version: 1, cwd, state: "active", revision, selectedAt: now, invalidatedAt: null, invalidationReason: null,
     }));
   }
 
-  invalidateReleaseUnitSelection(repositoryId: string, expectedRevision: number, reason: string): ReleaseUnitSelection {
+  invalidateReleaseUnitSelection(repositoryId: string, expectedRevision: number, reason: string, lock?: ReleaseUnitLock): ReleaseUnitSelection {
     if (!reason.trim()) throw new Error("Release-unit invalidation requires a reason");
-    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, (revision, now, current) => {
+    return this.writeReleaseUnitSelection(repositoryId, expectedRevision, lock, (revision, now, current) => {
       if (current.kind !== "valid" || current.value.state !== "active") throw new Error("Release-unit selection is not active");
       return { ...current.value, state: "invalidated", revision, invalidatedAt: now, invalidationReason: redactText(reason).slice(0, 500) };
     });
   }
 
-  private writeReleaseUnitSelection(repositoryId: string, expectedRevision: number,
+  private writeReleaseUnitSelection(repositoryId: string, expectedRevision: number, lock: ReleaseUnitLock | undefined,
     create: (revision: number, now: string, current: ReleaseUnitSelectionDecode) => ReleaseUnitSelection): ReleaseUnitSelection {
+    const filename = process.platform === "win32" ? path.resolve(this.filename).toLowerCase() : path.resolve(this.filename);
+    const key = `${filename}\0${repositoryId}`, held = releaseUnitLocks.get(key);
+    if ((held && held !== lock?.token) || (lock && (lock.key !== key || held !== lock.token)))
+      throw new Error("Release-unit selection or tagging is already in progress");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const repository = this.getRepository(repositoryId);
@@ -3385,19 +3394,14 @@ export class Ledger {
           full_name = excluded.full_name, url = excluded.url, clone_url = excluded.clone_url,
           default_branch = excluded.default_branch, visibility = excluded.visibility,
           archived = excluded.archived, size_kb = excluded.size_kb, language = excluded.language,
-          description = excluded.description, intelligence_json = excluded.intelligence_json,
+          description = excluded.description,
+          intelligence_json = CASE WHEN json_type(repositories.intelligence_json, '$.releaseUnitSelection') IS NULL THEN excluded.intelligence_json ELSE json_set(excluded.intelligence_json, '$.releaseUnitSelection', repositories.intelligence_json -> '$.releaseUnitSelection') END,
           observed_at = excluded.observed_at
       `);
       for (const item of input.repositories) {
-        const prior = this.database.prepare("SELECT intelligence_json FROM repositories WHERE id = ?").get(item.id) as { intelligence_json?: string } | undefined;
-        const priorIntelligence = prior?.intelligence_json ? JSON.parse(prior.intelligence_json) as Record<string, unknown> : null;
-        const intelligence = { ...item.intelligence };
-        if (priorIntelligence && Object.prototype.hasOwnProperty.call(priorIntelligence, "releaseUnitSelection")) {
-          intelligence.releaseUnitSelection = priorIntelligence.releaseUnitSelection;
-        }
         repository.run(item.id, input.id, redactText(item.name), item.fullName, item.url, item.cloneUrl,
           item.defaultBranch, item.visibility, item.archived ? 1 : 0, item.sizeKb, item.language,
-          item.description === null ? null : redactText(item.description), JSON.stringify(redactValue(intelligence)), now);
+          item.description === null ? null : redactText(item.description), JSON.stringify(redactValue(item.intelligence)), now);
       }
       this.database.exec("COMMIT");
     } catch (error) {

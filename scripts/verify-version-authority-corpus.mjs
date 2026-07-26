@@ -122,7 +122,7 @@ try {
         ? { state: actual.state, source: actual.source, version: actual.version, cwd: actual.cwd, reason: actual.reason,
           units: actual.units?.map((unit) => [unit.cwd, unit.state]) }
         : actual.state === "declared" ? { state: actual.state, source: actual.source, version: actual.version }
-          : { state: actual.state };
+          : actual.state === "absent" ? { state: actual.state } : { state: actual.state, source: actual.source, detail: actual.detail };
       if (JSON.stringify(comparable) !== JSON.stringify(expected)) {
         throw new Error(`expected ${JSON.stringify(expected)}, received ${JSON.stringify(comparable)}`);
       }

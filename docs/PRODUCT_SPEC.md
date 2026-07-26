@@ -1170,10 +1170,14 @@ and re-selection use compare-and-swap against the expected revision: revision
 zero means and requires true absence for the first write; later writes require
 the exact current positive revision. The API accepts only an exact candidate
 from an immutable commit inventory and rejects stale competing owner actions.
-The tag gate always re-resolves the exact merge commit against the current
-selection revision and records the commit, selection state and revision,
-selected unit, source manifest, provenance, and every inventoried unit's
-selection reason and diagnostics in delivery evidence.
+Repository metadata refresh preserves the reserved selection value atomically
+with its write; it cannot restore an older revision. The tag gate always
+re-resolves the exact merge commit against the current selection revision.
+From that final resolution through tag creation and publication,
+repository-scoped serialization prevents a competing selection write from
+changing the authority. Delivery evidence records the commit, selection state
+and revision, selected unit, source manifest, provenance, and every inventoried
+unit's selection reason and diagnostics.
 
 For the pinned CivicRecords AI acceptance repository, this contract
 automatically selects `backend`, declares `1.7.3` from
