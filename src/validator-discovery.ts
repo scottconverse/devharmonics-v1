@@ -5,6 +5,8 @@ import path from "node:path";
 import { parseDocument } from "yaml";
 import type { ValidatorConfig } from "./types.js";
 import { isTomlRecord, ownTomlValue, parseTomlRecord } from "./toml.js";
+import { inventoryManifestsAtCommit, type ProcessRunner } from "./release-units.js";
+import { runProcess, type ProcessResult } from "./process.js";
 
 const MANIFEST_LIMIT = 1024 * 1024;
 const WORKFLOW_FILE_LIMIT = 512 * 1024;
@@ -12,6 +14,7 @@ const WORKFLOW_TOTAL_LIMIT = 4 * 1024 * 1024;
 const WORKFLOW_COUNT_LIMIT = 64;
 const WORKFLOW_DIRECTORY_ENTRY_LIMIT = 256;
 const RELEASE_SCRIPT_LIMIT = 4 * 1024 * 1024;
+const GENERATED_VALUE_LIMIT = 2_000;
 const NPM_SCRIPTS = ["build", "lint", "test", "typecheck"] as const;
 
 export type ValidatorRecipe =
@@ -52,17 +55,17 @@ export interface ValidatorDiscoveryResult {
 }
 
 export interface PersistedValidatorDiscovery {
-  version: 1;
+  version: 1 | 2;
   headSha: string;
   scannedAt: string;
   fingerprint: string;
-  validators: Record<string, {
-    recipe: ValidatorRecipe;
-    sources: ValidatorDetectionSource[];
-  }>;
+  validators: Record<string, { recipe: ValidatorRecipe; cwd?: string; sources: ValidatorDetectionSource[] }>;
   signals: ValidatorDiscoverySignal[];
   diagnostics: ValidatorDiscoveryDiagnostic[];
 }
+export type PersistedValidatorDiscoveryV1 = Omit<PersistedValidatorDiscovery, "version" | "validators">
+  & { version: 1; validators: Record<string, { recipe: ValidatorRecipe; sources: ValidatorDetectionSource[] }> };
+export type PersistedValidatorDiscoveryV2 = Omit<PersistedValidatorDiscovery, "version"> & { version: 2 };
 
 export interface EffectiveValidatorEntry {
   name: string;
@@ -76,20 +79,22 @@ export interface EffectiveValidatorEntry {
 
 type Candidate = Omit<DiscoveredValidator, "sources"> & { source: ValidatorDetectionSource };
 
-export function materializeValidatorRecipe(recipe: ValidatorRecipe): ValidatorConfig {
+export function materializeValidatorRecipe(recipe: ValidatorRecipe, cwd?: string): ValidatorConfig {
+  const location = cwd === undefined ? {} : { cwd };
   switch (recipe.id) {
     case "npm-script":
       return {
         command: "npm",
         args: ["run", recipe.script],
         timeoutMs: recipe.script === "test" ? 900_000 : 600_000,
+        ...location,
       };
     case "pytest":
-      return { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000 };
+      return { command: "python", args: ["-m", "pytest"], timeoutMs: 900_000, ...location };
     case "ruff":
-      return { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000 };
+      return { command: "python", args: ["-m", "ruff", "check", "."], timeoutMs: 600_000, ...location };
     case "verify-release":
-      return { command: "bash", args: ["scripts/verify-release.sh"], timeoutMs: 3_600_000 };
+      return { command: "bash", args: ["scripts/verify-release.sh"], timeoutMs: 3_600_000, ...location };
   }
 }
 
@@ -99,11 +104,12 @@ function candidate(
   kind: ValidatorDetectionSource["kind"],
   sourcePath: string,
   evidence: string,
+  cwd?: string,
 ): Candidate {
   return {
     name,
     recipe,
-    config: materializeValidatorRecipe(recipe),
+    config: materializeValidatorRecipe(recipe, cwd),
     source: { kind, path: sourcePath, evidence },
   };
 }
@@ -172,7 +178,7 @@ async function boundedRegularFile(
   }
 }
 
-function packageCandidates(text: string): Candidate[] {
+function packageCandidates(text: string, source = "package.json", cwd?: string): Candidate[] {
   const raw = JSON.parse(text) as unknown;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const scripts = (raw as { scripts?: unknown }).scripts;
@@ -180,13 +186,13 @@ function packageCandidates(text: string): Candidate[] {
   const values = scripts as Record<string, unknown>;
   return NPM_SCRIPTS.flatMap((name) => (
     typeof values[name] === "string" && values[name]!.trim().length > 0
-      ? [candidate(name, { id: "npm-script", script: name }, "package_json_script", "package.json", `supported-script:${name}`)]
+      ? [candidate(name, { id: "npm-script", script: name }, "package_json_script", source, `supported-script:${name}`, cwd)]
       : []
   ));
 }
 
-function pyprojectCandidates(text: string): Candidate[] {
-  const document = parseTomlRecord("pyproject.toml", text);
+function pyprojectCandidates(text: string, source = "pyproject.toml", cwd?: string): Candidate[] {
+  const document = parseTomlRecord(source, text);
   const tool = ownTomlValue(document, "tool");
   const pytestTable = isTomlRecord(tool) ? ownTomlValue(tool, "pytest") : undefined;
   const ruffTable = isTomlRecord(tool) ? ownTomlValue(tool, "ruff") : undefined;
@@ -194,10 +200,10 @@ function pyprojectCandidates(text: string): Candidate[] {
   const ruff = isTomlRecord(ruffTable);
   return [
     ...(pytest
-      ? [candidate("pytest", { id: "pytest" }, "pyproject_table", "pyproject.toml", "tool.pytest.ini_options")]
+      ? [candidate("pytest", { id: "pytest" }, "pyproject_table", source, "tool.pytest.ini_options", cwd)]
       : []),
     ...(ruff
-      ? [candidate("ruff", { id: "ruff" }, "pyproject_table", "pyproject.toml", "tool.ruff")]
+      ? [candidate("ruff", { id: "ruff" }, "pyproject_table", source, "tool.ruff", cwd)]
       : []),
   ];
 }
@@ -278,19 +284,28 @@ function workflowCandidates(
 }
 
 function mergeCandidates(candidates: Candidate[]): DiscoveredValidator[] {
+  const locations = new Map<string, Set<string>>();
+  for (const item of candidates) {
+    const cwd = item.config.cwd ?? ".";
+    locations.set(item.name, new Set([...(locations.get(item.name) ?? []), cwd]));
+  }
   const merged = new Map<string, DiscoveredValidator>();
   for (const item of candidates) {
-    const existing = merged.get(item.name);
+    const cwd = item.config.cwd;
+    const name = locations.get(item.name)!.size === 1 || cwd === undefined
+      ? item.name
+      : `${cwd}:${item.name}`;
+    const existing = merged.get(name);
     if (existing) {
       if (JSON.stringify(existing.recipe) !== JSON.stringify(item.recipe)) {
-        throw new Error(`Conflicting fixed validator recipes for '${item.name}'`);
+        throw new Error(`Conflicting fixed validator recipes for '${name}'`);
       }
       if (!existing.sources.some((source) => JSON.stringify(source) === JSON.stringify(item.source))) {
         existing.sources.push(item.source);
       }
     } else {
-      merged.set(item.name, {
-        name: item.name,
+      merged.set(name, {
+        name,
         recipe: item.recipe,
         config: item.config,
         sources: [item.source],
@@ -453,6 +468,109 @@ export async function discoverRepositoryValidators(rootPath: string): Promise<Va
   };
 }
 
+const failedProcess = (result: ProcessResult): boolean => result.exitCode !== 0 || result.timedOut
+  || result.treeKillUnconfirmed || result.stdoutTruncated === true || result.stderrTruncated === true;
+function normalizedNestedCwd(value: string): string | undefined | null {
+  if (value === ".") return undefined;
+  const safe = value.length <= GENERATED_VALUE_LIMIT && !value.startsWith("/") && !value.includes("\\") && !/^[A-Za-z]:\//.test(value)
+    && !/[\u0000-\u001f\u007f]/.test(value) && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  return safe ? value : null;
+}
+
+function exactResult(candidates: Candidate[], signals: ValidatorDiscoverySignal[], diagnostics: ValidatorDiscoveryDiagnostic[], sourceDigests: Array<[string, string]>): ValidatorDiscoveryResult {
+  const validators = mergeCandidates(candidates).filter((entry) => {
+    if (entry.name.length <= GENERATED_VALUE_LIMIT) return true;
+    diagnostics.push({ source: entry.sources[0]?.path ?? entry.name, code: "unsafe_path" }); return false;
+  });
+  signals.sort((a, b) => `${a.kind}\0${a.path}`.localeCompare(`${b.kind}\0${b.path}`));
+  diagnostics.sort((a, b) => `${a.source}\0${a.code}`.localeCompare(`${b.source}\0${b.code}`));
+  const canonical = JSON.stringify({ validators, signals, diagnostics,
+    sourceDigests: sourceDigests.sort(([a], [b]) => a.localeCompare(b)) });
+  return { validators, signals, diagnostics, fingerprint: createHash("sha256").update(canonical).digest("hex") };
+}
+
+export async function discoverRepositoryValidatorsAtCommit(rootPath: string, headSha: string,
+  runner: ProcessRunner = runProcess): Promise<ValidatorDiscoveryResult> {
+  const candidates: Candidate[] = [], signals: ValidatorDiscoverySignal[] = [], diagnostics: ValidatorDiscoveryDiagnostic[] = [], sourceDigests: Array<[string, string]> = [];
+  const inventory = await inventoryManifestsAtCommit(rootPath, headSha, runner);
+  if (inventory.state === "unavailable") {
+    diagnostics.push({ source: `commit:${headSha}`, code: inventory.detail.includes("unsafe") ? "unsafe_path" : "malformed" });
+    return exactResult(candidates, signals, diagnostics, sourceDigests);
+  }
+  for (const entry of inventory.entries) {
+    const cwd = normalizedNestedCwd(entry.cwd);
+    if (cwd === null) { diagnostics.push({ source: entry.path, code: "unsafe_path" }); continue; }
+    if (entry.diagnostic) { diagnostics.push({ source: entry.path, code: entry.diagnostic.includes("output limit") ? "oversized" : "malformed" }); continue; }
+    sourceDigests.push([entry.path, entry.oid]);
+    try { candidates.push(...(entry.kind === "package.json" ? packageCandidates(entry.text!, entry.path, cwd)
+      : pyprojectCandidates(entry.text!, entry.path, cwd)));
+    } catch { diagnostics.push({ source: entry.path, code: "malformed" }); }
+  }
+  let tree: ProcessResult;
+  try {
+    tree = await runner({ command: "git", args: ["ls-tree", "-r", "-z", "--full-tree",
+      "--format=%(objectmode) %(objecttype) %(objectname)%x09%(path)", headSha, "--", ".github/workflows",
+      "scripts/verify-release.sh"], cwd: rootPath, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024 });
+  } catch {
+    diagnostics.push({ source: `commit:${headSha}`, code: "malformed" });
+    return exactResult(candidates, signals, diagnostics, sourceDigests);
+  }
+  const records = tree.stdout === "" ? [] : tree.stdout.split("\0");
+  const blobs: Array<{ path: string; oid: string; limit: number }> = [];
+  if (failedProcess(tree) || tree.stdoutUtf8Valid === false || (records.length > 0 && records.pop() !== ""))
+    diagnostics.push({ source: `commit:${headSha}`, code: "malformed" });
+  else {
+    for (const record of records) {
+      const match = /^([0-9]{6}) ([a-z]+) ([0-9a-f]{40}|[0-9a-f]{64})\t(.*)$/.exec(record);
+      if (!match) { diagnostics.push({ source: `commit:${headSha}`, code: "malformed" }); continue; }
+      const [, mode, type, oid, pathname] = match;
+      const workflow = /^\.github\/workflows\/[^/]+\.ya?ml$/i.test(pathname!);
+      if (!workflow && pathname !== "scripts/verify-release.sh") continue;
+      if (type !== "blob" || (mode !== "100644" && mode !== "100755"))
+        diagnostics.push({ source: pathname!, code: "unsafe_path" });
+      else blobs.push({ path: pathname!, oid: oid!, limit: workflow ? WORKFLOW_FILE_LIMIT : RELEASE_SCRIPT_LIMIT });
+    }
+  }
+  const workflows = blobs.filter((item) => item.path.startsWith(".github/workflows/"));
+  const selected = workflows.length > WORKFLOW_COUNT_LIMIT ? blobs.filter((item) =>
+    !item.path.startsWith(".github/workflows/")) : blobs;
+  if (workflows.length > WORKFLOW_COUNT_LIMIT) diagnostics.push({ source: ".github/workflows", code: "limit_reached" });
+  let workflowBytes = 0; const workflowCandidatesFound: Candidate[] = [];
+  for (const blob of selected.sort((left, right) => left.path.localeCompare(right.path))) {
+    let result: ProcessResult;
+    try {
+      result = await runner({ command: "git", args: ["cat-file", "blob", blob.oid],
+        cwd: rootPath, timeoutMs: 30_000, maxOutputBytes: blob.limit });
+    } catch {
+      diagnostics.push({ source: blob.path, code: "malformed" }); continue;
+    }
+    const bytes = Buffer.byteLength(result.stdout);
+    if (failedProcess(result) || result.stdoutUtf8Valid === false || bytes > blob.limit) {
+      diagnostics.push({ source: blob.path,
+        code: result.stdoutTruncated || bytes > blob.limit ? "oversized" : "malformed" }); continue;
+    }
+    sourceDigests.push([blob.path, blob.oid]);
+    if (blob.path === "scripts/verify-release.sh") {
+      candidates.push(candidate("verify-release", { id: "verify-release" },
+        "release_script", blob.path, "regular-file")); continue;
+    }
+    workflowBytes += bytes;
+    if (workflowBytes > WORKFLOW_TOTAL_LIMIT) {
+      diagnostics.push({ source: ".github/workflows", code: "limit_reached" });
+      workflowCandidatesFound.length = 0; signals.length = 0; break;
+    }
+    try {
+      const found = workflowCandidates(blob.path, result.stdout);
+      workflowCandidatesFound.push(...found.candidates); signals.push(...found.signals);
+    } catch { diagnostics.push({ source: blob.path, code: "malformed" }); }
+  }
+  const rootBacked = new Set(candidates.filter((item) => item.config.cwd === undefined)
+    .map((item) => item.name));
+  candidates.push(...workflowCandidatesFound.filter((item) => (item.recipe.id !== "npm-script"
+    && item.recipe.id !== "verify-release") || rootBacked.has(item.name)));
+  return exactResult(candidates, signals, diagnostics, sourceDigests);
+}
+
 export function discoveredValidatorMap(
   result: ValidatorDiscoveryResult,
 ): Record<string, ValidatorConfig> {
@@ -465,17 +583,41 @@ export function createValidatorDiscoverySnapshot(
   scannedAt = new Date().toISOString(),
 ): PersistedValidatorDiscovery {
   return {
-    version: 1,
+    version: 2,
     headSha,
     scannedAt,
     fingerprint: result.fingerprint,
     validators: Object.fromEntries(result.validators.map((entry) => [entry.name, {
       recipe: entry.recipe,
+      ...(entry.config.cwd === undefined ? {} : { cwd: entry.config.cwd }),
       sources: entry.sources,
     }])),
     signals: result.signals,
     diagnostics: result.diagnostics,
   };
+}
+
+const objectRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const exactKeys = (value: Record<string, unknown>, keys: string[]): boolean => JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+export function decodePersistedValidatorDiscoveryJson(raw: string): PersistedValidatorDiscovery {
+  let value: unknown; try { value = JSON.parse(raw); } catch { value = null; }
+  const recipe = (item: unknown): boolean => objectRecord(item) && (item.id === "npm-script" ? exactKeys(item, ["id", "script"]) && NPM_SCRIPTS.includes(item.script as typeof NPM_SCRIPTS[number])
+    : exactKeys(item, ["id"]) && ["pytest", "ruff", "verify-release"].includes(String(item.id)));
+  const source = (item: unknown): boolean => objectRecord(item) && exactKeys(item, ["kind", "path", "evidence"])
+    && ["package_json_script", "pyproject_table", "release_script", "workflow_recipe"].includes(String(item.kind))
+    && typeof item.path === "string" && typeof normalizedNestedCwd(item.path) === "string" && typeof item.evidence === "string"
+    && item.evidence.length > 0 && item.evidence.length <= GENERATED_VALUE_LIMIT && !/[\u0000-\u001f\u007f]/.test(item.evidence);
+  const valid = objectRecord(value) && (value.version === 1 || value.version === 2)
+    && exactKeys(value, ["version", "headSha", "scannedAt", "fingerprint", "validators", "signals", "diagnostics"]) && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(String(value.headSha)) && /^[0-9a-f]{64}$/.test(String(value.fingerprint)) && typeof value.scannedAt === "string"
+    && objectRecord(value.validators) && Object.entries(value.validators).every(([name, item]) =>
+      name.length > 0 && name.length <= GENERATED_VALUE_LIMIT && objectRecord(item) && exactKeys(item, value.version === 1 ? ["recipe", "sources"] : ["recipe", "sources", ...(item.cwd === undefined ? [] : ["cwd"])])
+      && recipe(item.recipe) && Array.isArray(item.sources) && item.sources.length > 0 && item.sources.every(source) && (value.version === 1 || item.cwd === undefined || typeof item.cwd === "string" && typeof normalizedNestedCwd(item.cwd) === "string"))
+    && Array.isArray(value.signals) && value.signals.every((item) => objectRecord(item)
+      && exactKeys(item, ["kind", "path", "reason"]) && ["compose_test_evidence", "workflow_setup_dependent"].includes(String(item.kind)) && typeof item.path === "string" && typeof item.reason === "string")
+    && Array.isArray(value.diagnostics) && value.diagnostics.every((item) => objectRecord(item)
+      && exactKeys(item, ["source", "code"]) && typeof item.source === "string" && ["malformed", "oversized", "unsafe_path", "limit_reached"].includes(String(item.code)));
+  return valid ? value as PersistedValidatorDiscovery : { version: 2, headSha: "", scannedAt: "", fingerprint: createHash("sha256").update(raw).digest("hex"),
+    validators: {}, signals: [], diagnostics: [{ source: "validator_discovery_json", code: "malformed" }] };
 }
 
 export function effectiveValidatorAllowlist(
@@ -526,7 +668,7 @@ export function effectiveValidatorAllowlist(
         override: null,
         suppressed: false,
         effectiveOrigin: "discovered",
-        effectiveConfig: materializeValidatorRecipe(discovered.recipe),
+        effectiveConfig: materializeValidatorRecipe(discovered.recipe, discovered.cwd),
       };
     }
     return {

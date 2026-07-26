@@ -1,10 +1,17 @@
 const standard = Object.freeze(["pytest", "ruff", "verify-release"]);
+const civicRecordsAi = Object.freeze([
+  Object.freeze(["build", "frontend", Object.freeze(["frontend/package.json"])]),
+  Object.freeze(["pytest", "backend", Object.freeze(["backend/pyproject.toml"])]),
+  Object.freeze(["ruff", "backend", Object.freeze(["backend/pyproject.toml"])]),
+  Object.freeze(["test", "frontend", Object.freeze(["frontend/package.json"])]),
+  Object.freeze(["verify-release", null, Object.freeze(["scripts/verify-release.sh", ".github/workflows/release.yml"])]),
+]);
 
 export const validatorDiscoveryCorpusManifest = Object.freeze([
   ["civic311", "b65d21c7d19aa1b3f458e56333481bb75f6ef584", standard, []],
   ["civicboards", "845e777f432ad512953ed49be994c366b87a6070", standard, []],
   ["civicbudget", "731a6b4802cfd8593a00180c37ca3d76a7236de0", standard, []],
-  ["civicclerk", "dae807ec9d1370dd22cf6aba88e4c6fc6b4168d5", ["pytest", "verify-release"], []],
+  ["civicclerk", "dae807ec9d1370dd22cf6aba88e4c6fc6b4168d5", ["build", "pytest", "test", "verify-release"], []],
   ["civiccode", "05994fe716fa904682ec91b574a35e7cef066aa1", ["build", "pytest", "ruff", "typecheck", "verify-release"], []],
   ["civiccomms", "73be36fdcd3b7d429321fbe8d51cec07a466e16b", standard, []],
   ["civiccontracts", "23bcee99a09e1d58441775f2a03b7dcda870ed21", standard, []],
@@ -21,7 +28,7 @@ export const validatorDiscoveryCorpusManifest = Object.freeze([
   ["civicpermit", "3d0998ae40930e71094f511471689846abc350f1", standard, []],
   ["civicplan", "252f23cc83638944fadd303955cda11e13bee674", standard, []],
   ["civicprocure", "5836032f396cb901769e9f2ff7a168e30aefb2f6", standard, []],
-  ["civicrecords-ai", "538766523ad90ee7553b0ffa75b626d3d4850b17", ["verify-release"], ["compose_test_evidence"]],
+  ["civicrecords-ai", "538766523ad90ee7553b0ffa75b626d3d4850b17", civicRecordsAi, ["compose_test_evidence"]],
   ["civicsafety", "38038f9cab7857b278250ff41946f4d1777715f1", standard, []],
   ["civicutility", "4342098cfc72d5cbd52326fa9fc5db8ec3fde346", standard, []],
   ["civiczone", "1d37826d909a601eea5a10f4ebce0b31a605f5d0", standard, []],

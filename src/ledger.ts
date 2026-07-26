@@ -73,7 +73,7 @@ import type {
   WorkbenchSessionRecord,
 } from "./types.js";
 import { modelQuotaGroup, quotaResetAt } from "./antigravity.js";
-import { validatorStateFingerprint, type PersistedValidatorDiscovery } from "./validator-discovery.js";
+import { decodePersistedValidatorDiscoveryJson, validatorStateFingerprint, type PersistedValidatorDiscovery } from "./validator-discovery.js";
 
 interface RunRow {
   id: string;
@@ -346,7 +346,7 @@ function repositoryRecordFromRow(row: Record<string, unknown>): RepositoryRecord
     validators: JSON.parse(String(row.validators_json)) as Record<string, ValidatorConfig>,
     validatorDiscovery: row.validator_discovery_json === null
       ? null
-      : JSON.parse(String(row.validator_discovery_json)) as PersistedValidatorDiscovery,
+      : decodePersistedValidatorDiscoveryJson(String(row.validator_discovery_json)),
     validatorLocalConfig: JSON.parse(String(row.validator_local_config_json)) as Record<string, ValidatorConfig>,
     validatorSuppressions: JSON.parse(String(row.validator_suppressions_json)) as string[],
     governanceSources: JSON.parse(String(row.governance_sources_json)) as string[],

@@ -154,6 +154,9 @@ button { cursor: pointer; }
 .validator-allowlist { margin: 0 8px 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: #090c10; }
 .validator-allowlist summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; min-height: 44px; }
 .validator-allowlist summary span, .validator-sources, .validator-origin { color: var(--muted); font-size: 11px; }
+.validator-execution { display: block; color: var(--lime); font-size: 11px; margin-top: 4px; }
+.validator-selected-paths { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.validator-scan-truth.degraded { color: var(--amber); font-weight: 700; }
 .validator-allowlist ul { display: grid; gap: 7px; padding: 0; list-style: none; }
 .validator-entry { display: flex; justify-content: space-between; gap: 10px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; }
 .validator-entry > div:first-child { display: grid; gap: 4px; min-width: 0; }

@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { discoverRepositoryValidators } from "../dist/src/validator-discovery.js";
+import { discoverRepositoryValidatorsAtCommit } from "../dist/src/validator-discovery.js";
 import { validatorDiscoveryCorpusManifest } from "./validator-discovery-corpus-manifest.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +11,25 @@ const corpusRoot = process.env.CIVICSUITE_ORG_READALL;
 if (!corpusRoot) {
   console.error("CIVICSUITE_ORG_READALL must name the local read-only CivicSuite clone directory.");
   process.exit(1);
+}
+
+function isSemanticValidatorExpectation(value) {
+  return (
+    Array.isArray(value)
+    && value.length === 3
+    && typeof value[0] === "string"
+    && (value[1] === null || typeof value[1] === "string")
+    && Array.isArray(value[2])
+    && value[2].every((sourcePath) => typeof sourcePath === "string")
+  );
+}
+
+function semanticValidators(result) {
+  return result.validators.map((entry) => [
+    entry.name,
+    entry.config.cwd ?? null,
+    entry.sources.map((source) => source.path),
+  ]);
 }
 
 function loadExpectations() {
@@ -30,12 +48,18 @@ function loadExpectations() {
       || typeof entry[0] !== "string"
       || !/^[0-9a-f]{40}$/.test(entry[1])
       || !Array.isArray(entry[2])
-      || entry[2].some((name) => typeof name !== "string")
+      || entry[2].some((validator) => (
+        typeof validator !== "string" && !isSemanticValidatorExpectation(validator)
+      ))
+      || (
+        entry[2].some((validator) => typeof validator === "string")
+        && entry[2].some((validator) => typeof validator !== "string")
+      )
       || !Array.isArray(entry[3])
       || entry[3].some((kind) => typeof kind !== "string")
     ))
   ) {
-    throw new Error("Validator corpus expectations must be non-empty [name, 40-character OID, validator names[], signal kinds[]] tuples");
+    throw new Error("Validator corpus expectations must use validator names[] or semantic [name, cwd-or-null, source paths[]] tuples");
   }
   return parsed;
 }
@@ -43,7 +67,6 @@ function loadExpectations() {
 const expectations = loadExpectations();
 const resolvedCorpusRoot = path.resolve(corpusRoot);
 const failures = [];
-const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-corpus-"));
 
 async function git(cwd, args) {
   const { stdout } = await execFileAsync("git", args, {
@@ -85,25 +108,14 @@ try {
       if (head !== oid) throw new Error(`expected checkout HEAD ${oid}, but found ${head}`);
       await git(repositoryPath, ["cat-file", "-e", `${oid}^{commit}`]);
 
-      const archive = path.join(temporaryRoot, `${name}.tar`);
-      const extracted = path.join(temporaryRoot, name);
-      await mkdir(extracted);
-      await execFileAsync("git", ["archive", "--format=tar", "-o", archive, oid], {
-        cwd: repositoryPath,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        timeout: 30_000,
-        windowsHide: true,
-      });
-      await execFileAsync("tar", ["-xf", archive, "-C", extracted], {
-        timeout: 30_000,
-        windowsHide: true,
-      });
-
-      const result = await discoverRepositoryValidators(extracted);
+      const result = await discoverRepositoryValidatorsAtCommit(repositoryPath, oid);
       const names = result.validators.map((entry) => entry.name);
+      const validators = expectedValidators.every((entry) => typeof entry === "string")
+        ? names
+        : semanticValidators(result);
       const signals = [...new Set(result.signals.map((signal) => signal.kind))].sort();
-      if (JSON.stringify(names) !== JSON.stringify(expectedValidators)) {
-        throw new Error(`expected validators ${JSON.stringify(expectedValidators)}, received ${JSON.stringify(names)}`);
+      if (JSON.stringify(validators) !== JSON.stringify(expectedValidators)) {
+        throw new Error(`expected validators ${JSON.stringify(expectedValidators)}, received ${JSON.stringify(validators)}`);
       }
       if (JSON.stringify(signals) !== JSON.stringify(expectedSignals)) {
         throw new Error(`expected signals ${JSON.stringify(expectedSignals)}, received ${JSON.stringify(signals)}`);
@@ -125,13 +137,11 @@ try {
   }
 } catch (error) {
   failures.push(`validator corpus census failed: ${error instanceof Error ? error.message : String(error)}`);
-} finally {
-  await rm(temporaryRoot, { recursive: true, force: true });
 }
 
 if (failures.length) {
   console.error(`Validator-discovery corpus failed (${failures.length}/${expectations.length}):\n${failures.join("\n")}`);
   process.exitCode = 1;
 } else {
-  console.log(`Validator-discovery corpus passed: ${expectations.length}/${expectations.length} exact immutable archives; clean clones; no clone writes, network, or validator execution.`);
+  console.log(`Validator-discovery corpus passed: ${expectations.length}/${expectations.length} exact pinned commits; clean clones; no clone writes, network, or validator execution.`);
 }
