@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.35**
+Plan version: **1.37**
 Written: **2026-07-14**
 Revised: **2026-07-26**
-Product specification baseline: **DevHarmonics Product Specification v1.14**
+Product specification baseline: **DevHarmonics Product Specification v1.16**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.35 (2026-07-26)** — Replaced the narrow Phase 0/Slice D beta path with the owner-locked full-feature beta contract. Every specified feature and function is now required before beta, including the complete comprehension program, campaign orchestration, analytics and evaluation, workflows and triggers, ACP and ecosystem breadth, restart-safe recovery, all CivicSuite acceptance levels, and integrated real-product proof. Intermediate gates are integration checks rather than miniature user-readiness passes. Feature delivery takes priority over optional polish; only obvious defects and correctness, security, data-loss, recovery, or downstream-blocking issues interrupt the feature sequence. Publication still requires a separate owner go.
+Revision history: **v1.37 (2026-07-26)** — Made the feature-first roadmap executable rather than merely comprehensive: every remaining Milestone C/D priority now has one implementation owner; DH-370/DH-480 are prerequisites inside the restart-safe campaign kernel; adaptive-workforce refresh, optimization, upgrade/rollback, and dynamic splitting have explicit acceptance; DH-815 owns ecosystem packaging; all parallel feature tracks must join before integrated proof; and the exact-candidate gate follows, rather than precedes, the single final hardening pass.
+
+Prior revision: **v1.36 (2026-07-26)** reconciled the execution roadmap with the owner-confirmed feature-first order, P0-2 completion, early campaign recovery/workflow enforcement, all C/D breadth, handoff, and installer before final hardening. **v1.35 (2026-07-26)** replaced the narrow Phase 0/Slice D beta path with the owner-locked full-feature beta contract.
 
 Prior revision: **v1.34 (2026-07-25)** — Defined the former Option A ("one product airtight") narrow beta path. It was superseded because it allowed beta readiness while specified capability families remained unimplemented.
 
@@ -406,6 +408,9 @@ Deliverables:
 
 - persist provider-neutral model identities and connection-specific availability;
 - reconcile provider catalogs, signed compatibility data, runtime discovery, and empirical observations;
+- refresh enumerable catalogs at launch, at least every 24 hours while running,
+  when cached metadata becomes stale, and when provider/runtime fingerprints
+  change, without activating a newly discovered model;
 - retain requested identifiers, aliases, runtime-verified resolved identifiers, and an explicit unresolved state when actual execution identity is not observable;
 - mark models known, visible, verified, qualified, active, degraded, or retired.
 
@@ -413,6 +418,9 @@ Acceptance:
 
 - new models appear without a DevHarmonics code release when an adapter can enumerate them;
 - a provider announcement alone never marks a model usable;
+- a stale, expired, invalidly signed, or fingerprint-mismatched catalog cannot
+  preserve qualification or activation, and refresh failure retains the last
+  known snapshot as visibly stale rather than silently treating it as current;
 - every attempt receipt distinguishes the requested model from runtime-verified actual resolution; an unverified request is never presented as the model that executed.
 
 #### DH-230: Health, quota, and cooldown manager — L
@@ -440,13 +448,19 @@ Deliverables:
 - create versioned role and workload fixtures;
 - test planning, implementation, review, structured output, tool use, context handling, instruction following, and speed;
 - support conservative, qualified-automatic, alias-tracking, and pinned upgrade policies;
+- stage controlled automatic family upgrades as reversible candidate
+  promotions, retaining the prior exact model, harness, qualification, and
+  routing configuration as the rollback target;
 - record qualification evidence and recommendation rationale.
 
 Acceptance:
 
 - a newly discovered model cannot enter protected roles before policy allows it;
 - qualification results are reproducible from fixture and configuration versions;
-- upgrades can be accepted, deferred, or rejected by the user.
+- upgrades can be accepted, deferred, or rejected by the user;
+- automatic upgrade policy can promote only a currently qualified candidate,
+  and rollback restores the retained prior configuration without reinterpreting
+  historical run evidence.
 
 #### DH-250: Empirical capability profiles — M
 
@@ -472,14 +486,18 @@ Deliverables:
 
 - promote the task DAG into a versioned execution graph;
 - add repository scope, expected artifacts, acceptance criteria, risk, permissions, capability needs, and integration conditions;
-- support bounded replanning with recorded rationale;
+- support bounded replanning, dynamic splitting of an admitted task into
+  dependency-correct child tasks, and explicit continuation handoff with
+  recorded rationale and retained parent/attempt evidence;
 - represent diagnostic, repair, review, and release tasks explicitly.
 
 Acceptance:
 
 - every task is executable or rejected with a specific missing field;
 - graph revisions preserve their predecessors;
-- replanning cannot silently widen scope or permissions.
+- replanning or splitting cannot silently widen scope, permissions, spending,
+  repository impact, or acceptance criteria, and accepted child work is not
+  repeated after handoff.
 
 #### DH-310: Capacity broker — L
 
@@ -488,13 +506,18 @@ Deliverables:
 - combine ready tasks, provider capacity, local resources, user policy, and integration bottlenecks;
 - expose effective concurrency without a built-in agent ceiling;
 - queue excess work fairly;
-- apply provider and model cooldowns.
+- apply provider and model cooldowns;
+- optimize admission and assignment for dependency critical paths and observed
+  quota/reset windows without starving bounded noncritical work.
 
 Acceptance:
 
 - launching more implementors is limited by measured resources rather than a fixed constant;
 - the broker avoids assigning more local models than GPU or RAM policy permits;
-- capacity decisions are visible in the run timeline.
+- capacity decisions are visible in the run timeline;
+- simulation proves that a scarce quota window is reserved for eligible
+  critical-path work when doing so shortens the plan, while expired or uncertain
+  quota observations cannot fabricate available capacity.
 
 #### DH-320: Model-aware router — L
 
@@ -605,6 +628,9 @@ Deliverables:
 - run expensive compiler, test, scanner, or runtime diagnostics once at controlled barriers;
 - retain complete DiagnosticArtifacts and classify findings by file, subsystem, dependency, ownership, and failure class;
 - create non-overlapping bounded repair shards with exact diagnostic slices;
+- integrate shard admission with DH-310 resource forecasts for disk, CPU,
+  memory, process count, local-model VRAM, provider concurrency, and exclusive
+  commands;
 - coordinate fan-in, integration ownership, and barrier revalidation.
 
 Acceptance:
@@ -612,6 +638,9 @@ Acceptance:
 - workers do not independently launch prohibited shared diagnostics;
 - every repair task traces to exact diagnostic findings;
 - overlapping ownership is detected before parallel admission;
+- a campaign simulation under disk, memory, process, VRAM, provider, and
+  exclusive-command pressure reduces concurrency or pauses admission before
+  host instability, while retaining resumable stage/shard state;
 - revalidation uses one consistent integration snapshot.
 
 ### 6.4 Context, agents, tools, and evidence
@@ -680,6 +709,8 @@ Acceptance:
 Deliverables:
 
 - register local commands, validators, MCP tools, provider-native tools, browser/computer use, Git, GitHub, issue systems, and reusable workflows;
+- register versioned agent skills and qualification fixtures as governed
+  capabilities rather than ambient prompt text;
 - specify input/output schema, trust level, permissions, side effects, secrets policy, and receipt requirements;
 - evaluate tool requests against task scope and autonomy;
 - enforce stage-specific command allow/deny policy outside prompts, including destructive and cross-worktree Git operations;
@@ -690,6 +721,8 @@ Acceptance:
 
 - agents see only tools allowed for their role and task;
 - tool invocations are typed and receipted;
+- a historical run resolves every tool and skill to the exact registered
+  revision it used;
 - prompt instructions cannot bypass a denied command or exclusive-operation lock;
 - external writes, installs, signing, publishing, deployment, spending, and destructive operations require appropriate approval.
 
@@ -1210,10 +1243,38 @@ Deliverables:
 Acceptance:
 
 - workflows are reviewable before execution;
+- workflow approval points, evidence requirements, and completion contracts are
+  enforced by the runtime state machine rather than carried only as advisory
+  prompt or policy-note text;
 - workflow updates do not rewrite historical runs;
 - promoting a pilot creates a new template revision without silently widening permissions;
 - historical runs retain the exact workflow and skill revisions used;
 - CivicSuite can maintain approved suite-specific workflows.
+
+#### DH-815: Ecosystem package contract — L
+
+Deliverables:
+
+- package provider/runtime adapters, tool definitions, workflows, skills, and
+  qualification suites behind one versioned installable manifest;
+- declare compatibility ranges, capability contracts, permissions, network and
+  privacy behavior, cost class, provenance, content hashes, and signatures where
+  a trusted signer exists;
+- support local inspect, install, enable, disable, upgrade, rollback, and removal
+  without editing DevHarmonics source; and
+- pin the exact package and component revisions into every affected run.
+
+Acceptance:
+
+- a package can be inspected while disabled and cannot execute, contact a
+  service, expose a tool, or become schedulable until explicitly enabled under
+  compatible policy;
+- tampered, incompatible, or incomplete packages fail closed with a specific
+  diagnostic;
+- disabling or rolling back a package removes its active candidates without
+  rewriting historical evidence; and
+- one conformance fixture installs a package containing an adapter, a tool, a
+  workflow, a skill, and its qualification suite through the same contract.
 
 #### DH-820: ACP transport — L
 
@@ -1280,6 +1341,9 @@ Acceptance:
 - enabling it is a guided setup rather than a code change;
 - spending and data-boundary violations fail before invocation;
 - disabling it removes all API candidates from scheduling.
+- the Milestone D3 integration gate requires both a qualified DH-825 Open
+  Interpreter worker and the direct OpenAI adapter to schedule through the same
+  provider-neutral task, policy, and evidence contracts.
 
 #### DH-840: Small-team handoff — M
 
@@ -1314,7 +1378,14 @@ Acceptance:
 - application closure and provider sign-out are clearly distinct;
 - upgrade preserves configuration and ledger data.
 
-#### DH-910: Diagnostics and support bundle — M
+#### DH-910: Post-beta release-support diagnostics and bundle — M
+
+Boundary: **Not a committed Milestone A-D or functional-requirement feature and
+not a full-feature beta blocker.** Setup/runtime diagnostics required by the
+specification remain owned by their product work packages. This optional
+redacted support-export package starts only after the beta feature set and
+exact-candidate decision unless a concrete beta-blocking diagnostic need is
+discovered.
 
 Deliverables:
 
@@ -1329,6 +1400,11 @@ Acceptance:
 - every degraded status has a recommended action.
 
 #### DH-920: Release engineering — L
+
+Boundary: **Release-gate infrastructure, not a Milestone A-D product feature.**
+It may be completed during the one post-feature hardening pass because the
+feature-track join means all specified product behavior exists, not that the
+candidate has already been packaged, rehearsed, or presented.
 
 Deliverables:
 
@@ -1361,32 +1437,46 @@ deliveries contract remains useful as an intermediate integration checkpoint,
 but it cannot produce a beta candidate while committed features remain planned,
 advisory-only, hidden, or absent.
 
-The live [beta requirements trace](BETA_REQUIREMENTS_TRACE.md) inventories every
-normative specification row. No beta candidate passes while any trace row lacks
-an implementation unit, disposition, or exact evidence.
+The live [beta requirements trace](BETA_REQUIREMENTS_TRACE.md) mechanically
+inventories every normative specification row; its implementation assessment
+is editorial and must be supported by current evidence. No beta candidate
+passes while any trace row lacks an implementation unit, disposition, or exact
+evidence.
 
-1. Complete **Block 0a** and continue through the complete Phase 0
-   comprehension program:
+1. Finish the immediate comprehension correctness prerequisites:
    - P0-1 release-version comprehension — complete;
-   - P0-2 monorepo/subproject comprehension — in progress;
+   - P0-2 monorepo/subproject comprehension — complete in merged PR #58
+     (`09209e5`);
    - P0-3 structured dependency parsing and provenance — pending; and
    - P0-4 real validator discovery — complete.
-2. Build the remaining product features in dependency-aware parallel slices:
-   campaign/stage orchestration and pilot promotion; diagnostic partitioning,
-   shards, differential validation, and regression accounting; full recovery;
-   analytics and evaluation-driven improvement; structurally enforced reusable
-   workflows and bounded triggers; remaining product-manager cockpit controls;
-   ACP, provider/runtime/tool breadth, and portable handoffs.
-3. Complete all Milestone A-D priorities and every applicable functional
+   Continue the broader full-repository comprehension census alongside feature
+   delivery; close the census after the feature set is implemented and before
+   integrated beta proof.
+2. Build the restart-safe campaign kernel in dependency order: structurally
+   enforce workflow contracts and campaign templates, then complete recovery,
+   stages, pilots, promotion, shards, diagnostic partitioning, test integrity,
+   differential validation, and regression accounting before broad fan-out.
+3. Complete the remaining adaptive-workforce, evaluation, learning, trigger,
+   and product-manager-control features. Once shared runtime contracts are
+   stable, implement the Open Interpreter adapter as ACP's first conformance
+   target while completing OpenRouter and direct OpenAI API breadth in parallel.
+   Add the broader tool/skill registry, ecosystem packaging, portable handoff,
+   and basic installer/provider onboarding before integrated proof.
+   Milestone D is required to ship; its paid, privacy-sensitive, and third-party
+   connections remain optional to enable and disabled by default.
+4. Complete all Milestone A-D priorities and every applicable functional
    requirement. Optional integrations ship disabled by default but are
    implemented and can be enabled without a code change.
-4. Exercise the integrated factory through the required single-repository,
+5. Join every Milestone C/D and beta-facing product track, close the full
+   configured-repository comprehension census, then exercise the integrated
+   factory through the required single-repository,
    multi-repository, divergence-containment, pilot-to-campaign, trigger, and
    evaluation/rollback proofs.
-5. Run a requirement-by-requirement full-spec beta audit and integrated runtime
-   gauntlet against the exact candidate. Repair beta blockers; route
-   nonblocking cosmetic polish to the post-feature beta pass rather than
-   reopening completed feature slices.
+6. Run final hardening only after the feature set exists: whole-product
+   performance, accessibility, and security; upgrade/recovery and
+   clean-machine rehearsal; and release engineering/presentation. Then run the
+   requirement-by-requirement full-spec audit and integrated runtime gauntlet
+   against the exact candidate and repair beta blockers.
 
 Passing this complete contract makes the candidate ready for the owner's beta
 decision. It does not authorize a tag, release publication, or announcement;
@@ -1505,17 +1595,26 @@ product-aware repository selection and impact planning, DH-720's exact
 multi-repository execution plus automatic fixer/re-review quorum loop, and
 DH-800's first approved-delivery slice are implemented. Real single- and
 multi-repository CivicSuite work has already exercised these foundations.
-Remaining work in this increment includes P0-2/P0-3 correctness, full restart
-reconstruction and cleanup, campaign/stage orchestration, pilot promotion, and
-the integrated Levels 1-4 proofs. DH-632 feedback remains required for every
+P0-2 completed in merged PR #58 at merge commit `09209e5`. Remaining work in
+this increment includes P0-3 correctness; structurally enforced workflow
+contracts and campaign templates; restart reconstruction and reconciliation;
+campaign/stage orchestration, pilot promotion, diagnostic partitioning,
+test-integrity controls, differential validation, regression accounting, and
+integrated Levels 1-4 proofs. DH-632 feedback remains required for every
 workflow exercised by that work.
 
 Work:
 
 - DH-400 product and repository intelligence;
 - DH-632 visible operation feedback for every workflow exercised by the pilot;
+- DH-340 restart, resume, and reconciliation as part of the campaign kernel;
+- DH-810 structural workflow-contract enforcement and campaign templates before
+  campaign fan-out;
 - DH-350 campaign and stage orchestrator;
 - DH-360 pilot-to-scale promotion;
+- DH-370 diagnostic partitioner and shard barriers;
+- DH-470 campaign test-integrity and anti-shortcut controls;
+- DH-480 differential validation and regression accounting;
 - DH-700 product registry;
 - DH-710 cross-repository planning;
 - DH-720 integration sets;
@@ -1526,21 +1625,27 @@ Exit gate:
 
 - DevHarmonics completes a reviewed CivicSuite single-repository change;
 - the complete workflow is proven on a representative pilot before campaign fan-out;
+- broad fan-out is blocked until its diagnostic, test-integrity, differential,
+  and regression-budget contracts are executable and the pilot promotion gate
+  has passed;
 - it survives a provider fallback;
 - it completes one bounded cross-repository objective with exact commits, checks, documentation impacts, and unresolved risks.
 
-### Increment 6: Product-development workflows — v0.7
+### Increment 6: Adaptive workforce and product-development workflows — v0.7
 
 Work:
 
 - DH-635 live run steering;
+- remaining DH-220 live catalog refresh;
+- remaining DH-240 auditions and controlled upgrade/rollback;
+- remaining DH-300 dynamic splitting, replanning, and handoff;
+- remaining DH-310/DH-320 critical-path and quota-window optimization;
+- broader DH-440 tool and skill registry;
 - DH-650 analytics;
 - DH-660 evaluation and improvement;
-- DH-370 diagnostic partitioner and shard barriers;
-- DH-480 differential validation and regression accounting;
 - DH-800 GitHub;
 - DH-805 development triggers;
-- DH-810 reusable workflows;
+- DH-810 broader reusable workflows, workflow/skill packs, and product scoping;
 - DH-740 CivicSuite Level 5;
 - release and consistency workflow packs.
 
@@ -1551,34 +1656,46 @@ Exit gate:
 - CivicSuite release truth and compatibility workflows produce actionable, reviewable evidence;
 - an allowlisted GitHub or Linear event can create a bounded objective draft without silently authorizing execution;
 - one campaign centralizes an expensive diagnostic, partitions non-overlapping repairs, and reports equivalence plus regressions honestly;
-- analytics and versioned evaluations identify routing and workflow improvements without silently promoting them.
+- analytics and versioned evaluations identify routing and workflow improvements without silently promoting them;
+- model catalogs refresh automatically, controlled upgrades can roll back,
+  critical-path/quota scheduling is evidence-based, and dynamic splitting
+  preserves scope and handoff evidence.
 
 ### Increment 7: Ecosystem breadth — v0.8
 
 Work:
 
-- DH-820 ACP;
-- DH-830 OpenRouter/API hardening and additional API-provider support;
-- the feature-flagged Open Interpreter worker adapter;
-- a direct OpenAI API adapter through the provider-neutral API contract;
-- policy, privacy, cost, and compatibility hardening.
+- DH-825 feature-flagged Open Interpreter worker adapter, followed by DH-820
+  ACP with Open Interpreter as its first conformance target;
+- DH-830 completion of OpenRouter setup/runtime behavior and the direct OpenAI
+  API adapter through the provider-neutral contract, proceeding in parallel
+  once the shared runtime contracts are stable;
+- DH-815 ecosystem packages for adapters, tools, workflows, skills, and
+  qualification suites;
+- DH-840 portable objective/workflow/evidence/delivery-handoff bundles;
+- DH-900 basic Windows installer/launcher and provider onboarding; and
+- ecosystem packaging plus bounded policy, privacy, cost, and compatibility
+  controls for required-to-ship, optional-to-enable integrations.
 
 Exit gate:
 
 - ACP and API models participate through the same scheduler and evidence contracts;
 - OpenRouter can be enabled through setup without code changes;
 - default installations make no paid API calls;
-- fallback cannot bypass spending or privacy policy.
+- fallback cannot bypass spending or privacy policy;
+- portable handoff transfers neither credentials nor authority; and
+- a supported Windows machine can reach the setup cockpit without source
+  commands.
 
 ### Increment 8: Full-feature beta integration and proportional hardening
 
 Work:
 
-- DH-340 full recovery and reconciliation;
-- DH-910 diagnostics;
-- DH-920 release engineering;
-- performance, accessibility, security, upgrade, and clean-machine gates;
-- portable small-team handoff bundles without hosted infrastructure.
+- final restart/recovery and retained-work reconciliation rehearsal against the
+  integrated exact candidate (DH-340 implementation belongs to Increment 5);
+- whole-product performance, accessibility, and security gates;
+- upgrade and clean-machine installer/recovery rehearsal;
+- DH-920 release engineering and presentation;
 - requirement-to-implementation traceability for every specification item;
 - integrated all-feature runtime and adversarial beta proof.
 
@@ -1600,26 +1717,62 @@ platform, or enterprise administration layer.
 
 ## 8. Dependency map and parallelism
 
-Critical sequence:
+Current critical sequence:
 
-    domain and migrations
-        -> runtime contract
-        -> connection and model registry
-        -> health and qualification
-        -> capacity, routing, and fallback
-        -> structured context, tools, and evidence
-        -> durable visible operation feedback
-        -> multi-repository integration
-        -> CivicSuite release workflows
-        -> ACP and API breadth
+    P0-3 dependency/provenance correctness
+        -> structural workflow and campaign-template contracts
+        -> restart-safe campaign kernel, pilots, shards, and validation
+        -> join every required feature track
+        -> full-repository comprehension census closure
+        -> pre-candidate integrated CivicSuite/full-spec feature proof
+        -> final whole-product hardening
+        -> exact-candidate beta gate
 
-Useful parallel tracks after DH-100 and DH-110:
+Useful parallel tracks once their shared domain/runtime contracts are stable:
 
-- Experience: application shell, setup flows, SSE client, and the shared DH-632 operation-feedback contract;
-- Runtime: subscription adapters, Ollama, and model discovery;
-- Intelligence: repository ingestion, context packs, and qualification fixtures;
-- Assurance: redaction, migration tests, scheduler simulation, and evidence export;
-- CivicSuite: repository inventory, governance mapping, and pilot fixture design.
+- Adaptive workforce: catalog refresh, auditions, scheduling optimization,
+  controlled upgrades, dynamic replanning, tools/skills, and governed learning;
+- Runtime breadth: Open Interpreter then ACP conformance, with direct
+  OpenAI/OpenRouter completion proceeding alongside it;
+- Experience: remaining cockpit controls, portable handoff, basic installer,
+  provider onboarding, and the cross-cutting DH-632 feedback contract;
+- Assurance/census: repository comprehension evidence, campaign fixtures,
+  deterministic validation, and requirement trace attachment.
+
+The adaptive-workforce, evaluation/control, runtime-breadth, and experience
+tracks are parallel only after their shared contracts stabilize. Every one is a
+required predecessor of the feature-track join; none may be bypassed merely
+because it is not on the single campaign-kernel chain.
+
+### Milestone C/D accountable implementation map
+
+Each priority has one accountable work package. Dependencies contribute behavior
+but do not create a second owner. The named acceptance anchor is the minimum
+implementation evidence required before the trace row can advance from
+`PLANNED`.
+
+| Priority | Accountable unit | Required dependencies | Acceptance anchor |
+|---|---|---|---|
+| C1 catalog refresh | DH-220 | DH-200, DH-210 | Launch/24-hour/stale/fingerprint refresh; invalid metadata cannot preserve active qualification |
+| C2 auditions | DH-240 | DH-220 | Versioned role fixtures reproduce qualification and reject unqualified protected-role admission |
+| C3 empirical profiles | DH-250 | DH-430, DH-450 | Evidence-sliced model/workload observations with visible uncertainty and reset/exclusion |
+| C4 capacity-aware scheduling | DH-310 | DH-230, DH-250, DH-520 | Simulated provider/local pressure changes admission without destabilizing the host |
+| C5 critical-path/quota optimization | DH-310 | DH-230, DH-300, DH-320 | Quota-window simulation prioritizes eligible critical work without fabricating capacity or starvation |
+| C6 controlled upgrades/rollback | DH-240 | DH-220, DH-250 | Only qualified candidates promote; retained prior exact configuration restores on rollback |
+| C7 splitting/replanning/handoff | DH-300 | DH-330, DH-340 | Child graph preserves scope/authority and accepted work survives attributed handoff |
+| C8 ACP | DH-820 | DH-200, DH-825 | Open Interpreter conformance target completes through normalized task/result/evidence contracts |
+| C9 tool/skill registry | DH-440 | DH-430, DH-510 | Exact registered tool/skill revisions are policy-bounded, receipted, and historically resolvable |
+| C10 governed learning | DH-660 | DH-250, DH-650 | Evaluated recommendation can be accepted, rejected, and rolled back without rewriting authority |
+| C11 campaigns/pilots/shards | DH-350 | DH-310, DH-340, DH-360, DH-370 | Restart-safe pilot promotion and resource-pressure shard simulation pass before fan-out |
+| C12 adversarial review/fix/re-review | DH-460 | DH-430, DH-450 | Required independent tiers/lenses pass; fixes invalidate receipts and force re-review |
+| C13 diagnostics/test integrity/differential/regressions | DH-480 | DH-370, DH-470 | One campaign partitions diagnostics and reports unexplained differences/regressions without aggregate-test concealment |
+| D1 OpenRouter opt-in policy | DH-830 | DH-210, DH-320 | Guided enablement; disabled default; credential/privacy/spend violations fail before invocation |
+| D2 cost-aware routing/budgets | DH-320 | DH-250, DH-650, DH-830 | Qualified parity favors cheaper routing and positive API budgets remain hard admission limits |
+| D3 Open Interpreter + direct OpenAI | DH-830 | DH-825 | Both workers schedule through the same provider-neutral policy/task/evidence contract |
+| D4 ACP/ecosystem packaging | DH-815 | DH-440, DH-810, DH-820 | Tamper/compatibility checks and full adapter/tool/workflow/skill/qualification package fixture pass |
+| D5 bounded triggers | DH-805 | DH-620, DH-680, DH-800 | Deduplicated trigger creates a bounded draft and cannot authorize mutating execution |
+| D6 portable handoff | DH-840 | DH-450, DH-810 | Import/export preserves provenance while transferring no credentials, secrets, or authority |
+| D7 local analytics/evaluation | DH-660 | DH-650 | Evidence-backed improvement promotion is comparable, explicit, versioned, and reversible |
 
 Parallel implementation must not allow two work packages to redefine the same domain contract independently. Domain and migration changes require a single integration owner and compatibility review.
 
@@ -1766,42 +1919,57 @@ The first production target should be a low-risk, high-evidence objective such a
 
 The pilot must use local clones and the exact repository governance present at execution time. Public GitHub information is discovery input, not authorization to write.
 
-## 12. Initial engineering backlog
+## 12. Live feature-first engineering sequence
 
-The first implementation sequence is:
+The historical foundation backlog has substantially landed. The live sequence,
+as of 2026-07-26, is:
 
-1. Add schema-version tracking, backup, and transactional migration scaffolding.
-2. Add provider-neutral identifiers and compatibility projections for current ProviderName records.
-3. Add typed durable events and cursor queries without changing the UI transport yet.
-4. Add centralized redaction at every ledger write entry point.
-5. Define RuntimeAdapter, ProviderConnection, Model, InvocationRequest, InvocationEvent, and InvocationResult contracts.
-6. Port Codex, Claude, and Gemini adapters behind the new runtime contract.
-7. Add connection diagnostics that distinguish installed, authenticated, visible, healthy, and available.
-8. Add the model registry tables and manual model entries.
-9. Add persisted SSE with reconnect cursors and replace active-run polling.
-10. Build Setup and Models cockpit surfaces against the new connection and model APIs.
-11. Add Ollama discovery and read-only invocation.
-12. Add the health-check queue and cooldown state machine.
-13. Add the first qualification fixtures and manual qualification workflow.
-14. Add execution-graph repository scope, capability needs, and result contracts.
-15. Add the capacity broker and explainable manual routing before automatic scoring.
-16. Add classified fallback using fake providers and quota simulation.
-17. Add blackboard, context packs, and structured result envelopes.
-18. Add secure local-model tools after the policy engine exists.
-19. Register CivicSuite as the first multi-repository product and complete Observe.
-20. Select and complete the first bounded CivicSuite implementation objective.
-21. Enforce stage-specific command policy outside model prompts and retain denied-operation receipts.
-22. Add representative-pilot selection and promotion evidence before campaign fan-out.
-23. Add configurable adversarial review quorums, fixer disposition, and re-review invalidation.
-24. Add expected-versus-actual test census, anti-shortcut fixtures, and differential behavior baselines.
-25. Add campaign stages, resource-aware shards, centralized diagnostic partitioning, regression budgets, and restart-safe promotion gates.
-26. Add live run steering with pause-admission, redirect, interrupt-and-handoff, reprioritization, and reassignment receipts.
-27. **Implemented:** Add approved branch/draft-PR delivery handoff with exact evidence and no implicit merge or deployment.
-28. Add Git-versioned reusable workflow and agent-skill packs with exact historical revision retention.
-29. Add allowlisted GitHub/Linear and local schedule/monitoring triggers that create bounded drafts without bypassing approval.
-30. Add evidence-based analytics and evaluation promotion with honest subscription-cost uncertainty and reversible configuration changes.
+1. **Complete P0-3.** P0-2 is complete in merged PR #58 (`09209e5`); preserve
+   its exact-commit nested release-unit/validator behavior while adding
+   structured dependency parsing and provenance.
+2. **Continue the full-repository comprehension census in parallel.** Attach
+   evidence as features expose new repository facts, but do not turn census
+   administration into a feature-delivery blocker. Close it after the feature
+   set exists and before integrated beta proof.
+3. **Make workflow policy structural before campaign scale.** Enforce DH-810
+   approval, evidence, and completion contracts and add versioned campaign
+   templates before or with DH-350/DH-360 fan-out.
+4. **Build the restart-safe campaign kernel (owns C11 and C13).** Integrate
+   DH-340 recovery with DH-350/DH-360 campaigns, stages, pilots, and promotion;
+   DH-370 resource-aware shards and diagnostic partitioning; and DH-470/DH-480
+   test integrity, differential validation, and regression accounting.
+5. **Finish the remaining non-runtime adaptive workforce.** Deliver C1-C2,
+   C5-C7, and C9: catalog refresh, auditions, critical-path/quota optimization,
+   controlled upgrades/rollback, dynamic splitting/replanning/handoff, and the
+   broader tool/skill registry. Existing C3, C4, and C12 claims still require
+   final beta proof.
+6. **Finish evaluation, learning, triggers, and product-manager control (owns
+   C10, D5, and D7).** Complete analytics, reversible evaluation promotion,
+   governed learning, cockpit campaign/evidence/approval controls,
+   GitHub/Linear/local schedule/monitoring triggers, and DH-632 feedback for
+   every new workflow.
+7. **Finish runtime and ecosystem breadth (owns C8 and D1-D4).** Complete
+   OpenRouter activation/setup and cost/budget behavior, deliver Open
+   Interpreter followed by ACP conformance, add direct OpenAI, and implement
+   DH-815 ecosystem packaging. These tracks may proceed in parallel once their
+   shared runtime contracts stabilize; every optional connection remains
+   disabled until configured.
+8. **Finish portable local operation (owns A13 and D6).** Deliver DH-840
+   portable handoff and the basic DH-900 Windows installer/launcher and provider
+   onboarding before integrated proof.
+9. **Join every feature track, close comprehension, and prove the integrated
+   product.** Resolve every
+   remaining trace disposition, pass the full configured-repository census,
+   and run all required CivicSuite, campaign, trigger, evaluation, recovery,
+   and handoff journeys.
+10. **Run final hardening once.** Run whole-product performance, accessibility,
+     and security; rehearse
+     upgrade/recovery and clean-machine installation; complete DH-920 release
+     engineering/presentation; then gate the exact beta candidate.
 
-This order deliberately produces inspectable user value after items 9 through 13 while the deeper scheduler and multi-repository work continues.
+Each feature slice receives only the correctness, security, recovery, and
+integration evidence needed to protect subsequent work. Nonblocking cosmetic
+or production polish stays in item 10.
 
 ## 13. Decisions that must be made during implementation
 
@@ -1841,18 +2009,21 @@ The product specification remains the authority for product scope. This implemen
 
 Follow the [full-feature beta execution contract](#current-beta-execution-contract-owner-locked-2026-07-26):
 
-1. finish P0-2 and P0-3 while starting independent full-recovery and campaign
-   foundations in parallel;
-2. complete the remaining campaign, pilot, shard, diagnostic, differential, and
-   restart-safe orchestration capabilities;
-3. complete analytics, evaluation, structurally enforced workflows, triggers,
-   and the remaining product-manager control-plane functions;
-4. complete ACP, provider/runtime/tool breadth, portable handoffs, and every
-   other specified ecosystem capability;
-5. pass the complete Phase 0 census and run the required integrated real-product
-   proofs; and
-6. perform one full-feature beta verification and repair pass before presenting
-   the exact candidate for owner go/no-go.
+1. finish P0-3 while continuing the full-repository comprehension census in
+   parallel; P0-2 is complete in merged PR #58 (`09209e5`);
+2. structurally enforce workflow/campaign-template contracts, then complete the
+   restart-safe campaign, pilot, shard, diagnostic, differential, and
+   regression-accounting kernel;
+3. complete the remaining non-runtime Milestone C adaptive-workforce features,
+   then evaluation, governed learning, triggers, and product-manager controls;
+4. complete Open Interpreter followed by ACP conformance, OpenRouter/direct
+   OpenAI, and DH-815 ecosystem packaging; then deliver portable handoff and
+   basic installer/provider onboarding, satisfying every Milestone D priority;
+5. join all feature tracks, close the full-repository comprehension census, and
+   run all integrated real-product proofs; and
+6. perform the support-bundle, whole-product nonfunctional,
+   upgrade/clean-machine, release-engineering/presentation, and exact-candidate
+   beta verification pass before presenting the candidate for owner go/no-go.
 
 Do not insert broad polish or release-readiness projects between feature slices.
 Each slice gets the checks needed to prove its behavior and protect downstream

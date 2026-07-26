@@ -1,7 +1,7 @@
 # Beta requirements trace
 
-Source specification: current dirty candidate `docs/PRODUCT_SPEC.md`, v1.14, SHA-256 `95EFE5F32ABD196CB153EF80794AEDE0CB4022A34CCB86D9E59E05DB60DB2EEB`.
-Generated mechanically from the exhaustive v1.14 inventory; no implementation status or beta evidence is inferred.
+Source specification: current dirty candidate `docs/PRODUCT_SPEC.md`, v1.16, SHA-256 `6144C8C523D4CF3AC78613768F036B01337A27C5A612F29C1FE8867D754B35F5`.
+The normative-row inventory is generated mechanically from v1.16. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
 
 ## Machine-checkable totals
 
@@ -11,10 +11,10 @@ Generated mechanically from the exhaustive v1.14 inventory; no implementation st
 - Decided items: **16**
 - CivicSuite acceptance-ladder bullets: **18**
 
-## Initial implementation assessment
+## Initial editorial implementation assessment
 
-This assessment translates explicit implementation-plan and README claims into
-the first beta backlog. `CLAIMED` means the current repository says the
+This editorial assessment translates explicit implementation-plan and README
+claims into the first beta backlog. `CLAIMED` means the current repository says the
 capability exists; it still needs exact-candidate beta evidence. `PARTIAL` means
 some required behavior exists but the specification is not complete. `MISSING`
 means no completed implementation is claimed. The exhaustive matrix below
@@ -26,7 +26,7 @@ implementation unit and evidence; beta cannot pass with any such row remaining.
 | Status | Requirements | Count | Primary implementation units |
 |---|---|---:|---|
 | CLAIMED | FR-001–003, FR-100–112, FR-200–205, FR-207–209, FR-300–307, FR-400–403, FR-405–407, FR-503, FR-507, FR-604–605 | 44 | DH-200–330, DH-400–470, DH-600–647, DH-700–810 |
-| PARTIAL | FR-004–005, FR-206, FR-404, FR-408–409, FR-504, FR-506, FR-508, FR-511, FR-606–607 | 12 | P0-2/P0-3, DH-340, DH-460–480, DH-632/635/650, DH-810 |
+| PARTIAL | FR-004–005, FR-206, FR-404, FR-408–409, FR-504, FR-506, FR-508, FR-511, FR-606–607 | 12 | P0-3, DH-340, DH-460–480, DH-632/635/650, DH-810 |
 | MISSING | FR-500–502, FR-505, FR-509–510, FR-600–602, FR-608 | 10 | DH-340–370, DH-650/660, DH-805 |
 | CONDITIONAL INVARIANT | FR-603 | 1 | No email/chat execution adapter is committed; if later added it must remain notification/approval-link only |
 
@@ -44,21 +44,38 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 
 ### Dependency-ordered beta feature slices
 
-1. Complete P0-2 and P0-3, then close the remaining Phase 0 comprehension rows.
-2. Complete restart-safe campaign orchestration, pilot promotion, shards,
-   diagnostics, differential validation, and regression accounting.
-3. Complete analytics, evaluation/promotion, structurally enforced workflows,
-   and GitHub/Linear/local/monitoring triggers.
-4. Complete ACP, Open Interpreter, direct OpenAI API, ecosystem packaging, and
-   portable handoffs.
-5. Replace every `UNASSESSED`, `PARTIAL`, and `MISSING` disposition with exact
-   implementation and beta evidence, then run the integrated full-beta gate.
+1. Complete P0-3 next; P0-2 completed in merged PR #58 (`09209e5`). Continue
+   the full-repository comprehension census in parallel and close it after
+   feature implementation but before integrated proof.
+2. Structurally enforce workflow and campaign-template contracts.
+3. Build the restart-safe campaign kernel that owns Milestone C11 and C13:
+   campaign stages, representative pilots, promotion gates, resource-aware
+   shards, diagnostic partitioning, test-integrity controls, differential
+   evidence, regression accounting, restart reconciliation, and safe cleanup.
+4. Complete the remaining non-runtime adaptive-workforce priorities C1–C2,
+   C5–C7, and C9: catalog refresh, auditions, optimization, controlled
+   upgrades, dynamic replanning/handoff, and the broader tool/skill registry.
+5. Deliver the product-manager analytics, evaluation, governed learning, and
+   policy-bounded trigger controls that own C10, D5, and D7.
+6. Complete the runtime and ecosystem lane: OpenRouter completion, Open
+   Interpreter followed by ACP conformance (C8), direct OpenAI, and ecosystem
+   packaging (D1 and D3–D4). Milestone D is required to ship and optional to
+   enable.
+7. Deliver portable workflow/objective/evidence/delivery-handoff bundles (D6)
+   together with basic installer and provider onboarding (A13).
+8. Join every feature track, close the comprehension census and every remaining
+   trace disposition, complete all CivicSuite acceptance levels, and run
+   integrated real-product proofs.
+9. Only after that join, reserve whole-product performance/accessibility/
+   security, upgrade/clean-machine rehearsal, and
+   release engineering/presentation for the final exact-candidate hardening
+   pass.
 
 ## Trace matrix
 
 | ID | Requirement | Normativity | Spec source | Implementation unit/status | Beta evidence |
 |---|---|---|---|---|---|
-| PS-HIST-000 | Full-feature beta requires every specified feature/function, Milestones A-D, and applicable FRs integrated and verified; intermediate gates prove safe integration, critical defects are fixed as encountered, broad polish follows feature completion, and publication remains separately authorized. | MUST | `docs/PRODUCT_SPEC.md:10` | UNASSESSED | UNASSESSED |
+| PS-HIST-000 | ACP and direct OpenAI are mandatory beta implementations; the restart-safe campaign kernel includes diagnostic/differential/regression controls; all feature tracks join before integrated proof; only broad hardening follows feature completion. | MUST | `docs/PRODUCT_SPEC.md:10` | UNASSESSED | UNASSESSED |
 | PS-HIST-001 | Every DevHarmonics-owned operation acknowledges immediately, shows truthful lifecycle/elapsed state, survives navigation/refresh, ends visibly, uses evidence-based progress, and ships complete feedback states per workflow. | MUST | `docs/PRODUCT_SPEC.md:16` | UNASSESSED | UNASSESSED |
 | PS-HIST-002 | Antigravity may expose Google/Anthropic/OpenAI models; schedule Gemini vs Claude/GPT quota groups independently and never claim actual model identity without runtime verification. | MUST | `docs/PRODUCT_SPEC.md:24` | UNASSESSED | UNASSESSED |
 | PS-AUTH-000 | Treat this document as the canonical source for product scope, priorities, behavior, and judgment. | DEFINED | `docs/PRODUCT_SPEC.md:36-38` | UNASSESSED | UNASSESSED |
@@ -148,7 +165,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-CAP-022 | Support subscription apps, ACP, local runtimes, and optional API gateways as four connection classes. | MUST | `docs/PRODUCT_SPEC.md:379-381` | UNASSESSED | UNASSESSED |
 | PS-CAP-023 | Use official authenticated Codex, Claude Code, and Antigravity; separate transport, connection, vendor, model identity, and quota group. | MUST | `docs/PRODUCT_SPEC.md:383-385` | UNASSESSED | UNASSESSED |
 | PS-CAP-024 | Reuse provider-owned sessions; never request passwords or expose tokens; detect state/capabilities; use structured modes; isolate adapter parsing. | MUST | `docs/PRODUCT_SPEC.md:385-392` | UNASSESSED | UNASSESSED |
-| PS-CAP-025 | Support ACP where reliable, as an additional transport rather than universal product/auth definition. | SHOULD | `docs/PRODUCT_SPEC.md:394-396` | UNASSESSED | UNASSESSED |
+| PS-CAP-025 | Ship ACP for beta with Open Interpreter as first conformance target; use it for other reliable providers where useful without treating ACP as the universal product/auth definition. | MUST | `docs/PRODUCT_SPEC.md:394-396` | UNASSESSED | UNASSESSED |
 | PS-CAP-026 | Require Ollama first; discover models, details, digests, capabilities, running/context/resource state; normalize later local runtimes. | MUST | `docs/PRODUCT_SPEC.md:398-400` | UNASSESSED | UNASSESSED |
 | PS-CAP-027 | Permit local models in read-only/mutating roles only with assigned-worktree confinement, scoped tools, no unrestricted shell, and orchestrator-controlled commit/integration. | MAY | `docs/PRODUCT_SPEC.md:402` | UNASSESSED | UNASSESSED |
 | PS-CAP-028 | Track and qualify Mellum2 Instruct and Thinking separately; metadata may seed but not prove schedulability. | MUST | `docs/PRODUCT_SPEC.md:404` | UNASSESSED | UNASSESSED |
@@ -156,7 +173,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-CAP-030 | Restrict Instruct initially to narrow low-risk economy work; permit Thinking standard reasoning only after independent qualification. | MAY | `docs/PRODUCT_SPEC.md:404` | UNASSESSED | UNASSESSED |
 | PS-CAP-031 | Never promote Mellum2 to coordinator/final authority/universal default/review replacement from name/size/published benchmarks; require user action and passing evidence for download/activation/promotion. | MUST | `docs/PRODUCT_SPEC.md:404` | UNASSESSED | UNASSESSED |
 | PS-CAP-032 | Keep OpenRouter disconnected/paid-disabled by default; use OAuth and OS credential storage; require policy gates, positive limits, activation, qualification, and live credit checks for paid fallback. | MUST | `docs/PRODUCT_SPEC.md:406-408` | UNASSESSED | UNASSESSED |
-| PS-CAP-033 | Allow direct APIs later only for material capability absent from subscriptions/local/OpenRouter. | MAY | `docs/PRODUCT_SPEC.md:410` | UNASSESSED | UNASSESSED |
+| PS-CAP-033 | Ship a disabled-by-default direct OpenAI API adapter for beta; allow additional direct APIs later only for material capability absent from existing transports. | MUST | `docs/PRODUCT_SPEC.md:410` | UNASSESSED | UNASSESSED |
 | PS-CAP-034 | Distinguish Known, Visible, Verified, Qualified, Active, Degraded, and Retired registry states. | MUST | `docs/PRODUCT_SPEC.md:412-424` | UNASSESSED | UNASSESSED |
 | PS-CAP-035 | Retain registry identity, capability, runtime, quota, qualification, performance, lifecycle, preference, and provenance fields. | SHOULD | `docs/PRODUCT_SPEC.md:426-445` | UNASSESSED | UNASSESSED |
 | PS-CAP-036 | Reconcile signed-in/runtime reports, official catalogs, signed compatibility catalog, and local empirical results. | SHOULD | `docs/PRODUCT_SPEC.md:447-454` | UNASSESSED | UNASSESSED |
@@ -363,9 +380,9 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-BETA-001 | Beta is the complete specified product, not a narrow subset/preview/later-capability promise; every committed feature/function must exist, integrate through the real product, and have claim-layer evidence. | BETA | `docs/PRODUCT_SPEC.md:1105-1111` | UNASSESSED | UNASSESSED |
 | PS-BETA-002 | Map every FR, Milestone A-D priority, decided capability, and required CivicSuite acceptance level to implementation and exact verification evidence. | BETA | `docs/PRODUCT_SPEC.md:1113-1117` | UNASSESSED | UNASSESSED |
 | PS-BETA-003 | A placeholder, advisory-only contract, hidden developer path, or roadmap claim is not implementation. | BETA | `docs/PRODUCT_SPEC.md:1118-1119` | UNASSESSED | UNASSESSED |
-| PS-BETA-004 | Blocks 0a/0b/0c pass across the full configured local repository census with at least 95% correct comprehension and zero silent wrong answers for version/validator/dependency facts. | BETA | `docs/PRODUCT_SPEC.md:1120-1123` | UNASSESSED | UNASSESSED |
+| PS-BETA-004 | The full configured local repository census passes with at least 95% correct comprehension and zero silent wrong answers for version, validator, dependency, repository-role, topology, and release-truth facts. | BETA | `docs/PRODUCT_SPEC.md:1120-1123` | UNASSESSED | UNASSESSED |
 | PS-BETA-005 | P0-1 authoritative release-version comprehension is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1124` | UNASSESSED | UNASSESSED |
-| PS-BETA-006 | P0-2 nested-manifest and subproject comprehension is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1125` | UNASSESSED | UNASSESSED |
+| PS-BETA-006 | P0-2 nested-manifest and subproject comprehension is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1125` | IMPLEMENTED — merged PR #58 (`09209e5`) | PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-BETA-007 | P0-3 structured dependency parsing and provenance is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1126` | UNASSESSED | UNASSESSED |
 | PS-BETA-008 | P0-4 real validator discovery without no-op coverage is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1127` | UNASSESSED | UNASSESSED |
 | PS-BETA-009 | Complete the product-manager factory loop from objective/approval through adaptive workforce, steering, campaigns, review/fix/re-review, validation/reconciliation, and evidence delivery without manual agent terminals. | BETA | `docs/PRODUCT_SPEC.md:1128-1133` | UNASSESSED | UNASSESSED |
@@ -387,7 +404,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-BETA-025 | Exclude hosted execution, remote-offline workers, enterprise IAM/compliance/secrets administration, and arbitrary email/chat-driven execution. | BETA | `docs/PRODUCT_SPEC.md:1167` | UNASSESSED | UNASSESSED |
 | PS-BETA-026 | Treat pre-exit development gates as integration gates; do not require broad cosmetic polish, clean-machine rehearsal, or user-ready refinement after every feature. | BETA | `docs/PRODUCT_SPEC.md:1169-1172` | UNASSESSED | UNASSESSED |
 | PS-BETA-027 | Immediately fix issues causing silent wrong answers, security/privacy exposure, data loss, repeated consequential actions, corrupted integration, or broken later-feature dependencies; record other polish for post-feature beta pass. | BETA | `docs/PRODUCT_SPEC.md:1172-1175` | UNASSESSED | UNASSESSED |
-| PS-BETA-028 | Block 0a is an intermediate correctness gate, not beta readiness; full beta includes complete Phase 0 over Blocks 0a/0b/0c. | BETA | `docs/PRODUCT_SPEC.md:1262-1265` | UNASSESSED | UNASSESSED |
+| PS-BETA-028 | The four P0 correctness checks are intermediate foundations, not beta readiness; full beta also requires the concrete full-repository comprehension census. | BETA | `docs/PRODUCT_SPEC.md:1262-1265` | UNASSESSED | UNASSESSED |
 | PS-REL-001 | Build immutable exact-commit inventory of recognized root/nested package.json and pyproject.toml release units keyed by normalized directory. | RELEASE | `docs/PRODUCT_SPEC.md:1177-1183` | UNASSESSED | UNASSESSED |
 | PS-REL-002 | Record manifests, effective public static version, privacy/dynamic/versionless state, diagnostics, and selection rationale per release unit. | RELEASE | `docs/PRODUCT_SPEC.md:1181-1184` | UNASSESSED | UNASSESSED |
 | PS-REL-003 | Private npm/versionless manifests may support validator evidence but cannot supply release authority. | RELEASE | `docs/PRODUCT_SPEC.md:1184-1185` | UNASSESSED | UNASSESSED |
@@ -441,26 +458,26 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-MS-B09 | CivicSuite release-truth audit workflow. | MILESTONE | `docs/PRODUCT_SPEC.md:1306` | UNASSESSED | UNASSESSED |
 | PS-MS-B10 | Repository Workbench/objective refinement. | MILESTONE | `docs/PRODUCT_SPEC.md:1307` | UNASSESSED | UNASSESSED |
 | PS-MS-B11 | Successful bounded cross-repository CivicSuite objective. | MILESTONE | `docs/PRODUCT_SPEC.md:1308` | UNASSESSED | UNASSESSED |
-| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | UNASSESSED | UNASSESSED |
-| PS-MS-C02 | Role-specific auditions/historical fixtures. | MILESTONE | `docs/PRODUCT_SPEC.md:1317` | UNASSESSED | UNASSESSED |
-| PS-MS-C03 | Empirical performance profiles. | MILESTONE | `docs/PRODUCT_SPEC.md:1318` | UNASSESSED | UNASSESSED |
-| PS-MS-C04 | Capacity-aware subscription/local scheduling. | MILESTONE | `docs/PRODUCT_SPEC.md:1319` | UNASSESSED | UNASSESSED |
-| PS-MS-C05 | Critical-path/quota-window optimization. | MILESTONE | `docs/PRODUCT_SPEC.md:1320` | UNASSESSED | UNASSESSED |
-| PS-MS-C06 | Controlled model upgrades/rollback. | MILESTONE | `docs/PRODUCT_SPEC.md:1321` | UNASSESSED | UNASSESSED |
-| PS-MS-C07 | Dynamic splitting/replanning/handoff. | MILESTONE | `docs/PRODUCT_SPEC.md:1322` | UNASSESSED | UNASSESSED |
-| PS-MS-C08 | ACP where it improves interoperability. | MILESTONE | `docs/PRODUCT_SPEC.md:1323` | UNASSESSED | UNASSESSED |
-| PS-MS-C09 | Broader MCP/tool/skill registry. | MILESTONE | `docs/PRODUCT_SPEC.md:1324` | UNASSESSED | UNASSESSED |
-| PS-MS-C10 | Learning coordinator policies without silent authority change. | MILESTONE | `docs/PRODUCT_SPEC.md:1325` | UNASSESSED | UNASSESSED |
-| PS-MS-C11 | Campaign stages/pilots/promotion/resource-aware shards. | MILESTONE | `docs/PRODUCT_SPEC.md:1326` | UNASSESSED | UNASSESSED |
-| PS-MS-C12 | Configurable adversarial review/fix/re-review. | MILESTONE | `docs/PRODUCT_SPEC.md:1327` | UNASSESSED | UNASSESSED |
-| PS-MS-C13 | Diagnostic partitioning/test integrity/differential evidence/regression accounting. | MILESTONE | `docs/PRODUCT_SPEC.md:1328` | UNASSESSED | UNASSESSED |
-| PS-MS-D01 | Opt-in OpenRouter with OAuth/model/privacy/spending policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1340` | UNASSESSED | UNASSESSED |
-| PS-MS-D02 | Cost-aware routing/budgets. | MILESTONE | `docs/PRODUCT_SPEC.md:1341` | UNASSESSED | UNASSESSED |
-| PS-MS-D03 | Open Interpreter worker runtime and direct OpenAI API adapter, in addition to Ollama and OpenRouter. | MILESTONE | `docs/PRODUCT_SPEC.md:1342-1343` | UNASSESSED | UNASSESSED |
-| PS-MS-D04 | ACP/ecosystem packaging for adapters/tools/workflows/skills/qualification. | MILESTONE | `docs/PRODUCT_SPEC.md:1344` | UNASSESSED | UNASSESSED |
-| PS-MS-D05 | GitHub and optional Linear triggers under local policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1345` | UNASSESSED | UNASSESSED |
-| PS-MS-D06 | Portable workflow, objective, evidence, and delivery-handoff bundles for a very small team. | MILESTONE | `docs/PRODUCT_SPEC.md:1346` | UNASSESSED | UNASSESSED |
-| PS-MS-D07 | Local analytics/evaluation-driven improvement. | MILESTONE | `docs/PRODUCT_SPEC.md:1347` | UNASSESSED | UNASSESSED |
+| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | PLANNED — DH-220 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C02 | Role-specific auditions/historical fixtures. | MILESTONE | `docs/PRODUCT_SPEC.md:1317` | PLANNED — DH-240 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C03 | Empirical performance profiles. | MILESTONE | `docs/PRODUCT_SPEC.md:1318` | CLAIMED — DH-250 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
+| PS-MS-C04 | Capacity-aware subscription/local scheduling. | MILESTONE | `docs/PRODUCT_SPEC.md:1319` | CLAIMED — DH-310 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
+| PS-MS-C05 | Critical-path/quota-window optimization. | MILESTONE | `docs/PRODUCT_SPEC.md:1320` | PLANNED — DH-310 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C06 | Controlled model upgrades/rollback. | MILESTONE | `docs/PRODUCT_SPEC.md:1321` | PLANNED — DH-240 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C07 | Dynamic splitting/replanning/handoff. | MILESTONE | `docs/PRODUCT_SPEC.md:1322` | PLANNED — DH-300 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C08 | ACP where it improves interoperability. | MILESTONE | `docs/PRODUCT_SPEC.md:1323` | PLANNED — DH-820 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C09 | Broader MCP/tool/skill registry. | MILESTONE | `docs/PRODUCT_SPEC.md:1324` | PLANNED — DH-440 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C10 | Learning coordinator policies without silent authority change. | MILESTONE | `docs/PRODUCT_SPEC.md:1325` | PLANNED — DH-660 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C11 | Campaign stages/pilots/promotion/resource-aware shards. | MILESTONE | `docs/PRODUCT_SPEC.md:1326` | PLANNED — DH-350 accountable | PENDING IMPLEMENTATION |
+| PS-MS-C12 | Configurable adversarial review/fix/re-review. | MILESTONE | `docs/PRODUCT_SPEC.md:1327` | CLAIMED — DH-460 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
+| PS-MS-C13 | Diagnostic partitioning/test integrity/differential evidence/regression accounting. | MILESTONE | `docs/PRODUCT_SPEC.md:1328` | PLANNED — DH-480 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D01 | Opt-in OpenRouter with OAuth/model/privacy/spending policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1340` | PLANNED — DH-830 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D02 | Cost-aware routing/budgets. | MILESTONE | `docs/PRODUCT_SPEC.md:1341` | CLAIMED — DH-320 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
+| PS-MS-D03 | Open Interpreter worker runtime and direct OpenAI API adapter, in addition to Ollama and OpenRouter. | MILESTONE | `docs/PRODUCT_SPEC.md:1342-1343` | PLANNED — DH-830 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D04 | ACP/ecosystem packaging for adapters/tools/workflows/skills/qualification. | MILESTONE | `docs/PRODUCT_SPEC.md:1344` | PLANNED — DH-815 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D05 | GitHub and optional Linear triggers under local policy. | MILESTONE | `docs/PRODUCT_SPEC.md:1345` | PLANNED — DH-805 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D06 | Portable workflow, objective, evidence, and delivery-handoff bundles for a very small team. | MILESTONE | `docs/PRODUCT_SPEC.md:1346` | PLANNED — DH-840 accountable | PENDING IMPLEMENTATION |
+| PS-MS-D07 | Local analytics/evaluation-driven improvement. | MILESTONE | `docs/PRODUCT_SPEC.md:1347` | PLANNED — DH-660 accountable | PENDING IMPLEMENTATION |
 | PS-MS-D08 | Exclude hosted execution, off-computer workers, enterprise admin, and mandatory team service. | NON-GOAL | `docs/PRODUCT_SPEC.md:1349` | UNASSESSED | UNASSESSED |
 | PS-ACC-L1-01 | Register organization local repositories. | ACCEPTANCE | `docs/PRODUCT_SPEC.md:1357` | UNASSESSED | UNASSESSED |
 | PS-ACC-L1-02 | Map repository roles/dependencies. | ACCEPTANCE | `docs/PRODUCT_SPEC.md:1358` | UNASSESSED | UNASSESSED |
@@ -546,7 +563,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 Run from the repository root:
 
 ```powershell
-$expectedHash='95EFE5F32ABD196CB153EF80794AEDE0CB4022A34CCB86D9E59E05DB60DB2EEB'
+$expectedHash='6144C8C523D4CF3AC78613768F036B01337A27C5A612F29C1FE8867D754B35F5'
 $actualHash=(Get-FileHash -Algorithm SHA256 -LiteralPath 'docs/PRODUCT_SPEC.md').Hash
 $spec=Get-Content -LiteralPath 'docs/PRODUCT_SPEC.md' -Encoding utf8
 $trace=Get-Content -LiteralPath 'docs/BETA_REQUIREMENTS_TRACE.md' -Encoding utf8
