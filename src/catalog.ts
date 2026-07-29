@@ -39,10 +39,17 @@ export class ModelCatalogCoordinator {
   async refresh(force = false, source = "manual"): Promise<CatalogRefreshResult> {
     if (this.refreshInFlight) return this.refreshInFlight;
     if (!force && !this.isStale()) return this.snapshot();
-    this.refreshInFlight = this.performRefresh(source).finally(() => {
-      this.refreshInFlight = null;
-      if (this.periodicStarted) this.schedulePeriodic();
-    });
+    this.refreshInFlight = this.performRefresh(source)
+      .catch((error) => {
+        if (source === "periodic") {
+          this.ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source, modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
+        }
+        throw error;
+      })
+      .finally(() => {
+        this.refreshInFlight = null;
+        if (this.periodicStarted) this.schedulePeriodic();
+      });
     return this.refreshInFlight;
   }
 
@@ -66,18 +73,9 @@ export class ModelCatalogCoordinator {
     if (this.periodicTimer) clearTimeout(this.periodicTimer);
     this.periodicTimer = setTimeout(() => {
       this.periodicTimer = null;
-      void this.runPeriodicRefresh();
+      void this.refresh(true, "periodic").catch(() => undefined);
     }, this.nextPeriodicDelayMs());
     this.periodicTimer.unref();
-  }
-
-  private async runPeriodicRefresh(): Promise<void> {
-    try {
-      await this.refresh(true, "periodic");
-    } catch (error) {
-      this.ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source: "periodic", modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
-      if (this.periodicStarted) this.schedulePeriodic();
-    }
   }
 
   stop(): void {

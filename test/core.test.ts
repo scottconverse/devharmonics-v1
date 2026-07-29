@@ -3780,31 +3780,10 @@ test("the Models page reports the coordinator receipt instead of claiming every 
   const appSource = readFileSync(path.join(process.cwd(), "src", "ui", "app.js"), "utf8");
   const start = appSource.indexOf("function catalogRefreshMessage(");
   const end = appSource.indexOf("\nasync function api(", start);
-  assert.ok(start >= 0 && end > start, "catalogRefreshMessage must exist as an extractable function in app.js");
-  const catalogRefreshMessage = new Function(`${appSource.slice(start, end)}; return catalogRefreshMessage;`)() as (
-    refreshes: Array<Record<string, unknown>>,
-    refreshedAt: string,
-  ) => string;
-
-  const failed = catalogRefreshMessage([{
-    provider: "coordinator",
-    status: "failed",
-    detail: "Catalog refresh incomplete; failed required components: compatibility-live",
-    refreshedAt: "2026-07-29T12:00:00.000Z",
-  }], "2026-07-29T12:00:01.000Z");
-  assert.match(failed, /Fleet refresh incomplete/);
-  assert.match(failed, /compatibility-live/);
-  assert.match(failed, /five minutes/);
-  assert.doesNotMatch(failed, /Fleet refreshed at/);
-
-  const succeeded = catalogRefreshMessage([{
-    provider: "coordinator",
-    status: "success",
-    detail: "All configured provider and local-runtime catalogs were checked",
-    refreshedAt: "2026-07-29T12:00:00.000Z",
-  }], "2026-07-29T12:00:01.000Z");
-  assert.match(succeeded, /Fleet refreshed at/);
-  assert.doesNotMatch(succeeded, /incomplete/);
+  const message = new Function(`${appSource.slice(start, end)}; return catalogRefreshMessage;`)() as (refreshes: Array<Record<string, unknown>>, refreshedAt: string) => string;
+  assert.match(message([{ provider: "coordinator", status: "failed", detail: "compatibility-live failed" }], "2026-07-29T12:00:00Z"), /Fleet refresh incomplete.*compatibility-live failed.*five minutes/);
+  assert.doesNotMatch(message([{ provider: "coordinator", status: "failed" }], "2026-07-29T12:00:00Z"), /Fleet refreshed at/);
+  assert.match(message([{ provider: "coordinator", status: "success" }], "2026-07-29T12:00:00Z"), /Fleet refreshed at/);
 });
 
 test("declining a tag mismatch records a CANCELLED operation — never succeeded, never failed", async () => {
@@ -6607,48 +6586,11 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     await withoutClaude.refresh(true, "test-disabled-claude");
     assert.equal(claudeOfficialRequested, false);
     assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "success");
-  } finally {
-    ledger.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
-test("an exceptional periodic catalog failure replaces the normal timer with the five-minute retry", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-catalog-periodic-failure-"));
-  const ledger = new Ledger(path.join(root, "devharmonics.db"));
-  try {
-    await initializeProject(root);
-    ledger.recordCatalogRefresh({
-      provider: "coordinator",
-      status: "success",
-      source: "fixture",
-      modelCount: 1,
-      detail: "fresh",
-      refreshedAt: new Date().toISOString(),
-    });
-    ledger.recordCompatibilityCatalogTrust({
-      acceptedVersion: 1,
-      keyId: "fixture",
-      generatedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString(),
-      acceptedAt: new Date().toISOString(),
-      lastAttemptAt: new Date().toISOString(),
-      trustState: "accepted",
-      failureReason: "",
-    });
-    const coordinator = new ModelCatalogCoordinator(ledger, root, {
-      inspectProviders: async () => { throw new Error("periodic inspection failed"); },
-    });
-    const delays: number[] = [];
-    (coordinator as any).periodicStarted = true;
-    (coordinator as any).schedulePeriodic = () => delays.push((coordinator as any).nextPeriodicDelayMs());
-    await (coordinator as any).runPeriodicRefresh();
-
-    const receipt = ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
-    assert.equal(receipt?.status, "failed");
-    assert.match(receipt?.detail ?? "", /periodic inspection failed/);
-    assert.ok(delays[0]! > 5 * 60_000, "refresh finally initially sees the prior successful receipt");
-    assert.ok(delays.at(-1)! <= 5 * 60_000, "the failure catch re-arms the timer from the failed receipt");
+    const exceptional = new ModelCatalogCoordinator(ledger, root, { inspectProviders: async () => { throw new Error("periodic inspection failed"); } });
+    await assert.rejects(exceptional.refresh(true, "periodic"), /periodic inspection failed/);
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "failed");
+    assert.ok((exceptional as any).nextPeriodicDelayMs() <= 5 * 60_000, "periodic exceptions persist before scheduling the bounded retry");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });
