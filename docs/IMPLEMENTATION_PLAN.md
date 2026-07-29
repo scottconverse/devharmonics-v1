@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.39**
+Plan version: **1.40**
 Written: **2026-07-14**
 Revised: **2026-07-26**
 Product specification baseline: **DevHarmonics Product Specification v1.17**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.39 (2026-07-26)** — Bound the Campaign Control Room to C11 implementation and acceptance, completed the Increment 6 trigger exit with local-schedule and monitoring behavior, required the complete ecosystem-package conformance fixture at the Increment 7 exit, aligned detailed C/D trace statuses with the editorial summary, and marked the historical v0.5 publication-gate wording as superseded.
+Revision history: **v1.40 (2026-07-26)** — Completed P0-3's exact-commit dependency parser, versioned persistence and planning projection, honest Products evidence surface, safe read-only rescan, and pinned immutable 24-repository CivicSuite corpus gate. Exact-candidate beta reproving remains part of the later joined beta gate; derived package identities do not replace owner-authored repository impact authority.
+
+Prior revision: **v1.39 (2026-07-26)** — Bound the Campaign Control Room to C11 implementation and acceptance, completed the Increment 6 trigger exit with local-schedule and monitoring behavior, required the complete ecosystem-package conformance fixture at the Increment 7 exit, aligned detailed C/D trace statuses with the editorial summary, and marked the historical v0.5 publication-gate wording as superseded.
 
 Prior revision: **v1.38 (2026-07-26)** — Corrected the remaining feature-first inconsistencies: P0-3, structural workflow enforcement, and recovery now gate only their consumers rather than every C/D lane; OpenRouter acceptance now includes the specification's OAuth, positive-limit, activation, qualification, and live-credit controls; D5 depends on the existing reusable-workflow package rather than nonexistent DH-680; D2 remains partial until the complete policy is implemented; and the optional DH-910 support bundle is unambiguously post-beta.
 
@@ -1459,7 +1461,9 @@ evidence.
    - P0-1 release-version comprehension — complete;
    - P0-2 monorepo/subproject comprehension — complete in merged PR #58
      (`09209e5`);
-   - P0-3 structured dependency parsing and provenance — pending; and
+   - P0-3 structured dependency parsing, provenance, persistence, planning
+     projection, Products evidence UI, and pinned 24-repository corpus —
+     complete; exact-candidate beta reproving remains; and
    - P0-4 real validator discovery — complete.
    Continue independent Milestone C/D work and the broader full-repository
    comprehension census alongside P0-3; close the census after the feature set
@@ -1608,8 +1612,10 @@ product-aware repository selection and impact planning, DH-720's exact
 multi-repository execution plus automatic fixer/re-review quorum loop, and
 DH-800's first approved-delivery slice are implemented. Real single- and
 multi-repository CivicSuite work has already exercised these foundations.
-P0-2 completed in merged PR #58 at merge commit `09209e5`. Remaining work in
-this increment includes P0-3 correctness; structurally enforced workflow
+P0-2 completed in merged PR #58 at merge commit `09209e5`. P0-3's exact-commit
+parser, persistence/planning contract, Products evidence UI, and pinned
+24-repository corpus are complete. Other remaining work in this increment
+includes structurally enforced workflow
 contracts and campaign templates; restart reconstruction and reconciliation;
 campaign/stage orchestration, pilot promotion, diagnostic partitioning,
 test-integrity controls, differential validation, regression accounting, and
@@ -1957,10 +1963,13 @@ The pilot must use local clones and the exact repository governance present at e
 The historical foundation backlog has substantially landed. The live sequence,
 as of 2026-07-26, is:
 
-1. **Complete P0-3 for dependency-aware planning and campaign topology.** P0-2
-   is complete in merged PR #58 (`09209e5`); preserve its exact-commit nested
-   release-unit/validator behavior while adding structured dependency parsing
-   and provenance. This does not gate unrelated C/D lanes.
+1. **Use completed P0-3 for dependency-aware planning and campaign topology
+   while the broader comprehension census continues.** P0-2 is complete in
+   merged PR #58 (`09209e5`); P0-3's structured exact-commit parser, versioned
+   persistence/planning projection, Products evidence UI, and pinned immutable
+   24-repository corpus are complete while preserving P0-2 behavior. Derived
+   package identities inform planning but never replace owner-authored
+   required-impact relationships.
 2. **Continue the full-repository comprehension census in parallel.** Attach
    evidence as features expose new repository facts, but do not turn census
    administration into a feature-delivery blocker. Close it after the feature
@@ -2045,9 +2054,10 @@ The product specification remains the authority for product scope. This implemen
 
 Follow the [full-feature beta execution contract](#current-beta-execution-contract-owner-locked-2026-07-26):
 
-1. finish P0-3 for its dependency-aware consumers while continuing the
-   comprehension census and unrelated eligible feature lanes in parallel; P0-2
-   is complete in merged PR #58 (`09209e5`);
+1. treat P0-3 as complete and use its parser/persistence/planning/UI and pinned
+   24-repository evidence for dependent features while continuing the broader
+   comprehension census and unrelated eligible feature lanes in parallel;
+   P0-2 is complete in merged PR #58 (`09209e5`);
 2. in parallel, structurally enforce workflow/campaign-template contracts and
    complete the restart-safe campaign, pilot, shard, diagnostic, differential,
    and regression-accounting kernel;

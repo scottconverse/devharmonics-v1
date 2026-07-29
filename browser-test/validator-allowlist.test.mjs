@@ -17,6 +17,21 @@ async function git(repository, ...args) {
   await execFileAsync("git", ["-C", repository, ...args], { windowsHide: true });
 }
 
+async function createRepositoryFixture(directory, files) {
+  await mkdir(directory, { recursive: true });
+  await execFileAsync("git", ["init", "--initial-branch=main", directory], { windowsHide: true });
+  await git(directory, "config", "user.email", "dependency-browser@example.invalid");
+  await git(directory, "config", "user.name", "Dependency Browser Test");
+  for (const [relativePath, content] of Object.entries(files)) {
+    const target = path.join(directory, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
+  await git(directory, "add", ".");
+  await git(directory, "commit", "-m", "Create dependency browser fixture");
+  return (await execFileAsync("git", ["-C", directory, "rev-parse", "HEAD"], { windowsHide: true })).stdout.trim();
+}
+
 async function json(response) {
   const body = await response.json();
   assert.ok(response.ok(), `${response.url()} returned ${response.status()}: ${JSON.stringify(body)}`);
@@ -407,6 +422,213 @@ test("validator allowlist works through the real dashboard at mobile and desktop
     "every tolerated resource-console message must correspond one-for-one with an exact expected HTTP response",
   );
   assert.deepEqual(unexpectedConsoleErrors, []);
+  assert.deepEqual(pageErrors, []);
+  await context.close();
+});
+
+test("dependency evidence is honest, complete, escaped, and safely rescannable in real Chromium", { timeout: 90_000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-dependency-browser-"));
+  const control = path.join(root, "control");
+  const hostileDeclaration = "https://example.invalid/archive.tgz?</code><img src=x onerror=\"document.body.dataset.dependencyXss='executed'\">";
+  await createRepositoryFixture(control, { "README.md": "# Dependency browser control\n" });
+  await initializeProject(control);
+
+  const legacyLedger = new Ledger(path.join(devHarmonicsDirectory(control), "devharmonics.db"));
+  legacyLedger.upsertProduct({
+    id: "legacy-dependencies",
+    name: "Legacy Dependency Snapshot",
+    organizationUrl: "https://example.invalid/legacy-dependencies",
+    description: "Snapshot created before dependency evidence existed",
+    repositories: [],
+  });
+  legacyLedger.recordProductIntelligenceSnapshot({
+    id: "legacy-dependency-snapshot",
+    productId: "legacy-dependencies",
+    status: "ready",
+    repositories: [],
+    sources: [],
+    claims: [],
+    findings: [],
+    createdAt: "2026-07-26T00:00:00.000Z",
+  });
+  legacyLedger.close();
+
+  const fixtures = {
+    detected: {
+      "package.json": `${JSON.stringify({
+        name: "shared",
+        dependencies: {
+          shared: "1.0.0",
+          duplicate: "1.0.0",
+          remote: hostileDeclaration,
+        },
+        devDependencies: { "dev-only": "^2.0.0" },
+      }, null, 2)}\n`,
+    },
+    duplicate: {
+      "package.json": `${JSON.stringify({ name: "duplicate" }, null, 2)}\n`,
+      "packages/second/package.json": `${JSON.stringify({ name: "duplicate" }, null, 2)}\n`,
+    },
+    absent: { "package.json": `${JSON.stringify({ name: "no-declarations" }, null, 2)}\n` },
+    unsupported: { "pyproject.toml": '[project]\nname = "unsupported"\ndependencies = ["-r requirements.txt"]\n' },
+    malformed: { "package.json": "{\n" },
+    wrong_shape: { "package.json": `${JSON.stringify({ name: "wrong-shape", dependencies: [] }, null, 2)}\n` },
+    dynamic: { "pyproject.toml": '[project]\nname = "dynamic"\ndynamic = ["dependencies"]\n' },
+    unavailable: { "package.json": `${JSON.stringify({ name: "unavailable" }, null, 2)}\n` },
+  };
+  const paths = {};
+  for (const [state, files] of Object.entries(fixtures)) {
+    paths[state] = path.join(root, state);
+    await createRepositoryFixture(paths[state], files);
+  }
+
+  const dashboard = await startDashboard({ projectPath: control, port: 0, open: false });
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => {
+    await browser.close();
+    await dashboard.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const setupContext = await browser.newContext();
+  const setupRequest = setupContext.request;
+  const product = await setupRequest.post(`${dashboard.url}/api/products`, {
+    data: {
+      id: "dependency-states",
+      name: "Dependency State Fixture",
+      organizationUrl: "https://example.invalid/dependency-states",
+      description: "Exact dependency evidence across every retained state",
+      repositories: [],
+    },
+  });
+  assert.equal(product.status(), 201, await product.text());
+  const repositoryIds = {};
+  for (const [state, localPath] of Object.entries(paths)) {
+    const attachment = await json(await setupRequest.post(`${dashboard.url}/api/products/dependency-states/repositories`, {
+      data: {
+        localPath,
+        role: "module",
+        expectedBranch: "main",
+        owners: ["browser-test"],
+        dependencyRepositoryIds: [],
+        governanceSources: [],
+        validators: {},
+      },
+    }));
+    repositoryIds[state] = attachment.repository.id;
+  }
+  await writeFile(path.join(paths.unavailable, ".git", "refs", "heads", "main"), `${"f".repeat(40)}\n`, "utf8");
+  const scan = await setupRequest.post(`${dashboard.url}/api/products/dependency-states/intelligence`, { data: {} });
+  assert.equal(scan.status(), 201, await scan.text());
+  await setupContext.close();
+
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const consoleErrors = [];
+  const pageErrors = [];
+  const errorResponses = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("response", (response) => {
+    if (response.status() >= 400) errorResponses.push({ status: response.status(), url: response.url() });
+  });
+
+  await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > 0);
+  const beforeProductsRender = Number(await page.locator("#product-list").getAttribute("data-render-version") || 0);
+  await page.getByRole("button", { name: "Products", exact: true }).click();
+  await page.waitForFunction(
+    (before) => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > before,
+    beforeProductsRender,
+  );
+  const stateCard = page.locator("article.product-card").filter({ hasText: "Dependency State Fixture" });
+  const intelligence = stateCard.locator("details.product-intelligence");
+  await intelligence.evaluate((details) => { details.open = true; });
+  const dependencyPanel = intelligence.locator(".dependency-intelligence");
+  await dependencyPanel.getByText("Dependency evidence", { exact: true }).waitFor();
+
+  for (const [state, label] of Object.entries({
+    detected: "detected",
+    duplicate: "absent",
+    absent: "absent",
+    unsupported: "unsupported",
+    malformed: "malformed",
+    wrong_shape: "wrong shape",
+    dynamic: "dynamic",
+    unavailable: "unavailable",
+  })) {
+    const summary = dependencyPanel.locator(`[data-dependency-repository="${repositoryIds[state]}"] > summary`);
+    assert.match((await summary.textContent()) || "", new RegExp(label, "i"), `${state} repository renders its honest state`);
+  }
+
+  const detected = dependencyPanel.locator(`[data-dependency-repository="${repositoryIds.detected}"]`);
+  await detected.evaluate((details) => { details.open = true; });
+  const unique = detected.locator(".dependency-fact").filter({ hasText: "shared" }).first();
+  const ambiguous = detected.locator(".dependency-fact").filter({ hasText: "duplicate" });
+  const unresolved = detected.locator(".dependency-fact").filter({ hasText: "remote" });
+  const development = detected.locator(".dependency-fact").filter({ hasText: "dev-only" });
+  assert.match((await unique.textContent()) || "", /runtime.*exact: 1\.0\.0.*unique target/is);
+  assert.match((await ambiguous.textContent()) || "", /ambiguous targets/is);
+  assert.equal(await ambiguous.locator(".dependency-targets li").count(), 2, "two identities in one repository remain visibly ambiguous");
+  assert.ok((await ambiguous.locator(".dependency-targets li").allTextContents()).every((text) => text.includes(repositoryIds.duplicate)));
+  assert.match((await unresolved.textContent()) || "", new RegExp(`direct: ${hostileDeclaration.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*unresolved targets`, "is"));
+  assert.equal(await unresolved.locator("a, img, script").count(), 0, "manifest-controlled direct references render as text, never links or markup");
+  assert.equal(await page.locator("body").getAttribute("data-dependency-xss"), null, "hostile manifest text never executes");
+  assert.match((await development.textContent()) || "", /development.*range: \^2\.0\.0/is);
+  const declarationSource = unique.locator(".dependency-provenance").filter({ hasText: "Declaration source" });
+  for (const label of ["commit", "blob", "path", "cwd", "locator"]) {
+    await declarationSource.getByText(label, { exact: true }).waitFor();
+  }
+
+  const wrongShape = dependencyPanel.locator(`[data-dependency-repository="${repositoryIds.wrong_shape}"]`);
+  await wrongShape.evaluate((details) => { details.open = true; });
+  await wrongShape.getByText("Diagnostics", { exact: true }).waitFor();
+  await wrongShape.getByText(/dependencies.*must be an object/i).waitFor();
+
+  const rescan = dependencyPanel.getByRole("button", { name: "Rescan dependency evidence" });
+  const beforeRescanRender = Number(await page.locator("#product-list").getAttribute("data-render-version") || 0);
+  const rescanResponse = await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().endsWith("/api/products/dependency-states/intelligence")
+      && response.request().method() === "POST"
+      && response.status() === 201),
+    rescan.click(),
+  ]);
+  assert.equal(rescanResponse[0].status(), 201);
+  await page.waitForFunction(
+    (before) => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > before,
+    beforeRescanRender,
+  );
+
+  const legacyCard = page.locator("article.product-card").filter({ hasText: "Legacy Dependency Snapshot" });
+  const legacyIntelligence = legacyCard.locator("details.product-intelligence");
+  assert.equal(await legacyCard.count(), 1);
+  assert.equal(await legacyIntelligence.count(), 1);
+  await legacyIntelligence.locator(":scope > summary").click();
+  const legacyPanel = legacyIntelligence.locator(".dependency-intelligence.legacy");
+  await legacyPanel.getByText(/Legacy snapshot.*rescan required/i).waitFor();
+  await legacyPanel.getByRole("button", { name: "Rescan dependency evidence" }).waitFor();
+
+  const refreshedStateCard = page.locator("article.product-card").filter({ hasText: "Dependency State Fixture" });
+  const refreshedIntelligence = refreshedStateCard.locator("details.product-intelligence");
+  await refreshedIntelligence.evaluate((details) => { details.open = true; });
+  for (const width of [320, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await refreshedIntelligence.locator(".dependency-intelligence").scrollIntoViewIfNeeded();
+    const geometry = await page.evaluate(() => ({
+      overflowing: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      shortButtons: [...document.querySelectorAll(".dependency-intelligence button")]
+        .map((button) => ({ text: button.textContent?.trim(), height: button.getBoundingClientRect().height }))
+        .filter((button) => button.height < 44),
+    }));
+    assert.equal(geometry.overflowing, false, `${width}px dependency evidence must not cause horizontal scrolling`);
+    assert.deepEqual(geometry.shortButtons, [], `${width}px dependency controls must be at least 44px tall`);
+  }
+
+  assert.deepEqual(errorResponses, []);
+  assert.deepEqual(consoleErrors, []);
   assert.deepEqual(pageErrors, []);
   await context.close();
 });

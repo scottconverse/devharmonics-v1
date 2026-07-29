@@ -608,6 +608,25 @@ test("dependency evidence distinguishes absent, malformed, wrong-shaped, dynamic
   ]));
   assert.equal(dynamic.state, "dynamic");
   assert.equal(dynamic.manifests[0].state, "dynamic");
+  assert.deepEqual(dynamic.diagnostics.map((item: any) => ({
+    state: item.state,
+    locator: item.locator,
+  })), [{ state: "dynamic", locator: "/project/dynamic" }]);
+
+  const dynamicWithStrongerDiagnostic = await extract(available([
+    manifest(
+      "dynamic-with-invalid-build/pyproject.toml",
+      '[project]\ndynamic = ["dependencies"]\n[build-system]\nrequires = "not-an-array"\n',
+    ),
+  ]));
+  assert.equal(dynamicWithStrongerDiagnostic.state, "wrong_shape");
+  assert.deepEqual(dynamicWithStrongerDiagnostic.diagnostics.map((item: any) => ({
+    state: item.state,
+    locator: item.locator,
+  })), [
+    { state: "wrong_shape", locator: "/build-system/requires" },
+    { state: "dynamic", locator: "/project/dynamic" },
+  ]);
 
   const unsupported = await extract(available([
     manifest("include/pyproject.toml", '[project]\ndependencies = ["-r requirements.txt"]\n'),

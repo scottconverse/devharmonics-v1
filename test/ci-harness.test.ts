@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ import {
   validateSupportingDocumentReleaseScope,
   validateWorkflowPolicy,
 } from "../src/ci-harness.js";
+import { discoverDependenciesAtCommit } from "../src/dependency-intelligence.js";
 import { analyzeVerificationIntegrity } from "../src/verification-integrity.js";
 
 type ValidatorCorpusExpectation = string | [string, string | null, string[]];
@@ -782,6 +784,88 @@ test("validator-discovery corpus gate is closed-world and rejects a dropped nest
   }
 });
 
+test("dependency-intelligence corpus gate rejects a changed fingerprint and a moved HEAD without writing", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devharmonics-dependency-corpus-gate-"));
+  const repositoryPath = path.join(fixtureRoot, "expected");
+  const git = (args: string[]): string => {
+    const result = spawnSync("git", args, {
+      cwd: repositoryPath,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return result.stdout.trim();
+  };
+  const runGate = (expectations: unknown): ReturnType<typeof spawnSync> => {
+    const { NODE_TEST_CONTEXT: _nodeTestContext, ...runnerEnvironment } = process.env;
+    return spawnSync(process.execPath, ["scripts/verify-dependency-intelligence-corpus.mjs"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        ...runnerEnvironment,
+        CIVICSUITE_ORG_READALL: fixtureRoot,
+        DEVHARMONICS_DEPENDENCY_CORPUS_TEST_SEAM: "1",
+        DEVHARMONICS_DEPENDENCY_CORPUS_TEST_EXPECTATIONS: JSON.stringify(expectations),
+      },
+    });
+  };
+
+  try {
+    await mkdir(repositoryPath);
+    git(["init", "--initial-branch=main"]);
+    git(["config", "user.email", "dependency-corpus@example.invalid"]);
+    git(["config", "user.name", "Dependency Corpus Fixture"]);
+    await writeFile(
+      path.join(repositoryPath, "package.json"),
+      JSON.stringify({
+        name: "expected",
+        version: "1.0.0",
+        dependencies: { alpha: "^1.2.3" },
+        devDependencies: { beta: "~4.5.6" },
+      }),
+      "utf8",
+    );
+    git(["add", "package.json"]);
+    git(["commit", "-m", "dependency fixture"]);
+    const oid = git(["rev-parse", "HEAD"]);
+    const extraction = await discoverDependenciesAtCommit(repositoryPath, oid);
+    const expectation = {
+      state: extraction.state,
+      facts: extraction.facts.length,
+      identities: extraction.identities.length,
+      manifests: extraction.manifests.length,
+      diagnostics: extraction.diagnostics.length,
+      sha256: createHash("sha256").update(JSON.stringify(extraction)).digest("hex"),
+    };
+
+    const green = runGate([["expected", oid, expectation]]);
+    assert.equal(green.status, 0, `${green.stdout}\n${green.stderr}`);
+    assert.equal(git(["status", "--porcelain=v1", "--untracked-files=all"]), "", "the verifier must not write to the corpus");
+
+    const changedFingerprint = runGate([[
+      "expected",
+      oid,
+      { ...expectation, sha256: `${expectation.sha256[0] === "0" ? "1" : "0"}${expectation.sha256.slice(1)}` },
+    ]]);
+    const changedOutput = `${changedFingerprint.stdout}\n${changedFingerprint.stderr}`;
+    assert.notEqual(changedFingerprint.status, 0, changedOutput);
+    assert.match(changedOutput, /expected dependency fingerprint .* received/i);
+    assert.equal(git(["status", "--porcelain=v1", "--untracked-files=all"]), "", "a rejected expectation must not write to the corpus");
+
+    await writeFile(path.join(repositoryPath, "README.md"), "moved checkout\n", "utf8");
+    git(["add", "README.md"]);
+    git(["commit", "-m", "move checkout head"]);
+    const moved = runGate([["expected", oid, expectation]]);
+    const movedOutput = `${moved.stdout}\n${moved.stderr}`;
+    assert.notEqual(moved.status, 0, movedOutput);
+    assert.match(movedOutput, /expected checkout HEAD .* but found/i);
+    assert.equal(git(["status", "--porcelain=v1", "--untracked-files=all"]), "", "a moved checkout rejection must not write to the corpus");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("validator-discovery corpus manifest is the exact frozen 24-repository census", () => {
   const result = spawnSync(
     process.execPath,
@@ -857,6 +941,39 @@ test("validator-discovery corpus manifest is the exact frozen 24-repository cens
       name === "civicrecords-ai" ? ["compose_test_evidence"] : [],
     ]),
   );
+});
+
+test("dependency-intelligence corpus manifest is a parallel pinned 24-repository fingerprint census", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      "import { validatorDiscoveryCorpusManifest as validators, dependencyIntelligenceCorpusManifest as dependencies } from './scripts/validator-discovery-corpus-manifest.mjs'; console.log(JSON.stringify({ validators, dependencies }));",
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const { validators, dependencies } = JSON.parse(result.stdout) as {
+    validators: ValidatorCorpusRow[];
+    dependencies: Array<[string, string, {
+      state: string;
+      facts: number;
+      identities: number;
+      manifests: number;
+      diagnostics: number;
+      sha256: string;
+    }]>;
+  };
+  assert.deepEqual(
+    dependencies.map(([name, oid]) => [name, oid]),
+    validators.map(([name, oid]) => [name, oid]),
+  );
+  assert.equal(dependencies.length, 24);
+  assert.ok(dependencies.every(([, , expected]) =>
+    expected.state === "detected" &&
+    [expected.facts, expected.identities, expected.manifests, expected.diagnostics].every(Number.isInteger) &&
+    /^[0-9a-f]{64}$/.test(expected.sha256)));
 });
 
 test("validator corpus provisioner publishes an exact detached clean checkout without retained remotes", async () => {
@@ -962,6 +1079,7 @@ test("validator corpus provisioner rejects unsafe input and never publishes part
 
 test("CI provisions and verifies the frozen validator corpus in a dedicated uncached Ubuntu job", async () => {
   const workflow = await readFile(".github/workflows/ci.yml", "utf8");
+  const packageJson = await readFile("package.json", "utf8");
   const start = workflow.indexOf("  validator-discovery-corpus:");
   assert.ok(start >= 0, "dedicated validator-discovery-corpus job is required");
   const job = workflow.slice(start);
@@ -971,8 +1089,11 @@ test("CI provisions and verifies the frozen validator corpus in a dedicated unca
   assert.match(job, /node scripts\/provision-validator-discovery-corpus\.mjs\s+"?\$RUNNER_TEMP\/validator-discovery-corpus"?/);
   assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:validator-discovery-corpus/);
   assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:version-authority-corpus/);
+  assert.match(job, /CIVICSUITE_ORG_READALL=.*npm run verify:dependency-intelligence-corpus/);
+  assert.match(packageJson, /"verify:dependency-intelligence-corpus":\s*"npm run build && node scripts\/verify-dependency-intelligence-corpus\.mjs"/);
   assert.doesNotMatch(job, /DEVHARMONICS_VALIDATOR_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
   assert.doesNotMatch(job, /DEVHARMONICS_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
+  assert.doesNotMatch(job, /DEVHARMONICS_DEPENDENCY_CORPUS_TEST_(?:SEAM|EXPECTATIONS)/);
 });
 
 test("validator corpus verifier shares the manifest and stays offline, read-only, and execution-free", async () => {
@@ -999,6 +1120,18 @@ test("version authority verifier shares the frozen census and stays offline and 
   assert.match(verifier, /versionAuthorityAtCommit\(repositoryPath,\s*oid\)/);
   assert.doesNotMatch(verifier, /\["(?:clone|fetch|pull|push|ls-remote)"/);
   assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename)\s*\(/);
+});
+
+test("dependency corpus verifier uses the merged exact-commit extractor and stays offline and read-only", async () => {
+  const verifier = await readFile("scripts/verify-dependency-intelligence-corpus.mjs", "utf8");
+  assert.match(verifier, /import\s+\{\s*dependencyIntelligenceCorpusManifest\s*\}\s+from\s+"\.\/validator-discovery-corpus-manifest\.mjs"/);
+  assert.match(verifier, /import\s+\{\s*discoverDependenciesAtCommit\s*\}\s+from\s+"\.\.\/dist\/src\/dependency-intelligence\.js"/);
+  assert.match(verifier, /discoverDependenciesAtCommit\(repositoryPath,\s*oid\)/);
+  assert.match(verifier, /statusBefore/);
+  assert.match(verifier, /statusAfter/);
+  assert.doesNotMatch(verifier, /\b(?:npm|npx|pnpm|yarn)\b/);
+  assert.doesNotMatch(verifier, /\["(?:clone|fetch|pull|push|ls-remote)"/);
+  assert.doesNotMatch(verifier, /\b(?:writeFile|appendFile|copyFile|rename|mkdir|mkdtemp|rm)\s*\(/);
 });
 
 test("declared test census follows node:test aliases and namespaces but ignores foreign and shadowed bindings", () => {
