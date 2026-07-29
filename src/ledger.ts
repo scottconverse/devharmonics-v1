@@ -179,7 +179,7 @@ interface CheckRow {
   duration_ms: number;
 }
 
-export const LEDGER_SCHEMA_VERSION = 38;
+export const LEDGER_SCHEMA_VERSION = 39;
 
 export const REPOSITORY_ROLES = [
   "umbrella",
@@ -421,6 +421,17 @@ export interface CatalogRefreshRecord {
   modelCount: number;
   detail: string;
   refreshedAt: string;
+}
+
+export interface CompatibilityCatalogTrustRecord {
+  acceptedVersion: number;
+  keyId: string | null;
+  generatedAt: string | null;
+  expiresAt: string | null;
+  acceptedAt: string | null;
+  lastAttemptAt: string;
+  trustState: "accepted" | "stale" | "invalid";
+  failureReason: string;
 }
 
 export interface ProviderCatalogModelRecord {
@@ -1530,6 +1541,25 @@ const MIGRATIONS: readonly LedgerMigration[] = [
       }
     },
   },
+  {
+    version: 39,
+    name: "signed-compatibility-catalog-trust",
+    apply(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS compatibility_catalog_trust (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          accepted_version INTEGER NOT NULL DEFAULT 0,
+          key_id TEXT,
+          generated_at TEXT,
+          expires_at TEXT,
+          accepted_at TEXT,
+          last_attempt_at TEXT NOT NULL,
+          trust_state TEXT NOT NULL,
+          failure_reason TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 function summarizeGoal(goal: string, maxLength = 180): string {
@@ -1650,6 +1680,7 @@ const REQUIRED_SCHEMA: Readonly<Record<string, readonly string[]>> = {
     "validator_discovery_json", "validator_local_config_json", "validator_suppressions_json",
   ],
   catalog_refreshes: ["provider", "status", "source", "model_count", "detail", "refreshed_at"],
+  compatibility_catalog_trust: ["id", "accepted_version", "key_id", "generated_at", "expires_at", "accepted_at", "last_attempt_at", "trust_state", "failure_reason"],
   provider_catalog_models: ["id", "provider", "canonical_name", "display_name", "metadata_json", "first_seen_at", "last_seen_at", "missing_observations", "retired"],
   invocation_receipts: ["id", "run_id", "task_id", "role", "provider", "connection_id", "requested_model_id", "resolved_model_id", "model_resolution", "input_tokens", "output_tokens", "cost_usd", "duration_ms", "workload_class", "fallback_reason", "paid_spend_reservation_id", "created_at"],
   tool_policy_receipts: ["id", "run_id", "task_id", "attempt_id", "tool_id", "actor_role", "stage", "side_effect", "outcome", "reason", "request_json", "lock_keys_json", "approval_id", "created_at"],
@@ -3806,9 +3837,10 @@ export class Ledger {
     const stale = model.qualified && changed;
     this.database.prepare(
       `UPDATE models SET qualification_fingerprint = ?, qualification_stale = ?,
+       active = CASE WHEN ? = 1 AND qualified = 1 THEN 0 ELSE active END,
        lifecycle = CASE WHEN ? = 1 AND qualified = 1 THEN 'qualified' ELSE lifecycle END
        WHERE id = ?`,
-    ).run(fingerprint, model.qualified ? (stale ? 1 : model.qualificationStale ? 1 : 0) : 0, stale ? 1 : 0, modelId);
+    ).run(fingerprint, model.qualified ? (stale ? 1 : model.qualificationStale ? 1 : 0) : 0, stale ? 1 : 0, stale ? 1 : 0, modelId);
     return { changed, stale };
   }
 
@@ -3826,6 +3858,29 @@ export class Ledger {
   listCatalogRefreshes(): CatalogRefreshRecord[] {
     const rows = this.database.prepare("SELECT * FROM catalog_refreshes ORDER BY provider").all() as unknown as Array<Record<string, unknown>>;
     return rows.map((row) => ({ provider: String(row.provider), status: String(row.status) as CatalogRefreshRecord["status"], source: String(row.source), modelCount: Number(row.model_count), detail: String(row.detail), refreshedAt: String(row.refreshed_at) }));
+  }
+
+  compatibilityCatalogTrust(): CompatibilityCatalogTrustRecord {
+    const row = this.database.prepare("SELECT * FROM compatibility_catalog_trust WHERE id = 1").get() as Record<string, unknown> | undefined;
+    return {
+      acceptedVersion: Number(row?.accepted_version ?? 0), keyId: row?.key_id === null || row?.key_id === undefined ? null : String(row.key_id),
+      generatedAt: row?.generated_at === null || row?.generated_at === undefined ? null : String(row.generated_at), expiresAt: row?.expires_at === null || row?.expires_at === undefined ? null : String(row.expires_at),
+      acceptedAt: row?.accepted_at === null || row?.accepted_at === undefined ? null : String(row.accepted_at), lastAttemptAt: String(row?.last_attempt_at ?? new Date(0).toISOString()),
+      trustState: (row?.trust_state === "accepted" || row?.trust_state === "stale" ? row.trust_state : "invalid"), failureReason: String(row?.failure_reason ?? "No compatibility catalog accepted"),
+    };
+  }
+
+  recordCompatibilityCatalogTrust(input: Omit<CompatibilityCatalogTrustRecord, "lastAttemptAt"> & { lastAttemptAt?: string }): void {
+    const attemptedAt = input.lastAttemptAt ?? new Date().toISOString();
+    this.database.prepare(`INSERT INTO compatibility_catalog_trust (id, accepted_version, key_id, generated_at, expires_at, accepted_at, last_attempt_at, trust_state, failure_reason)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET accepted_version = excluded.accepted_version, key_id = excluded.key_id, generated_at = excluded.generated_at, expires_at = excluded.expires_at, accepted_at = excluded.accepted_at, last_attempt_at = excluded.last_attempt_at, trust_state = excluded.trust_state, failure_reason = excluded.failure_reason`)
+      .run(input.acceptedVersion, input.keyId, input.generatedAt, input.expiresAt, input.acceptedAt, attemptedAt, input.trustState, redactText(input.failureReason));
+  }
+
+  staleCompatibilityQualifications(reason: string): void {
+    this.database.prepare("UPDATE models SET qualification_stale = CASE WHEN qualified = 1 THEN 1 ELSE qualification_stale END, active = 0, lifecycle = CASE WHEN qualified = 1 THEN 'qualified' ELSE lifecycle END, metadata_json = json_set(metadata_json, '$.compatibilityCatalogStaleReason', ?) WHERE retired = 0")
+      .run(redactText(reason));
   }
 
   upsertProviderCatalogModels(provider: string, models: ReadonlyArray<{ id: string; canonicalName: string; displayName: string; metadata: Readonly<Record<string, unknown>> }>, retirementThreshold = 3): void {

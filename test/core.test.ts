@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -42,6 +42,7 @@ import { WorkspaceIsolationError, WorktreeManager } from "../src/worktrees.js";
 import { chunkDiffFiles, classifyVerdict, runContextOnlyReview } from "../src/local-review.js";
 import { classifyWorkload, inferModelProfile, profileMetadata, SUBSCRIPTION_COMPATIBILITY_MODELS } from "../src/model-intelligence.js";
 import { parseCurrentClaudeModels } from "../src/catalog.js";
+import { acceptCompatibilityCatalog, canonicalCatalogJson } from "../src/compatibility-catalog.js";
 import { estimateInvocationCost, estimateQualificationCost, isExactOpenRouterModelId, OpenRouterAdapter, OpenRouterService } from "../src/openrouter.js";
 import { architectPrompt, localReviewerContextHeader, priorDecisionsPromptSection, reviewerPrompt, workerPrompt } from "../src/prompts.js";
 import { QUALIFICATION_FINGERPRINT_FIXTURE, ensureReviewerCandidateQualified, hasQualifiableCandidate, ensureSchedulerCandidateQualified, ensureSchedulerProviderCandidateQualified, hasCurrentOperationalQualification, qualifyRuntimeModel, trackedFamilyQualificationRole } from "../src/qualification.js";
@@ -6392,6 +6393,7 @@ test("catalog fingerprints stale qualifications and model retirement requires th
     assert.equal(ledger.getModel(modelId)?.qualificationStale, false);
     ledger.applyModelFingerprint(modelId, "fingerprint-2");
     assert.equal(ledger.getModel(modelId)?.qualificationStale, true);
+    assert.equal(ledger.getModel(modelId)?.active, false, "a changed fingerprint must revoke scheduling activation");
     assert.throws(() => ledger.setModelPreference(modelId, { active: true }), /current qualification/i);
 
     ledger.reconcileDiscoveredModels("subscription-cli:codex", "runtime_discovery", [], 3);
@@ -6403,6 +6405,40 @@ test("catalog fingerprints stale qualifications and model retirement requires th
     ledger.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("signed compatibility catalogs reject tampering, replay, expiry, and untrusted keys", () => {
+  const root = generateKeyPairSync("ed25519");
+  const now = new Date("2026-07-29T12:00:00.000Z");
+  const catalog = { schemaVersion: 1, catalogVersion: 2, generatedAt: "2026-07-29T11:00:00.000Z", expiresAt: "2026-08-01T00:00:00.000Z", models: [] };
+  const envelope = { keyId: "test-root", catalog, signature: sign(null, Buffer.from(canonicalCatalogJson(catalog)), root.privateKey).toString("base64") };
+  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 1, now).status, "accepted");
+  assert.equal(acceptCompatibilityCatalog({ ...envelope, catalog: { ...catalog, catalogVersion: 3 } }, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "invalid");
+  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "rejected");
+  const expiredCatalog = { ...catalog, catalogVersion: 3, expiresAt: "2026-07-29T12:00:00.000Z" };
+  assert.equal(acceptCompatibilityCatalog({ ...envelope, catalog: expiredCatalog, signature: sign(null, Buffer.from(canonicalCatalogJson(expiredCatalog)), root.privateKey).toString("base64") }, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "invalid");
+  assert.equal(acceptCompatibilityCatalog(envelope, {}, 1, now).status, "invalid");
+  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 1, now, new Set(["test-root"])).status, "invalid");
+});
+
+test("compatibility trust persists and stale evidence revokes active qualifications", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-catalog-trust-"));
+  const filename = path.join(root, "devharmonics.db");
+  const ledger = new Ledger(filename);
+  try {
+    ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
+    ledger.upsertDiscoveredModel({ id: "subscription-cli:codex:model:trusted", connectionId: "subscription-cli:codex", canonicalName: "trusted", displayName: "Trusted", source: "provider_catalog", lifecycle: "known", visible: true, verified: false, qualified: false, active: false, metadata: {} });
+    ledger.recordModelQualification({ modelId: "subscription-cli:codex:model:trusted", fixtureVersion: "test", role: "worker", passed: true, score: 1, evidence: {} });
+    ledger.setModelPreference("subscription-cli:codex:model:trusted", { active: true });
+    ledger.recordCompatibilityCatalogTrust({ acceptedVersion: 3, keyId: "root", generatedAt: "2026-07-29T00:00:00.000Z", expiresAt: "2026-08-01T00:00:00.000Z", acceptedAt: "2026-07-29T00:00:00.000Z", trustState: "accepted", failureReason: "accepted" });
+    ledger.staleCompatibilityQualifications("signature failed");
+    assert.equal(ledger.getModel("subscription-cli:codex:model:trusted")?.active, false);
+    assert.equal(ledger.getModel("subscription-cli:codex:model:trusted")?.qualificationStale, true);
+    ledger.close();
+    const reopened = new Ledger(filename);
+    assert.equal(reopened.compatibilityCatalogTrust().acceptedVersion, 3);
+    reopened.close();
+  } finally { try { ledger.close(); } catch {} await rm(root, { recursive: true, force: true }); }
 });
 
 test("ledger redacts secrets at every persistence entry point", async () => {
@@ -8767,7 +8803,7 @@ test("a stale qualification does not hide a connection's provider default", asyn
     const stale = ledger.getModel(modelId);
     assert.equal(stale?.qualified, true, "the model still carries a qualification record");
     assert.equal(stale?.qualificationStale, true, "but it is stale, so it cannot be accepted as-is");
-    assert.equal(stale?.active, true, "and it is active, which is what made the connection look like a managed fleet");
+    assert.equal(stale?.active, false, "fingerprint change immediately revokes scheduling activation");
 
     const config = structuredClone(defaultConfig);
     assert.equal(

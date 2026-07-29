@@ -8,6 +8,7 @@ import { syncOllamaRuntimes, type OllamaDiscovery } from "./ollama.js";
 import { QUALIFICATION_FINGERPRINT_FIXTURE } from "./qualification.js";
 import { syncSubscriptionConnections } from "./registry.js";
 import { OpenRouterService } from "./openrouter.js";
+import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG } from "./compatibility-catalog.js";
 
 const CLAUDE_MODELS_URL = "https://platform.claude.com/docs/en/about-claude/models/overview";
 const DEFAULT_REFRESH_HOURS = 24;
@@ -17,6 +18,7 @@ export interface CatalogRefreshResult {
   providers: ProviderStatus[];
   ollama: OllamaDiscovery[];
   refreshedAt: string;
+  compatibilityTrust: ReturnType<Ledger["compatibilityCatalogTrust"]>;
 }
 
 export class ModelCatalogCoordinator {
@@ -72,6 +74,7 @@ export class ModelCatalogCoordinator {
       providers: providers ?? await inspectProviders(resolvedConfig, this.projectPath),
       ollama: [],
       refreshedAt: newestRefresh(this.ledger) ?? new Date(0).toISOString(),
+      compatibilityTrust: this.ledger.compatibilityCatalogTrust(),
     };
   }
 
@@ -81,6 +84,23 @@ export class ModelCatalogCoordinator {
     await openRouter.syncConnection(config.openRouter.enabled);
     const providers = await inspectProviders(config, this.projectPath);
     syncSubscriptionConnections(this.ledger, providers);
+    const priorTrust = this.ledger.compatibilityCatalogTrust();
+    const compatibility = acceptCompatibilityCatalog(BUNDLED_COMPATIBILITY_CATALOG, undefined, priorTrust.acceptedVersion);
+    if (compatibility.status === "accepted" && compatibility.catalog) {
+      this.ledger.recordCompatibilityCatalogTrust({ acceptedVersion: compatibility.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, generatedAt: compatibility.catalog.generatedAt, expiresAt: compatibility.catalog.expiresAt, acceptedAt: new Date().toISOString(), trustState: "accepted", failureReason: compatibility.reason });
+      for (const entry of compatibility.catalog.models) {
+        const provider = providers.find((item) => item.name === entry.provider);
+        if (!provider) continue;
+        const inferred = inferModelProfile({ canonicalName: entry.canonicalName, displayName: entry.displayName, metadata: {} }, { provider: entry.provider, transport: "subscription_cli" });
+        this.ledger.upsertDiscoveredModel({ id: `subscription-cli:${entry.provider}:model:${normalizeModelId(entry.canonicalName)}`, connectionId: `subscription-cli:${entry.provider}`, canonicalName: entry.canonicalName, displayName: entry.displayName, source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: compatibility.catalog.catalogVersion, requiresRuntimeQualification: true, ...profileMetadata({ ...inferred, source: "catalog", confidence: "official" }) } });
+      }
+    } else if (compatibility.status === "rejected" && priorTrust.trustState === "accepted" && priorTrust.expiresAt && Date.parse(priorTrust.expiresAt) > Date.now()) {
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "accepted", failureReason: compatibility.reason });
+    } else {
+      this.ledger.staleCompatibilityQualifications(compatibility.reason);
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "invalid", failureReason: compatibility.reason });
+    }
+    this.ledger.recordCatalogRefresh({ provider: "compatibility", status: compatibility.status === "accepted" || (compatibility.status === "rejected" && priorTrust.trustState === "accepted") ? "success" : "failed", source: "bundled signed DevHarmonics compatibility catalog", modelCount: compatibility.catalog?.models.length ?? 0, detail: compatibility.reason });
     this.ledger.reconcileLegacyAntigravityQuotaHealth();
     for (const provider of providers) {
       this.ledger.recordCatalogRefresh({
@@ -93,9 +113,11 @@ export class ModelCatalogCoordinator {
     }
 
     await this.refreshClaudeOfficialCatalog();
+    let openRouterFailed = false;
     try {
       await openRouter.syncCatalog();
     } catch (error) {
+      openRouterFailed = true;
       this.ledger.recordCatalogRefresh({ provider: "openrouter", status: "failed", source: "https://openrouter.ai/api/v1/models", modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
     }
     const ollama = await syncOllamaRuntimes(this.ledger, config.localRuntimes.ollama);
@@ -107,14 +129,21 @@ export class ModelCatalogCoordinator {
       detail: ollama.some((runtime) => runtime.available) ? "Local runtime catalogs refreshed" : "No configured Ollama runtime was reachable",
     });
     this.refreshFingerprints();
+    const failedProviders = providers.filter((provider) => provider.installed && !provider.healthy).map((provider) => provider.name);
+    const failedRequired = [
+      ...failedProviders,
+      ...(compatibility.status === "invalid" ? ["compatibility"] : []),
+      ...(config.openRouter.enabled && openRouterFailed ? ["openrouter"] : []),
+      ...(config.localRuntimes.ollama.length && !ollama.some((runtime) => runtime.available) ? ["ollama"] : []),
+    ];
     this.ledger.recordCatalogRefresh({
       provider: "coordinator",
-      status: "success",
+      status: failedRequired.length ? "failed" : "success",
       source,
       modelCount: this.ledger.listModels().filter((model) => !model.retired).length,
-      detail: "All configured provider and local-runtime catalogs were checked",
+      detail: failedRequired.length ? `Catalog refresh incomplete; failed required components: ${failedRequired.join(", ")}` : "All configured provider and local-runtime catalogs were checked",
     });
-    return { config, providers, ollama, refreshedAt: newestRefresh(this.ledger) ?? new Date().toISOString() };
+    return { config, providers, ollama, refreshedAt: newestRefresh(this.ledger) ?? new Date().toISOString(), compatibilityTrust: this.ledger.compatibilityCatalogTrust() };
   }
 
   private async refreshClaudeOfficialCatalog(): Promise<void> {

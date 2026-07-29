@@ -1348,6 +1348,10 @@ function renderModels() {
   const qualified = allCurrentModels.filter((model) => hasCurrentOperationalQualification(model) && !model.qualificationStale).length;
   const active = allCurrentModels.filter(isModelSchedulable).length;
   $("#model-summary").innerHTML = `<div class="metric"><span>Known models</span><strong>${allCurrentModels.length}</strong></div><div class="metric"><span>Passed a role check</span><strong>${qualified}</strong></div><div class="metric"><span>Ready to be used</span><strong>${active}</strong></div><div class="metric"><span>Estimated local capacity</span><strong>${state.resources?.advisoryLocalSlots ?? "?"}</strong></div>`;
+  const catalogTrust = state.bootstrap.catalog?.compatibilityTrust;
+  $("#catalog-trust").textContent = catalogTrust
+    ? `Compatibility catalog: ${catalogTrust.trustState}; last attempted ${new Date(catalogTrust.lastAttemptAt).toLocaleString()}; accepted version ${catalogTrust.acceptedVersion || "none"}${catalogTrust.expiresAt ? `; expires ${new Date(catalogTrust.expiresAt).toLocaleString()}` : ""}. ${catalogTrust.failureReason}`
+    : "Compatibility catalog: no trust receipt is available yet.";
   const runtimes = state.bootstrap.config.localRuntimes?.ollama || [];
   $("#runtime-list").innerHTML = runtimes.map((runtime) => {
     const connection = state.connections.find((item) => item.metadata?.runtimeId === runtime.id);
@@ -3072,7 +3076,7 @@ $("#refresh-models").addEventListener("click", async () => {
   await withOperation($("#refresh-models"), "Refreshing the model fleet", async () => {
     try {
       const refreshed = await api("/api/catalog/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      state.bootstrap = { ...state.bootstrap, config: refreshed.config, providers: refreshed.providers, ollama: refreshed.ollama, catalog: { refreshedAt: refreshed.refreshedAt, refreshes: refreshed.refreshes } };
+      state.bootstrap = { ...state.bootstrap, config: refreshed.config, providers: refreshed.providers, ollama: refreshed.ollama, catalog: { refreshedAt: refreshed.refreshedAt, refreshes: refreshed.refreshes, compatibilityTrust: refreshed.compatibilityTrust } };
       await refreshFleet();
       $("#model-message").textContent = `Fleet refreshed at ${new Date(refreshed.refreshedAt).toLocaleString()}.`;
     } catch (error) {
