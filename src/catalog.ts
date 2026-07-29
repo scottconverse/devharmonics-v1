@@ -94,7 +94,9 @@ export class ModelCatalogCoordinator {
 
   private nextPeriodicDelayMs(now = Date.now()): number {
     const defaultDelay = DEFAULT_REFRESH_HOURS * 60 * 60_000;
+    const coordinator = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
     const trust = this.ledger.compatibilityCatalogTrust();
+    if (!coordinator || coordinator.status === "failed" || trust.trustState === "invalid") return FAILED_REFRESH_RETRY_MS;
     const expiresAt = trust.expiresAt ? Date.parse(trust.expiresAt) : Number.NaN;
     if (!Number.isFinite(expiresAt)) return defaultDelay;
     const untilExpiry = expiresAt - now;

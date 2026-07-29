@@ -5826,15 +5826,35 @@ test("redaction property coverage removes generated tokens in varied diagnostic 
 test("ledger initializes a versioned schema without backing up a new database", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-new-"));
   const filename = path.join(root, "devharmonics.db");
-  const ledger = new Ledger(filename);
   try {
-    assert.equal(ledger.getSchemaVersion(), LEDGER_SCHEMA_VERSION);
-    assert.deepEqual(
-      (await readdir(root)).filter((name) => name.includes(".backup-")),
-      [],
-    );
+    const ledger = new Ledger(filename);
+    try {
+      assert.equal(ledger.getSchemaVersion(), LEDGER_SCHEMA_VERSION);
+      assert.deepEqual((await readdir(root)).filter((name) => name.includes(".backup-")), []);
+      ledger.recordCompatibilityCatalogTrust({ acceptedVersion: 1, catalogDigest: "pre-migration", keyId: "root", generatedAt: "2026-07-29T00:00:00.000Z", expiresAt: "2027-07-01T00:00:00.000Z", acceptedAt: "2026-07-29T00:00:00.000Z", trustState: "accepted", failureReason: "accepted" });
+      ledger.recordCatalogRefresh({ provider: "coordinator", status: "success", source: "fixture", modelCount: 1, detail: "fresh" });
+      ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
+      ledger.upsertDiscoveredModel({ id: "subscription-cli:codex:model:signed", connectionId: "subscription-cli:codex", canonicalName: "signed", displayName: "Signed", source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: 1 } });
+      ledger.recordModelQualification({ modelId: "subscription-cli:codex:model:signed", fixtureVersion: "test", role: "worker", passed: true, score: 1, evidence: {} });
+      ledger.setModelPreference("subscription-cli:codex:model:signed", { active: true });
+    } finally {
+      ledger.close();
+    }
+    const schema39 = new DatabaseSync(filename);
+    schema39.exec("ALTER TABLE compatibility_catalog_trust DROP COLUMN catalog_digest; DELETE FROM schema_migrations WHERE version = 40; PRAGMA user_version = 39;");
+    schema39.close();
+    const upgraded = new Ledger(filename);
+    try {
+      assert.equal(upgraded.compatibilityCatalogTrust().acceptedVersion, 0);
+      assert.equal(upgraded.compatibilityCatalogTrust().trustState, "invalid");
+      assert.match(upgraded.compatibilityCatalogTrust().failureReason, /payload digest.*revalidation/i);
+      assert.equal(upgraded.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "failed");
+      assert.equal(upgraded.getModel("subscription-cli:codex:model:signed")?.active, false);
+      assert.equal(upgraded.getModel("subscription-cli:codex:model:signed")?.qualificationStale, true);
+    } finally {
+      upgraded.close();
+    }
   } finally {
-    ledger.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -6520,6 +6540,7 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     const receipt = ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
     assert.equal(receipt?.status, "failed");
     assert.match(receipt?.detail ?? "", /claude-official/);
+    assert.ok((coordinator as any).nextPeriodicDelayMs() <= 5 * 60_000, "failed refreshes retry before the normal 24-hour interval");
 
     const disabledUnhealthy = catalogProviderFixture().map((provider) => provider.name === "gemini"
       ? { ...provider, enabled: false, installed: true, healthy: false, available: false }

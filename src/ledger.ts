@@ -1571,6 +1571,18 @@ const MIGRATIONS: readonly LedgerMigration[] = [
       if (!columns.has("catalog_digest")) {
         database.exec("ALTER TABLE compatibility_catalog_trust ADD COLUMN catalog_digest TEXT;");
       }
+      const reset = database.prepare(
+        `UPDATE compatibility_catalog_trust
+         SET accepted_version = 0, key_id = NULL, generated_at = NULL, expires_at = NULL,
+             accepted_at = NULL, trust_state = 'invalid',
+             failure_reason = 'Catalog payload digest requires signed revalidation'
+         WHERE accepted_version > 0 AND catalog_digest IS NULL`,
+      ).run();
+      if (reset.changes > 0) {
+        database.prepare("UPDATE catalog_refreshes SET status = 'failed', detail = ? WHERE provider = 'coordinator'")
+          .run("Catalog payload digest requires signed revalidation");
+        database.prepare("UPDATE models SET qualification_stale = CASE WHEN qualified = 1 THEN 1 ELSE qualification_stale END, active = 0, lifecycle = CASE WHEN qualified = 1 THEN 'qualified' ELSE lifecycle END WHERE retired = 0 AND (source = 'compatibility_catalog' OR json_type(metadata_json, '$.signedCatalogVersion') IS NOT NULL)").run();
+      }
     },
   },
 ];
