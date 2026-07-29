@@ -777,6 +777,8 @@ function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedMa
   const diagnostics: DependencyDiagnostic[] = [];
   let dynamicDependencies = false;
   let dynamicOptionalDependencies = false;
+  let staticDependenciesPresent = false;
+  let staticOptionalDependenciesPresent = false;
   const project = ownTomlValue(document, "project");
   if (project !== undefined && !isTomlRecord(project)) {
     diagnostics.push(diagnostic(entry, commit, "wrong_shape", "'project' must be a table", "/project"));
@@ -791,6 +793,7 @@ function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedMa
       }
     }
     const runtime = ownTomlValue(project, "dependencies");
+    staticDependenciesPresent = runtime !== undefined;
     if (runtime !== undefined) {
       if (dynamicDependencies) {
         diagnostics.push(diagnostic(
@@ -811,6 +814,7 @@ function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedMa
       }
     }
     const optional = ownTomlValue(project, "optional-dependencies");
+    staticOptionalDependenciesPresent = optional !== undefined;
     if (optional !== undefined) {
       if (dynamicOptionalDependencies) {
         diagnostics.push(diagnostic(
@@ -905,16 +909,18 @@ function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedMa
   }
   if (dynamicDependencies || dynamicOptionalDependencies) {
     const fields = [
-      ...(dynamicDependencies ? ["dependencies"] : []),
-      ...(dynamicOptionalDependencies ? ["optional-dependencies"] : []),
+      ...(dynamicDependencies && !staticDependenciesPresent ? ["dependencies"] : []),
+      ...(dynamicOptionalDependencies && !staticOptionalDependenciesPresent ? ["optional-dependencies"] : []),
     ];
-    diagnostics.push(diagnostic(
-      entry,
-      commit,
-      "dynamic",
-      `project ${fields.join(" and ")} are declared dynamically; exact declarations are unavailable`,
-      "/project/dynamic",
-    ));
+    if (fields.length) {
+      diagnostics.push(diagnostic(
+        entry,
+        commit,
+        "dynamic",
+        `project ${fields.join(" and ")} are declared dynamically; exact declarations are unavailable`,
+        "/project/dynamic",
+      ));
+    }
   }
   let state: DependencyEvidenceState;
   if (diagnostics.some((item) => item.state === "malformed")) state = "malformed";
