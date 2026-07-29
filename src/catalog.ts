@@ -12,6 +12,7 @@ import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG, COMPATIBILIT
 
 const CLAUDE_MODELS_URL = "https://platform.claude.com/docs/en/about-claude/models/overview";
 const DEFAULT_REFRESH_HOURS = 24;
+const FAILED_REFRESH_RETRY_MS = 5 * 60_000;
 
 export interface CatalogRefreshResult {
   config: DevHarmonicsConfig;
@@ -31,6 +32,7 @@ export interface ModelCatalogCoordinatorOptions {
 export class ModelCatalogCoordinator {
   private refreshInFlight: Promise<CatalogRefreshResult> | null = null;
   private periodicTimer: NodeJS.Timeout | null = null;
+  private periodicStarted = false;
 
   constructor(private readonly ledger: Ledger, private readonly projectPath: string, private readonly options: ModelCatalogCoordinatorOptions = {}) {}
 
@@ -39,15 +41,14 @@ export class ModelCatalogCoordinator {
     if (!force && !this.isStale()) return this.snapshot();
     this.refreshInFlight = this.performRefresh(source).finally(() => {
       this.refreshInFlight = null;
+      if (this.periodicStarted) this.schedulePeriodic();
     });
     return this.refreshInFlight;
   }
 
   async ensureFresh(): Promise<CatalogRefreshResult> {
     const config = await loadConfig(this.projectPath);
-    const maxAgeMs = DEFAULT_REFRESH_HOURS * 60 * 60_000;
-    const coordinator = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
-    const stale = !coordinator || coordinator.status === "failed" || Date.now() - Date.parse(coordinator.refreshedAt) >= maxAgeMs;
+    const stale = this.isStale();
     const providers = await (this.options.inspectProviders ?? inspectProviders)(config, this.projectPath);
     const knownVersions = new Map(this.ledger.listConnections().map((connection) => [connection.provider, connection.runtimeVersion]));
     const versionChanged = providers.some((provider) => provider.installed && knownVersions.get(provider.name) !== (provider.version || null));
@@ -55,23 +56,49 @@ export class ModelCatalogCoordinator {
   }
 
   startPeriodic(): void {
-    if (this.periodicTimer) return;
-    this.periodicTimer = setInterval(() => {
+    if (this.periodicStarted) return;
+    this.periodicStarted = true;
+    this.schedulePeriodic();
+  }
+
+  private schedulePeriodic(): void {
+    if (!this.periodicStarted) return;
+    if (this.periodicTimer) clearTimeout(this.periodicTimer);
+    this.periodicTimer = setTimeout(() => {
+      this.periodicTimer = null;
       void this.refresh(true, "periodic").catch((error) => {
         this.ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source: "periodic", modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
       });
-    }, DEFAULT_REFRESH_HOURS * 60 * 60_000);
+    }, this.nextPeriodicDelayMs());
     this.periodicTimer.unref();
   }
 
   stop(): void {
-    if (this.periodicTimer) clearInterval(this.periodicTimer);
+    this.periodicStarted = false;
+    if (this.periodicTimer) clearTimeout(this.periodicTimer);
     this.periodicTimer = null;
   }
 
   private isStale(): boolean {
     const refresh = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
-    return !refresh || refresh.status === "failed" || Date.now() - Date.parse(refresh.refreshedAt) >= DEFAULT_REFRESH_HOURS * 60 * 60_000;
+    return !refresh
+      || refresh.status === "failed"
+      || Date.now() - Date.parse(refresh.refreshedAt) >= DEFAULT_REFRESH_HOURS * 60 * 60_000
+      || this.compatibilityTrustExpired();
+  }
+
+  private compatibilityTrustExpired(now = Date.now()): boolean {
+    const expiresAt = this.ledger.compatibilityCatalogTrust().expiresAt;
+    return Boolean(expiresAt) && Date.parse(expiresAt!) <= now;
+  }
+
+  private nextPeriodicDelayMs(now = Date.now()): number {
+    const defaultDelay = DEFAULT_REFRESH_HOURS * 60 * 60_000;
+    const trust = this.ledger.compatibilityCatalogTrust();
+    const expiresAt = trust.expiresAt ? Date.parse(trust.expiresAt) : Number.NaN;
+    if (!Number.isFinite(expiresAt)) return defaultDelay;
+    const untilExpiry = expiresAt - now;
+    return untilExpiry > 0 ? Math.min(defaultDelay, untilExpiry) : FAILED_REFRESH_RETRY_MS;
   }
 
   private async snapshot(config?: DevHarmonicsConfig, providers?: ProviderStatus[]): Promise<CatalogRefreshResult> {
@@ -127,7 +154,6 @@ export class ModelCatalogCoordinator {
       ...(this.ledger.compatibilityCatalogTrust().trustState === "invalid" ? ["compatibility"] : []),
       ...(!claudeOfficialSucceeded ? ["claude-official"] : []),
       ...(config.openRouter.enabled && openRouterFailed ? ["openrouter"] : []),
-      ...(config.localRuntimes.ollama.length && !ollama.some((runtime) => runtime.available) ? ["ollama"] : []),
     ];
     this.ledger.recordCatalogRefresh({
       provider: "coordinator",

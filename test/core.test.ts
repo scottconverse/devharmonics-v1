@@ -6505,6 +6505,9 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
     await initializeProject(root);
+    const config = await loadConfig(root);
+    config.localRuntimes.ollama = [{ id: "offline-fixture", displayName: "Offline fixture", baseUrl: "http://127.0.0.1:1", enabled: true }];
+    await writeFile(path.join(devHarmonicsDirectory(root), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
     ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source: "test", modelCount: 0, detail: "failed", refreshedAt: new Date().toISOString() });
     const coordinator = new ModelCatalogCoordinator(ledger, root, {
       fetch: (async (input: string | URL | Request) => String(input).includes("compatibility-catalog")
@@ -6529,6 +6532,11 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     });
     await recovered.refresh(true, "test-disabled-provider");
     assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "success");
+    const trust = ledger.compatibilityCatalogTrust();
+    ledger.recordCompatibilityCatalogTrust({ ...trust, expiresAt: new Date(Date.now() + 1_000).toISOString(), trustState: "accepted" });
+    assert.ok((recovered as any).nextPeriodicDelayMs() <= 1_000, "periodic refresh is scheduled no later than signed expiry");
+    ledger.recordCompatibilityCatalogTrust({ ...trust, expiresAt: "2026-07-29T00:00:00.000Z", trustState: "accepted" });
+    assert.equal((recovered as any).isStale(), true, "signed expiry makes a fresh coordinator receipt stale");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });
