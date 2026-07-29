@@ -120,7 +120,7 @@ export class ModelCatalogCoordinator {
       detail: ollama.some((runtime) => runtime.available) ? "Local runtime catalogs refreshed" : "No configured Ollama runtime was reachable",
     });
     this.refreshFingerprints();
-    const failedProviders = providers.filter((provider) => provider.installed && !provider.healthy).map((provider) => provider.name);
+    const failedProviders = providers.filter((provider) => provider.enabled && provider.installed && !provider.healthy).map((provider) => provider.name);
     const failedRequired = [
       ...failedProviders,
       ...(!compatibility.liveSucceeded ? ["compatibility-live"] : []),
@@ -146,7 +146,7 @@ export class ModelCatalogCoordinator {
     try {
       const response = await (this.options.fetch ?? fetch)(COMPATIBILITY_CATALOG_URL, { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new Error(`DevHarmonics returned HTTP ${response.status}`);
-      liveAcceptance = acceptCompatibilityCatalog(await response.json(), undefined, priorTrust.acceptedVersion);
+      liveAcceptance = acceptCompatibilityCatalog(await response.json(), undefined, priorTrust.acceptedVersion, new Date(), undefined, priorTrust.catalogDigest);
       if (liveAcceptance.status === "invalid"
         || liveAcceptance.status === "rejected" && liveAcceptance.catalog?.catalogVersion !== priorTrust.acceptedVersion) {
         liveFailure = liveAcceptance.reason;
@@ -160,7 +160,7 @@ export class ModelCatalogCoordinator {
       this.ledger.recordCatalogRefresh({ provider: "compatibility", status: "success", source: COMPATIBILITY_CATALOG_URL, modelCount: liveAcceptance.catalog?.models.length ?? 0, detail: liveAcceptance.reason });
       return { acceptance: liveAcceptance, liveSucceeded: true };
     }
-    const fallback = acceptCompatibilityCatalog(BUNDLED_COMPATIBILITY_CATALOG, undefined, priorTrust.acceptedVersion);
+    const fallback = acceptCompatibilityCatalog(BUNDLED_COMPATIBILITY_CATALOG, undefined, priorTrust.acceptedVersion, new Date(), undefined, priorTrust.catalogDigest);
     const fallbackIsCurrent = fallback.status === "accepted"
       || fallback.status === "rejected" && fallback.catalog?.catalogVersion === priorTrust.acceptedVersion;
     const retained = !fallbackIsCurrent
@@ -192,6 +192,7 @@ export class ModelCatalogCoordinator {
     if (!acceptance.catalog || !acceptance.keyId) return;
     this.ledger.recordCompatibilityCatalogTrust({
       acceptedVersion: acceptance.catalog.catalogVersion,
+      catalogDigest: acceptance.digest ?? null,
       keyId: acceptance.keyId,
       generatedAt: acceptance.catalog.generatedAt,
       expiresAt: acceptance.catalog.expiresAt,

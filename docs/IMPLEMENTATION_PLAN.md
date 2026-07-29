@@ -8,7 +8,7 @@ Product specification baseline: **DevHarmonics Product Specification v1.17**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.42 (2026-07-29)** — Locked C1 reconciliation semantics: application releases own compatibility trust roots and revocations; signed-catalog omissions retire compatibility-only rows after the normal missing-observation threshold; and independent runtime/provider observations retain their provenance, visibility, and qualification when an identifier collides with signed metadata. Rotated and revoked the unreleased draft root before merge.
+Revision history: **v1.42 (2026-07-29)** — Locked C1 reconciliation semantics: application releases own compatibility trust roots and revocations; an accepted version is bound to its canonical payload digest; signed-catalog omissions retire compatibility-only rows after the normal missing-observation threshold; independent runtime/provider observations retain their provenance, visibility, and qualification when an identifier collides with signed metadata; and disabled providers do not fail the refresh coordinator. Rotated and revoked the unreleased draft root before merge.
 
 Revision history: **v1.41 (2026-07-29)** — Claimed C1 after adding live signed compatibility-catalog delivery against application-shipped Ed25519 roots, truthful stale/failure receipts, scoped qualification invalidation, CLI/dashboard refresh triggers, and unavailable/retired-model failure refresh. Exact-candidate beta reproving remains part of the later joined beta gate.
 
@@ -417,6 +417,7 @@ Deliverables:
 - persist provider-neutral model identities and connection-specific availability;
 - reconcile provider catalogs, signed compatibility data, runtime discovery, and empirical observations;
 - ship compatibility-catalog trust roots and revocations with the application;
+- bind each accepted catalog version to its verified canonical payload digest;
 - reconcile signed-catalog omissions only against compatibility-sourced rows, while preserving stronger independent runtime/provider provenance on identifier collisions;
 - refresh enumerable catalogs at launch, at least every 24 hours while running,
   when cached metadata becomes stale, and when provider/runtime fingerprints
@@ -434,6 +435,8 @@ Acceptance:
 - repeated signed-catalog omission retires a compatibility-only model, but a
   signed metadata collision cannot replace runtime/provider visibility,
   provenance, or independently qualified activation;
+- changed signed content cannot reuse an accepted catalog version, and an
+  owner-disabled provider cannot keep the refresh coordinator failed;
 - every attempt receipt distinguishes the requested model from runtime-verified actual resolution; an unverified request is never presented as the model that executed.
 
 #### DH-230: Health, quota, and cooldown manager — L

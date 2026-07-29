@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { z } from "zod";
 
 const timestamp = z.string().datetime({ offset: true });
@@ -24,6 +24,8 @@ export interface CatalogAcceptance {
   status: "accepted" | "rejected" | "invalid";
   reason: string;
   catalog?: CompatibilityCatalog;
+  /** SHA-256 of the verified canonical catalog payload. */
+  digest?: string;
   /** Present only after the envelope signature has verified against an app-shipped root. */
   keyId?: string;
 }
@@ -71,7 +73,14 @@ export function canonicalCatalogJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function acceptCompatibilityCatalog(input: unknown, roots: Readonly<Record<string, string>> = COMPATIBILITY_ROOTS, acceptedVersion = 0, now = new Date(), revokedKeys: ReadonlySet<string> = REVOKED_COMPATIBILITY_KEYS): CatalogAcceptance {
+export function acceptCompatibilityCatalog(
+  input: unknown,
+  roots: Readonly<Record<string, string>> = COMPATIBILITY_ROOTS,
+  acceptedVersion = 0,
+  now = new Date(),
+  revokedKeys: ReadonlySet<string> = REVOKED_COMPATIBILITY_KEYS,
+  acceptedDigest: string | null = null,
+): CatalogAcceptance {
   const envelope = z.object({ keyId: z.string().min(1), catalog: catalogSchema, signature: z.string().min(1) }).safeParse(input);
   if (!envelope.success) return { status: "invalid", reason: "Catalog schema is invalid" };
   const { keyId, catalog, signature } = envelope.data;
@@ -85,10 +94,14 @@ export function acceptCompatibilityCatalog(input: unknown, roots: Readonly<Recor
   } catch {
     return { status: "invalid", reason: "Catalog signature could not be verified" };
   }
+  const digest = createHash("sha256").update(canonicalCatalogJson(catalog)).digest("hex");
   const generatedAt = Date.parse(catalog.generatedAt);
   const expiresAt = Date.parse(catalog.expiresAt);
   if (!Number.isFinite(generatedAt) || !Number.isFinite(expiresAt) || generatedAt > now.getTime() || expiresAt <= now.getTime()) return { status: "invalid", reason: "Catalog timestamps are not currently valid" };
-  if (catalog.catalogVersion < acceptedVersion) return { status: "rejected", reason: "Catalog version is older than the accepted version", catalog, keyId };
-  if (catalog.catalogVersion === acceptedVersion) return { status: "rejected", reason: "Catalog version matches the accepted version", catalog, keyId };
-  return { status: "accepted", reason: "Signature, schema, timestamps, and version accepted", catalog, keyId };
+  if (catalog.catalogVersion < acceptedVersion) return { status: "rejected", reason: "Catalog version is older than the accepted version", catalog, digest, keyId };
+  if (catalog.catalogVersion === acceptedVersion) {
+    if (!acceptedDigest || digest !== acceptedDigest) return { status: "invalid", reason: "Catalog content changed without a version increment" };
+    return { status: "rejected", reason: "Catalog version and content match the accepted catalog", catalog, digest, keyId };
+  }
+  return { status: "accepted", reason: "Signature, schema, timestamps, and version accepted", catalog, digest, keyId };
 }

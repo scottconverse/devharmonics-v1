@@ -5902,6 +5902,7 @@ test("ledger upgrades a v0.1 database transactionally and preserves a pre-migrat
           { version: 37, name: "decision-provenance-and-append-only-invariants" },
           { version: 38, name: "repository-validator-discovery-state" },
           { version: 39, name: "signed-compatibility-catalog-trust" },
+          { version: 40, name: "compatibility-catalog-payload-digest" },
         ],
       );
     } finally {
@@ -6414,9 +6415,13 @@ test("signed compatibility catalogs reject tampering, replay, expiry, and untrus
   const now = new Date("2026-07-29T12:00:00.000Z");
   const catalog = { schemaVersion: 1, catalogVersion: 2, generatedAt: "2026-07-29T11:00:00.000Z", expiresAt: "2026-08-01T00:00:00.000Z", models: [] };
   const envelope = { keyId: "test-root", catalog, signature: sign(null, Buffer.from(canonicalCatalogJson(catalog)), root.privateKey).toString("base64") };
+  const digest = createHash("sha256").update(canonicalCatalogJson(catalog)).digest("hex");
   assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 1, now).status, "accepted");
   assert.equal(acceptCompatibilityCatalog({ ...envelope, catalog: { ...catalog, catalogVersion: 3 } }, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "invalid");
-  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "rejected");
+  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now, new Set(), digest).status, "rejected");
+  const changedCatalog = { ...catalog, models: [{ provider: "codex", canonicalName: "changed", displayName: "Changed" }] };
+  const changedEnvelope = { ...envelope, catalog: changedCatalog, signature: sign(null, Buffer.from(canonicalCatalogJson(changedCatalog)), root.privateKey).toString("base64") };
+  assert.equal(acceptCompatibilityCatalog(changedEnvelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now, new Set(), digest).status, "invalid");
   const expiredCatalog = { ...catalog, catalogVersion: 3, expiresAt: "2026-07-29T12:00:00.000Z" };
   assert.equal(acceptCompatibilityCatalog({ ...envelope, catalog: expiredCatalog, signature: sign(null, Buffer.from(canonicalCatalogJson(expiredCatalog)), root.privateKey).toString("base64") }, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "invalid");
   assert.equal(acceptCompatibilityCatalog(envelope, {}, 1, now).status, "invalid");
@@ -6460,6 +6465,7 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
       { version: ledger.compatibilityCatalogTrust().acceptedVersion, keyId: ledger.compatibilityCatalogTrust().keyId, state: ledger.compatibilityCatalogTrust().trustState },
       { version: BUNDLED_COMPATIBILITY_CATALOG.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, state: "accepted" },
     );
+    assert.match(ledger.compatibilityCatalogTrust().catalogDigest ?? "", /^[0-9a-f]{64}$/);
     assert.equal(ledger.getModel(runtimeModelId)?.source, "runtime_discovery");
     assert.equal(ledger.getModel(runtimeModelId)?.visible, true);
     assert.equal(ledger.getModel(runtimeModelId)?.metadata.signedCatalogVersion, undefined);
@@ -6511,6 +6517,18 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     const receipt = ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
     assert.equal(receipt?.status, "failed");
     assert.match(receipt?.detail ?? "", /claude-official/);
+
+    const disabledUnhealthy = catalogProviderFixture().map((provider) => provider.name === "gemini"
+      ? { ...provider, enabled: false, installed: true, healthy: false, available: false }
+      : provider);
+    const recovered = new ModelCatalogCoordinator(ledger, root, {
+      fetch: (async (input: string | URL | Request) => String(input).includes("compatibility-catalog")
+        ? Response.json(BUNDLED_COMPATIBILITY_CATALOG)
+        : new Response("claude-fable-5 claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001")) as typeof fetch,
+      inspectProviders: async () => disabledUnhealthy,
+    });
+    await recovered.refresh(true, "test-disabled-provider");
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "success");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });
@@ -7601,7 +7619,7 @@ test("steering directives persist with actor, target, disposition, and supersede
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-steering-ledger-"));
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
-    assert.equal(LEDGER_SCHEMA_VERSION, 39, "the signed compatibility catalog trust migration advances the ledger schema");
+    assert.equal(LEDGER_SCHEMA_VERSION, 40, "the compatibility catalog payload digest advances the ledger schema");
     const runId = ledger.createRun("Steer me", root);
     ledger.savePlan(runId, {
       summary: "One task",

@@ -179,7 +179,7 @@ interface CheckRow {
   duration_ms: number;
 }
 
-export const LEDGER_SCHEMA_VERSION = 39;
+export const LEDGER_SCHEMA_VERSION = 40;
 
 export const REPOSITORY_ROLES = [
   "umbrella",
@@ -425,6 +425,7 @@ export interface CatalogRefreshRecord {
 
 export interface CompatibilityCatalogTrustRecord {
   acceptedVersion: number;
+  catalogDigest: string | null;
   keyId: string | null;
   generatedAt: string | null;
   expiresAt: string | null;
@@ -1560,6 +1561,18 @@ const MIGRATIONS: readonly LedgerMigration[] = [
       `);
     },
   },
+  {
+    version: 40,
+    name: "compatibility-catalog-payload-digest",
+    apply(database) {
+      const columns = new Set(
+        (database.prepare("SELECT name FROM pragma_table_info('compatibility_catalog_trust')").all() as unknown as Array<{ name: string }>).map((column) => column.name),
+      );
+      if (!columns.has("catalog_digest")) {
+        database.exec("ALTER TABLE compatibility_catalog_trust ADD COLUMN catalog_digest TEXT;");
+      }
+    },
+  },
 ];
 
 function summarizeGoal(goal: string, maxLength = 180): string {
@@ -1680,7 +1693,7 @@ const REQUIRED_SCHEMA: Readonly<Record<string, readonly string[]>> = {
     "validator_discovery_json", "validator_local_config_json", "validator_suppressions_json",
   ],
   catalog_refreshes: ["provider", "status", "source", "model_count", "detail", "refreshed_at"],
-  compatibility_catalog_trust: ["id", "accepted_version", "key_id", "generated_at", "expires_at", "accepted_at", "last_attempt_at", "trust_state", "failure_reason"],
+  compatibility_catalog_trust: ["id", "accepted_version", "catalog_digest", "key_id", "generated_at", "expires_at", "accepted_at", "last_attempt_at", "trust_state", "failure_reason"],
   provider_catalog_models: ["id", "provider", "canonical_name", "display_name", "metadata_json", "first_seen_at", "last_seen_at", "missing_observations", "retired"],
   invocation_receipts: ["id", "run_id", "task_id", "role", "provider", "connection_id", "requested_model_id", "resolved_model_id", "model_resolution", "input_tokens", "output_tokens", "cost_usd", "duration_ms", "workload_class", "fallback_reason", "paid_spend_reservation_id", "created_at"],
   tool_policy_receipts: ["id", "run_id", "task_id", "attempt_id", "tool_id", "actor_role", "stage", "side_effect", "outcome", "reason", "request_json", "lock_keys_json", "approval_id", "created_at"],
@@ -3863,19 +3876,20 @@ export class Ledger {
   compatibilityCatalogTrust(): CompatibilityCatalogTrustRecord {
     const row = this.database.prepare("SELECT * FROM compatibility_catalog_trust WHERE id = 1").get() as Record<string, unknown> | undefined;
     return {
-      acceptedVersion: Number(row?.accepted_version ?? 0), keyId: row?.key_id === null || row?.key_id === undefined ? null : String(row.key_id),
+      acceptedVersion: Number(row?.accepted_version ?? 0), catalogDigest: row?.catalog_digest === null || row?.catalog_digest === undefined ? null : String(row.catalog_digest),
+      keyId: row?.key_id === null || row?.key_id === undefined ? null : String(row.key_id),
       generatedAt: row?.generated_at === null || row?.generated_at === undefined ? null : String(row.generated_at), expiresAt: row?.expires_at === null || row?.expires_at === undefined ? null : String(row.expires_at),
       acceptedAt: row?.accepted_at === null || row?.accepted_at === undefined ? null : String(row.accepted_at), lastAttemptAt: String(row?.last_attempt_at ?? new Date(0).toISOString()),
       trustState: (row?.trust_state === "accepted" || row?.trust_state === "stale" ? row.trust_state : "invalid"), failureReason: String(row?.failure_reason ?? "No compatibility catalog accepted"),
     };
   }
 
-  recordCompatibilityCatalogTrust(input: Omit<CompatibilityCatalogTrustRecord, "lastAttemptAt"> & { lastAttemptAt?: string }): void {
+  recordCompatibilityCatalogTrust(input: Omit<CompatibilityCatalogTrustRecord, "lastAttemptAt" | "catalogDigest"> & { lastAttemptAt?: string; catalogDigest?: string | null }): void {
     const attemptedAt = input.lastAttemptAt ?? new Date().toISOString();
-    this.database.prepare(`INSERT INTO compatibility_catalog_trust (id, accepted_version, key_id, generated_at, expires_at, accepted_at, last_attempt_at, trust_state, failure_reason)
-      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET accepted_version = excluded.accepted_version, key_id = excluded.key_id, generated_at = excluded.generated_at, expires_at = excluded.expires_at, accepted_at = excluded.accepted_at, last_attempt_at = excluded.last_attempt_at, trust_state = excluded.trust_state, failure_reason = excluded.failure_reason`)
-      .run(input.acceptedVersion, input.keyId, input.generatedAt, input.expiresAt, input.acceptedAt, attemptedAt, input.trustState, redactText(input.failureReason));
+    this.database.prepare(`INSERT INTO compatibility_catalog_trust (id, accepted_version, catalog_digest, key_id, generated_at, expires_at, accepted_at, last_attempt_at, trust_state, failure_reason)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET accepted_version = excluded.accepted_version, catalog_digest = excluded.catalog_digest, key_id = excluded.key_id, generated_at = excluded.generated_at, expires_at = excluded.expires_at, accepted_at = excluded.accepted_at, last_attempt_at = excluded.last_attempt_at, trust_state = excluded.trust_state, failure_reason = excluded.failure_reason`)
+      .run(input.acceptedVersion, input.catalogDigest ?? null, input.keyId, input.generatedAt, input.expiresAt, input.acceptedAt, attemptedAt, input.trustState, redactText(input.failureReason));
   }
 
   staleCompatibilityQualifications(reason: string): void {
