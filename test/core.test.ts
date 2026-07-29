@@ -9719,6 +9719,73 @@ test("migration 37 makes decision_records append-only and its provenance/success
   }
 });
 
+test("the dependency-intelligence UI exposes exact evidence while escaping every manifest-controlled field", () => {
+  const appSource = readFileSync(path.join(process.cwd(), "src", "ui", "app.js"), "utf8");
+  const start = appSource.indexOf('function escapeHtml(value = "")');
+  const end = appSource.indexOf("\n// DH-632 visible operation feedback");
+  const seam = appSource.slice(start, end);
+  assert.match(seam, /function renderDependencyIntelligenceHtml/, "the Products UI must have a dependency-intelligence render seam");
+  const { renderDependencyIntelligenceHtml } = new Function(
+    `${seam}; return { renderDependencyIntelligenceHtml };`,
+  )() as {
+    renderDependencyIntelligenceHtml: (productId: string, section: Record<string, any>) => string;
+  };
+  const hostile = '"></code><img src=x onerror=alert(1)><script>alert(document.cookie)</script>';
+  const provenance = {
+    commit: "a".repeat(40),
+    blobOid: "b".repeat(40),
+    path: `packages/${hostile}/package.json`,
+    cwd: `packages/${hostile}`,
+    locator: `/dependencies/${hostile}`,
+  };
+  const html = renderDependencyIntelligenceHtml(hostile, {
+    version: 1,
+    state: "scanned",
+    rescanRequired: false,
+    repositories: [{
+      repositoryId: `repo:${hostile}`,
+      state: "wrong_shape",
+      commit: "a".repeat(40),
+      manifests: [],
+      diagnostics: [{ state: "wrong_shape", detail: hostile, ...provenance }],
+      facts: [{
+        ecosystem: "npm",
+        packageName: hostile,
+        group: "runtime",
+        rawDeclaration: hostile,
+        constraint: { kind: "direct", directReference: hostile },
+        provenance,
+        resolution: {
+          state: "ambiguous",
+          repositoryIds: [`repo:${hostile}`],
+          matches: [{
+            repositoryId: `repo:${hostile}`,
+            ecosystem: "npm",
+            packageName: hostile,
+            provenance: { ...provenance, locator: "/name" },
+          }],
+        },
+      }],
+    }],
+  });
+
+  assert.doesNotMatch(html, /<img|<script/i);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, "hostile package and provenance text remains visible as escaped data");
+  for (const value of ["npm", "runtime", "direct", "ambiguous", "wrong shape", "a".repeat(40), "b".repeat(40)]) {
+    assert.match(html, new RegExp(value), `the rendered evidence includes ${value}`);
+  }
+  assert.match(html, /Rescan dependency evidence/);
+
+  const legacy = renderDependencyIntelligenceHtml("legacy", {
+    version: 1,
+    state: "legacy_unscanned",
+    rescanRequired: true,
+    repositories: [],
+  });
+  assert.match(legacy, /Legacy snapshot.*rescan required/i);
+  assert.match(legacy, /data-scan-product="legacy"/);
+});
+
 test("the validator allowlist UI renders discovered, override, suppressed, empty, and preview states safely", () => {
   const appSource = readFileSync(path.join(process.cwd(), "src", "ui", "app.js"), "utf8");
   const start = appSource.indexOf('function escapeHtml(value = "")');

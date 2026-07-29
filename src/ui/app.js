@@ -85,6 +85,77 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
+function dependencyStateLabel(value) {
+  return String(value || "unknown").replaceAll("_", " ");
+}
+
+function renderDependencyProvenanceHtml(provenance, label = "Exact source") {
+  if (!provenance) return "";
+  const fields = [
+    ["commit", provenance.commit],
+    ["blob", provenance.blobOid],
+    ["path", provenance.path],
+    ["cwd", provenance.cwd],
+    ["locator", provenance.locator],
+  ].filter(([, value]) => value !== undefined && value !== null);
+  return fields.length ? `<div class="dependency-provenance"><strong>${escapeHtml(label)}</strong>${fields
+    .map(([name, value]) => `<span><b>${escapeHtml(name)}</b> <code>${escapeHtml(value)}</code></span>`)
+    .join("")}</div>` : "";
+}
+
+function dependencyConstraintText(fact) {
+  const constraint = fact?.constraint || {};
+  if (constraint.directReference) return `${constraint.kind || "direct"}: ${constraint.directReference}`;
+  if (constraint.exactVersion) return `${constraint.kind || "exact"}: ${constraint.exactVersion}`;
+  return `${constraint.kind || "unassessed"}: ${fact?.rawDeclaration || "no declaration retained"}`;
+}
+
+function renderDependencyIntelligenceHtml(productId, section) {
+  const product = escapeHtml(productId);
+  const rescan = `<button class="secondary small" type="button" data-scan-product="${product}">Rescan dependency evidence</button>`;
+  if (!section || section.state === "legacy_unscanned") {
+    return `<section class="dependency-intelligence legacy" role="status">
+      <div class="dependency-heading"><div><strong>Dependency evidence</strong><span>Legacy snapshot — rescan required</span></div>${rescan}</div>
+      <p>This saved intelligence predates exact dependency scanning. No dependency claim from it is treated as verified until you run a new read-only scan.</p>
+    </section>`;
+  }
+  const repositories = section.repositories || [];
+  const factCount = repositories.reduce((sum, repository) => sum + (repository.facts?.length || 0), 0);
+  const diagnosticCount = repositories.reduce((sum, repository) => sum + (repository.diagnostics?.length || 0), 0);
+  const repositoryMarkup = repositories.map((repository) => {
+    const manifests = repository.manifests || [];
+    const facts = repository.facts || [];
+    const diagnostics = repository.diagnostics || [];
+    const manifestMarkup = manifests.length ? `<div class="dependency-manifests"><strong>Manifest evidence</strong>${manifests.map((manifest) =>
+      `<article><span class="dependency-state ${escapeHtml(manifest.state)}">${escapeHtml(dependencyStateLabel(manifest.state))}</span><span>${escapeHtml(manifest.ecosystem)} · ${escapeHtml(manifest.factCount)} fact${manifest.factCount === 1 ? "" : "s"}</span>${renderDependencyProvenanceHtml(manifest, "Exact manifest")}</article>`).join("")}</div>`
+      : '<p class="dependency-empty">No readable dependency manifest was retained for this repository.</p>';
+    const factMarkup = facts.length ? `<div class="dependency-facts"><strong>Declared dependencies</strong>${facts.map((fact) => {
+      const resolution = fact.resolution || { state: "unresolved", repositoryIds: [], matches: [] };
+      const matches = resolution.matches || [];
+      const targetMarkup = matches.length ? `<ul class="dependency-targets">${matches.map((match) =>
+        `<li><strong>${escapeHtml(match.repositoryId)}</strong><span>${escapeHtml(match.ecosystem)} package identity <code>${escapeHtml(match.packageName)}</code></span>${renderDependencyProvenanceHtml(match.provenance, "Identity source")}</li>`).join("")}</ul>`
+        : '<p class="dependency-empty">No registered package identity matches this declaration.</p>';
+      return `<article class="dependency-fact">
+        <div class="dependency-fact-heading"><strong><span>${escapeHtml(fact.ecosystem)}</span> ${escapeHtml(fact.packageName)}</strong><span>${escapeHtml(fact.group)} · ${escapeHtml(dependencyConstraintText(fact))}</span></div>
+        <p>Declaration <code>${escapeHtml(fact.rawDeclaration)}</code></p>
+        <div class="dependency-resolution"><strong>${escapeHtml(dependencyStateLabel(resolution.state))} target${matches.length === 1 ? "" : "s"}</strong><span>${escapeHtml((resolution.repositoryIds || []).join(", ") || "none")}</span>${targetMarkup}</div>
+        ${renderDependencyProvenanceHtml(fact.provenance, "Declaration source")}
+      </article>`;
+    }).join("")}</div>` : '<p class="dependency-empty">No dependency declarations were retained.</p>';
+    const diagnosticMarkup = diagnostics.length ? `<div class="dependency-diagnostics" role="alert"><strong>Diagnostics</strong>${diagnostics.map((diagnostic) =>
+      `<article><span class="dependency-state ${escapeHtml(diagnostic.state)}">${escapeHtml(dependencyStateLabel(diagnostic.state))}</span><p>${escapeHtml(diagnostic.detail)}</p>${renderDependencyProvenanceHtml(diagnostic, "Diagnostic source")}</article>`).join("")}</div>` : "";
+    return `<details class="dependency-repository" data-dependency-repository="${escapeHtml(repository.repositoryId)}">
+      <summary><strong>${escapeHtml(repository.repositoryId)}</strong><span class="dependency-state ${escapeHtml(repository.state)}">${escapeHtml(dependencyStateLabel(repository.state))}</span><code>${escapeHtml(repository.commit || "exact commit unavailable")}</code></summary>
+      ${manifestMarkup}${factMarkup}${diagnosticMarkup}
+    </details>`;
+  }).join("");
+  return `<section class="dependency-intelligence">
+    <div class="dependency-heading"><div><strong>Dependency evidence</strong><span>${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} · ${factCount} facts · ${diagnosticCount} diagnostics</span></div>${rescan}</div>
+    <p>Read-only evidence from the exact displayed commits. Resolution reports package-identity matches; it does not replace the dependency impact list chosen by the product owner.</p>
+    <div class="dependency-repositories">${repositoryMarkup || '<p class="dependency-empty">The scan retained no repository evidence.</p>'}</div>
+  </section>`;
+}
+
 function validatorConfigSummary(entry) {
   const config = entry?.effectiveConfig;
   if (!config) return "not executable";
@@ -921,6 +992,7 @@ async function refreshProducts() {
       <summary><strong>Intelligence scan: ${escapeHtml(intelligence.status)}</strong><span>Read ${intelligence.sources.filter((source) => source.status === "read").length} of the product's key documents, found ${intelligence.claims.length} factual statements, and ${conflicts} of them contradict each other across repositories.</span></summary>
       <p class="muted">Scanned ${escapeHtml(new Date(intelligence.createdAt).toLocaleString())} (result #${escapeHtml(intelligence.id.slice(0, 8))}) — each scan is saved permanently and never edited; if the repositories change, scan again rather than overwrite this result.</p>
       ${intelligence.findings.length ? `<ul>${intelligence.findings.map((finding) => `<li class="${escapeHtml(finding.severity)}"><strong>${escapeHtml(finding.kind.replaceAll("_", " "))}</strong> ${escapeHtml(finding.message)}${finding.citations.length ? `<small>${finding.citations.map(escapeHtml).join(" · ")}</small>` : ""}</li>`).join("")}</ul>` : '<p class="muted">No conflicts or unavailable sources were found.</p>'}
+      ${renderDependencyIntelligenceHtml(product.id, intelligence.dependencyIntelligence)}
     </details>` : `<div class="product-intelligence empty"><strong>No scan has run yet</strong><span>${localSources ? `${localSources} tracked files are ready to scan.` : "Attach a local repository and list its key documents first."}</span></div>`;
     return `<article class="panel product-card">
     <div class="product-head"><div><span class="connection-kind">Registered product</span><h3>${escapeHtml(product.name)}</h3><p>${escapeHtml(product.description || "Registered product context")}</p></div><div class="product-actions"><a href="${escapeHtml(product.organizationUrl)}" target="_blank" rel="noreferrer">Open organization</a><button class="secondary small" type="button" data-scan-product="${escapeHtml(product.id)}" title="Reads this product's tracked documents across all its repositories and flags outdated or conflicting information.">Scan intelligence</button></div></div>
