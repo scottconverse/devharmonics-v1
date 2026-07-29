@@ -5900,6 +5900,7 @@ test("ledger upgrades a v0.1 database transactionally and preserves a pre-migrat
           { version: 36, name: "decision-records" },
           { version: 37, name: "decision-provenance-and-append-only-invariants" },
           { version: 38, name: "repository-validator-discovery-state" },
+          { version: 39, name: "signed-compatibility-catalog-trust" },
         ],
       );
     } finally {
@@ -7569,7 +7570,7 @@ test("steering directives persist with actor, target, disposition, and supersede
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-steering-ledger-"));
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
-    assert.equal(LEDGER_SCHEMA_VERSION, 38, "the validator-discovery state migration advances the ledger schema");
+    assert.equal(LEDGER_SCHEMA_VERSION, 39, "the signed compatibility catalog trust migration advances the ledger schema");
     const runId = ledger.createRun("Steer me", root);
     ledger.savePlan(runId, {
       summary: "One task",
@@ -10331,7 +10332,7 @@ test("validator state CAS prevents a rescan from overwriting a concurrent owner 
   }
 });
 
-test("physical schema 37 to 38 migration preserves owner validators and its pre-migration backup", async () => {
+test("physical schema 37 to current migration preserves owner validators and its pre-migration backup", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-validator-migration-"));
   const filename = path.join(root, "devharmonics.db");
   const seed = new Ledger(filename);
@@ -10372,7 +10373,7 @@ test("physical schema 37 to 38 migration preserves owner validators and its pre-
       ALTER TABLE repositories DROP COLUMN validator_discovery_json;
       ALTER TABLE repositories DROP COLUMN validator_local_config_json;
       ALTER TABLE repositories DROP COLUMN validator_suppressions_json;
-      DELETE FROM schema_migrations WHERE version = 38;
+      DELETE FROM schema_migrations WHERE version >= 38;
       PRAGMA user_version = 37;
     `);
     schema37.close();
@@ -10380,7 +10381,7 @@ test("physical schema 37 to 38 migration preserves owner validators and its pre-
     const upgraded = new Ledger(filename);
     try {
       const repository = upgraded.getRepository("github:fixture/repo")!;
-      assert.equal(upgraded.getSchemaVersion(), 38);
+      assert.equal(upgraded.getSchemaVersion(), LEDGER_SCHEMA_VERSION);
       assert.deepEqual(repository.validators, {
         owner: { command: "node", args: ["owner.js"], timeoutMs: 10_000 },
       });
@@ -10391,7 +10392,7 @@ test("physical schema 37 to 38 migration preserves owner validators and its pre-
       upgraded.close();
     }
 
-    const backups = (await readdir(root)).filter((name) => name.startsWith("devharmonics.db.backup-v37-to-v38-"));
+    const backups = (await readdir(root)).filter((name) => name.startsWith(`devharmonics.db.backup-v37-to-v${LEDGER_SCHEMA_VERSION}-`));
     assert.equal(backups.length, 1);
     const backup = new DatabaseSync(path.join(root, backups[0]!));
     try {
