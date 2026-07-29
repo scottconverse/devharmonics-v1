@@ -903,6 +903,19 @@ function parsePyproject(entry: ManifestInventoryEntry, commit: string): ParsedMa
     if (parsed.fact) facts.push(parsed.fact);
     if (parsed.diagnostic) diagnostics.push(parsed.diagnostic);
   }
+  if (dynamicDependencies || dynamicOptionalDependencies) {
+    const fields = [
+      ...(dynamicDependencies ? ["dependencies"] : []),
+      ...(dynamicOptionalDependencies ? ["optional-dependencies"] : []),
+    ];
+    diagnostics.push(diagnostic(
+      entry,
+      commit,
+      "dynamic",
+      `project ${fields.join(" and ")} are declared dynamically; exact declarations are unavailable`,
+      "/project/dynamic",
+    ));
+  }
   let state: DependencyEvidenceState;
   if (diagnostics.some((item) => item.state === "malformed")) state = "malformed";
   else if (diagnostics.some((item) => item.state === "wrong_shape")) state = "wrong_shape";
