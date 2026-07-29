@@ -65,6 +65,17 @@ function runHasKnownDivergence(runId) {
 }
 const $ = (selector) => document.querySelector(selector);
 
+function catalogRefreshMessage(refreshes = [], refreshedAt) {
+  const coordinator = refreshes.find((item) => item.provider === "coordinator");
+  const timestamp = coordinator?.refreshedAt || refreshedAt;
+  const formattedTimestamp = new Date(timestamp).toLocaleString();
+  if (!coordinator || coordinator.status !== "success") {
+    const detail = coordinator?.detail || "The coordinator did not return a successful refresh receipt.";
+    return `Fleet refresh incomplete at ${formattedTimestamp}. ${detail} Automatic retry is scheduled within five minutes.`;
+  }
+  return `Fleet refreshed at ${formattedTimestamp}.`;
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const value = await response.json();
@@ -3078,7 +3089,7 @@ $("#refresh-models").addEventListener("click", async () => {
       const refreshed = await api("/api/catalog/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       state.bootstrap = { ...state.bootstrap, config: refreshed.config, providers: refreshed.providers, ollama: refreshed.ollama, catalog: { refreshedAt: refreshed.refreshedAt, refreshes: refreshed.refreshes, compatibilityTrust: refreshed.compatibilityTrust } };
       await refreshFleet();
-      $("#model-message").textContent = `Fleet refreshed at ${new Date(refreshed.refreshedAt).toLocaleString()}.`;
+      $("#model-message").textContent = catalogRefreshMessage(refreshed.refreshes, refreshed.refreshedAt);
     } catch (error) {
       await refreshFleet();
       throw error;
