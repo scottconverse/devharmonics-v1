@@ -3879,7 +3879,7 @@ export class Ledger {
   }
 
   staleCompatibilityQualifications(reason: string): void {
-    this.database.prepare("UPDATE models SET qualification_stale = CASE WHEN qualified = 1 THEN 1 ELSE qualification_stale END, active = 0, lifecycle = CASE WHEN qualified = 1 THEN 'qualified' ELSE lifecycle END, metadata_json = json_set(metadata_json, '$.compatibilityCatalogStaleReason', ?) WHERE retired = 0")
+    this.database.prepare("UPDATE models SET qualification_stale = CASE WHEN qualified = 1 THEN 1 ELSE qualification_stale END, active = 0, lifecycle = CASE WHEN qualified = 1 THEN 'qualified' ELSE lifecycle END, metadata_json = json_set(metadata_json, '$.compatibilityCatalogStaleReason', ?) WHERE retired = 0 AND (source = 'compatibility_catalog' OR json_type(metadata_json, '$.signedCatalogVersion') IS NOT NULL)")
       .run(redactText(reason));
   }
 

@@ -8,7 +8,7 @@ import { syncOllamaRuntimes, type OllamaDiscovery } from "./ollama.js";
 import { QUALIFICATION_FINGERPRINT_FIXTURE } from "./qualification.js";
 import { syncSubscriptionConnections } from "./registry.js";
 import { OpenRouterService } from "./openrouter.js";
-import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG } from "./compatibility-catalog.js";
+import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG, COMPATIBILITY_CATALOG_URL, type CatalogAcceptance } from "./compatibility-catalog.js";
 
 const CLAUDE_MODELS_URL = "https://platform.claude.com/docs/en/about-claude/models/overview";
 const DEFAULT_REFRESH_HOURS = 24;
@@ -21,11 +21,16 @@ export interface CatalogRefreshResult {
   compatibilityTrust: ReturnType<Ledger["compatibilityCatalogTrust"]>;
 }
 
+export interface ModelCatalogCoordinatorOptions {
+  /** Test seam for deterministic catalog delivery failures and envelopes. */
+  fetch?: typeof fetch;
+}
+
 export class ModelCatalogCoordinator {
   private refreshInFlight: Promise<CatalogRefreshResult> | null = null;
   private periodicTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly ledger: Ledger, private readonly projectPath: string) {}
+  constructor(private readonly ledger: Ledger, private readonly projectPath: string, private readonly options: ModelCatalogCoordinatorOptions = {}) {}
 
   async refresh(force = false, source = "manual"): Promise<CatalogRefreshResult> {
     if (this.refreshInFlight) return this.refreshInFlight;
@@ -40,7 +45,7 @@ export class ModelCatalogCoordinator {
     const config = await loadConfig(this.projectPath);
     const maxAgeMs = DEFAULT_REFRESH_HOURS * 60 * 60_000;
     const coordinator = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
-    const stale = !coordinator || Date.now() - Date.parse(coordinator.refreshedAt) >= maxAgeMs;
+    const stale = !coordinator || coordinator.status === "failed" || Date.now() - Date.parse(coordinator.refreshedAt) >= maxAgeMs;
     const providers = await inspectProviders(config, this.projectPath);
     const knownVersions = new Map(this.ledger.listConnections().map((connection) => [connection.provider, connection.runtimeVersion]));
     const versionChanged = providers.some((provider) => provider.installed && knownVersions.get(provider.name) !== (provider.version || null));
@@ -64,7 +69,7 @@ export class ModelCatalogCoordinator {
 
   private isStale(): boolean {
     const refresh = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
-    return !refresh || Date.now() - Date.parse(refresh.refreshedAt) >= DEFAULT_REFRESH_HOURS * 60 * 60_000;
+    return !refresh || refresh.status === "failed" || Date.now() - Date.parse(refresh.refreshedAt) >= DEFAULT_REFRESH_HOURS * 60 * 60_000;
   }
 
   private async snapshot(config?: DevHarmonicsConfig, providers?: ProviderStatus[]): Promise<CatalogRefreshResult> {
@@ -84,23 +89,7 @@ export class ModelCatalogCoordinator {
     await openRouter.syncConnection(config.openRouter.enabled);
     const providers = await inspectProviders(config, this.projectPath);
     syncSubscriptionConnections(this.ledger, providers);
-    const priorTrust = this.ledger.compatibilityCatalogTrust();
-    const compatibility = acceptCompatibilityCatalog(BUNDLED_COMPATIBILITY_CATALOG, undefined, priorTrust.acceptedVersion);
-    if (compatibility.status === "accepted" && compatibility.catalog) {
-      this.ledger.recordCompatibilityCatalogTrust({ acceptedVersion: compatibility.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, generatedAt: compatibility.catalog.generatedAt, expiresAt: compatibility.catalog.expiresAt, acceptedAt: new Date().toISOString(), trustState: "accepted", failureReason: compatibility.reason });
-      for (const entry of compatibility.catalog.models) {
-        const provider = providers.find((item) => item.name === entry.provider);
-        if (!provider) continue;
-        const inferred = inferModelProfile({ canonicalName: entry.canonicalName, displayName: entry.displayName, metadata: {} }, { provider: entry.provider, transport: "subscription_cli" });
-        this.ledger.upsertDiscoveredModel({ id: `subscription-cli:${entry.provider}:model:${normalizeModelId(entry.canonicalName)}`, connectionId: `subscription-cli:${entry.provider}`, canonicalName: entry.canonicalName, displayName: entry.displayName, source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: compatibility.catalog.catalogVersion, requiresRuntimeQualification: true, ...profileMetadata({ ...inferred, source: "catalog", confidence: "official" }) } });
-      }
-    } else if (compatibility.status === "rejected" && priorTrust.trustState === "accepted" && priorTrust.expiresAt && Date.parse(priorTrust.expiresAt) > Date.now()) {
-      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "accepted", failureReason: compatibility.reason });
-    } else {
-      this.ledger.staleCompatibilityQualifications(compatibility.reason);
-      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "invalid", failureReason: compatibility.reason });
-    }
-    this.ledger.recordCatalogRefresh({ provider: "compatibility", status: compatibility.status === "accepted" || (compatibility.status === "rejected" && priorTrust.trustState === "accepted") ? "success" : "failed", source: "bundled signed DevHarmonics compatibility catalog", modelCount: compatibility.catalog?.models.length ?? 0, detail: compatibility.reason });
+    const compatibility = await this.refreshCompatibilityCatalog(providers);
     this.ledger.reconcileLegacyAntigravityQuotaHealth();
     for (const provider of providers) {
       this.ledger.recordCatalogRefresh({
@@ -112,7 +101,7 @@ export class ModelCatalogCoordinator {
       });
     }
 
-    await this.refreshClaudeOfficialCatalog();
+    const claudeOfficialSucceeded = await this.refreshClaudeOfficialCatalog();
     let openRouterFailed = false;
     try {
       await openRouter.syncCatalog();
@@ -132,7 +121,9 @@ export class ModelCatalogCoordinator {
     const failedProviders = providers.filter((provider) => provider.installed && !provider.healthy).map((provider) => provider.name);
     const failedRequired = [
       ...failedProviders,
-      ...(compatibility.status === "invalid" ? ["compatibility"] : []),
+      ...(!compatibility.liveSucceeded ? ["compatibility-live"] : []),
+      ...(this.ledger.compatibilityCatalogTrust().trustState === "invalid" ? ["compatibility"] : []),
+      ...(!claudeOfficialSucceeded ? ["claude-official"] : []),
       ...(config.openRouter.enabled && openRouterFailed ? ["openrouter"] : []),
       ...(config.localRuntimes.ollama.length && !ollama.some((runtime) => runtime.available) ? ["ollama"] : []),
     ];
@@ -146,9 +137,77 @@ export class ModelCatalogCoordinator {
     return { config, providers, ollama, refreshedAt: newestRefresh(this.ledger) ?? new Date().toISOString(), compatibilityTrust: this.ledger.compatibilityCatalogTrust() };
   }
 
-  private async refreshClaudeOfficialCatalog(): Promise<void> {
+  private async refreshCompatibilityCatalog(providers: ProviderStatus[]): Promise<{ acceptance: CatalogAcceptance; liveSucceeded: boolean }> {
+    const priorTrust = this.ledger.compatibilityCatalogTrust();
+    let liveAcceptance: CatalogAcceptance | null = null;
+    let liveFailure: string | null = null;
     try {
-      const response = await fetch(CLAUDE_MODELS_URL, { signal: AbortSignal.timeout(15_000) });
+      const response = await (this.options.fetch ?? fetch)(COMPATIBILITY_CATALOG_URL, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error(`DevHarmonics returned HTTP ${response.status}`);
+      liveAcceptance = acceptCompatibilityCatalog(await response.json(), undefined, priorTrust.acceptedVersion);
+      if (liveAcceptance.status === "invalid"
+        || liveAcceptance.status === "rejected" && liveAcceptance.catalog?.catalogVersion !== priorTrust.acceptedVersion) {
+        liveFailure = liveAcceptance.reason;
+      }
+    } catch (error) {
+      liveFailure = error instanceof Error ? error.message : String(error);
+    }
+    if (!liveFailure && liveAcceptance) {
+      this.applyVerifiedCompatibilityCatalog(liveAcceptance, providers, "accepted", liveAcceptance.reason);
+      this.ledger.recordCatalogRefresh({ provider: "compatibility-live", status: "success", source: COMPATIBILITY_CATALOG_URL, modelCount: liveAcceptance.catalog?.models.length ?? 0, detail: liveAcceptance.reason });
+      this.ledger.recordCatalogRefresh({ provider: "compatibility", status: "success", source: COMPATIBILITY_CATALOG_URL, modelCount: liveAcceptance.catalog?.models.length ?? 0, detail: liveAcceptance.reason });
+      return { acceptance: liveAcceptance, liveSucceeded: true };
+    }
+    const fallback = acceptCompatibilityCatalog(BUNDLED_COMPATIBILITY_CATALOG, undefined, priorTrust.acceptedVersion);
+    const fallbackIsCurrent = fallback.status === "accepted"
+      || fallback.status === "rejected" && fallback.catalog?.catalogVersion === priorTrust.acceptedVersion;
+    const retained = !fallbackIsCurrent
+      && priorTrust.trustState !== "invalid"
+      && Boolean(priorTrust.expiresAt)
+      && Date.parse(priorTrust.expiresAt!) > Date.now();
+    const detail = `Live delivery failed: ${liveFailure}; ${fallbackIsCurrent ? "bundled signed catalog retained" : fallback.reason}`;
+    if (fallbackIsCurrent) {
+      this.applyVerifiedCompatibilityCatalog(fallback, providers, "stale", detail);
+      this.ledger.staleCompatibilityQualifications(detail);
+    } else if (retained) {
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "stale", failureReason: `${detail}; retained last valid snapshot` });
+      this.ledger.staleCompatibilityQualifications(detail);
+    } else {
+      this.ledger.staleCompatibilityQualifications(detail);
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "invalid", failureReason: detail });
+    }
+    this.ledger.recordCatalogRefresh({ provider: "compatibility-live", status: "failed", source: COMPATIBILITY_CATALOG_URL, modelCount: 0, detail });
+    this.ledger.recordCatalogRefresh({ provider: "compatibility", status: fallbackIsCurrent || retained ? "success" : "failed", source: "bundled signed DevHarmonics compatibility catalog", modelCount: fallback.catalog?.models.length ?? 0, detail });
+    return { acceptance: fallback, liveSucceeded: false };
+  }
+
+  private applyVerifiedCompatibilityCatalog(
+    acceptance: CatalogAcceptance,
+    providers: ProviderStatus[],
+    trustState: "accepted" | "stale",
+    failureReason: string,
+  ): void {
+    if (!acceptance.catalog || !acceptance.keyId) return;
+    this.ledger.recordCompatibilityCatalogTrust({
+      acceptedVersion: acceptance.catalog.catalogVersion,
+      keyId: acceptance.keyId,
+      generatedAt: acceptance.catalog.generatedAt,
+      expiresAt: acceptance.catalog.expiresAt,
+      acceptedAt: new Date().toISOString(),
+      trustState,
+      failureReason,
+    });
+    for (const entry of acceptance.catalog.models) {
+      const provider = providers.find((item) => item.name === entry.provider);
+      if (!provider) continue;
+      const inferred = inferModelProfile({ canonicalName: entry.canonicalName, displayName: entry.displayName, metadata: {} }, { provider: entry.provider, transport: "subscription_cli" });
+      this.ledger.upsertDiscoveredModel({ id: `subscription-cli:${entry.provider}:model:${normalizeModelId(entry.canonicalName)}`, connectionId: `subscription-cli:${entry.provider}`, canonicalName: entry.canonicalName, displayName: entry.displayName, source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: acceptance.catalog.catalogVersion, requiresRuntimeQualification: true, ...profileMetadata({ ...inferred, source: "catalog", confidence: "official" }) } });
+    }
+  }
+
+  private async refreshClaudeOfficialCatalog(): Promise<boolean> {
+    try {
+      const response = await (this.options.fetch ?? fetch)(CLAUDE_MODELS_URL, { signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`Anthropic returned HTTP ${response.status}`);
       const models = parseCurrentClaudeModels(await response.text());
       if (models.length < 4) throw new Error("Anthropic catalog did not expose all four current model families");
@@ -185,8 +244,10 @@ export class ModelCatalogCoordinator {
       this.ledger.upsertProviderCatalogModels("claude", catalogModels, 3);
       this.ledger.reconcileDiscoveredModels("subscription-cli:claude", "provider_catalog", modelIds, 3);
       this.ledger.recordCatalogRefresh({ provider: "claude-official", status: "success", source: CLAUDE_MODELS_URL, modelCount: models.length, detail: "Official Anthropic current-model catalog refreshed" });
+      return true;
     } catch (error) {
       this.ledger.recordCatalogRefresh({ provider: "claude-official", status: "failed", source: CLAUDE_MODELS_URL, modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
+      return false;
     }
   }
 

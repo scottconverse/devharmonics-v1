@@ -41,8 +41,8 @@ import { evaluateToolPolicy } from "../src/policy.js";
 import { WorkspaceIsolationError, WorktreeManager } from "../src/worktrees.js";
 import { chunkDiffFiles, classifyVerdict, runContextOnlyReview } from "../src/local-review.js";
 import { classifyWorkload, inferModelProfile, profileMetadata, SUBSCRIPTION_COMPATIBILITY_MODELS } from "../src/model-intelligence.js";
-import { parseCurrentClaudeModels } from "../src/catalog.js";
-import { acceptCompatibilityCatalog, canonicalCatalogJson } from "../src/compatibility-catalog.js";
+import { ModelCatalogCoordinator, parseCurrentClaudeModels } from "../src/catalog.js";
+import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG, canonicalCatalogJson } from "../src/compatibility-catalog.js";
 import { estimateInvocationCost, estimateQualificationCost, isExactOpenRouterModelId, OpenRouterAdapter, OpenRouterService } from "../src/openrouter.js";
 import { architectPrompt, localReviewerContextHeader, priorDecisionsPromptSection, reviewerPrompt, workerPrompt } from "../src/prompts.js";
 import { QUALIFICATION_FINGERPRINT_FIXTURE, ensureReviewerCandidateQualified, hasQualifiableCandidate, ensureSchedulerCandidateQualified, ensureSchedulerProviderCandidateQualified, hasCurrentOperationalQualification, qualifyRuntimeModel, trackedFamilyQualificationRole } from "../src/qualification.js";
@@ -6419,6 +6419,112 @@ test("signed compatibility catalogs reject tampering, replay, expiry, and untrus
   assert.equal(acceptCompatibilityCatalog({ ...envelope, catalog: expiredCatalog, signature: sign(null, Buffer.from(canonicalCatalogJson(expiredCatalog)), root.privateKey).toString("base64") }, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 2, now).status, "invalid");
   assert.equal(acceptCompatibilityCatalog(envelope, {}, 1, now).status, "invalid");
   assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 1, now, new Set(["test-root"])).status, "invalid");
+  assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": "not-a-public-key" }, 1, now).status, "invalid");
+});
+
+test("catalog refresh acquires the signed live envelope and keeps a valid bundled envelope when delivery fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-live-catalog-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const requests: string[] = [];
+  try {
+    await initializeProject(root);
+    const publishedEnvelope = JSON.parse(readFileSync(path.join(process.cwd(), "catalog", "compatibility-catalog.v1.json"), "utf8")) as unknown;
+    assert.deepEqual(publishedEnvelope, BUNDLED_COMPATIBILITY_CATALOG);
+    assert.equal(acceptCompatibilityCatalog(publishedEnvelope).status, "accepted");
+    const liveFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("compatibility-catalog")) return Response.json(publishedEnvelope);
+      return new Response("claude-fable-1 claude-opus-4 claude-sonnet-4 claude-haiku-4", { status: 200 });
+    }) as typeof fetch;
+    const coordinator = new ModelCatalogCoordinator(ledger, root, { fetch: liveFetch });
+    await coordinator.refresh(true, "test-live-delivery");
+    assert.ok(requests.includes("https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json"));
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility")?.source, "https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json");
+    assert.deepEqual(
+      { version: ledger.compatibilityCatalogTrust().acceptedVersion, keyId: ledger.compatibilityCatalogTrust().keyId, state: ledger.compatibilityCatalogTrust().trustState },
+      { version: BUNDLED_COMPATIBILITY_CATALOG.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, state: "accepted" },
+    );
+
+    const offlineCoordinator = new ModelCatalogCoordinator(ledger, root, {
+      fetch: (async (input: string | URL | Request) => {
+        if (String(input).includes("compatibility-catalog")) throw new Error("offline fixture");
+        return new Response("claude-fable-1 claude-opus-4 claude-sonnet-4 claude-haiku-4", { status: 200 });
+      }) as typeof fetch,
+    });
+    await offlineCoordinator.refresh(true, "test-offline-delivery");
+    assert.equal(ledger.compatibilityCatalogTrust().trustState, "stale");
+    assert.match(ledger.compatibilityCatalogTrust().failureReason, /Live delivery failed: offline fixture/);
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility-live")?.status, "failed");
+    assert.match(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.detail ?? "", /compatibility-live/);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed coordinator attempt is stale and an official Claude failure fails the coordinator", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-catalog-failure-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    await initializeProject(root);
+    ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source: "test", modelCount: 0, detail: "failed", refreshedAt: new Date().toISOString() });
+    const coordinator = new ModelCatalogCoordinator(ledger, root, {
+      fetch: (async (input: string | URL | Request) => String(input).includes("compatibility-catalog")
+        ? Response.json(BUNDLED_COMPATIBILITY_CATALOG)
+        : new Response("unavailable", { status: 503 })) as typeof fetch,
+    });
+    assert.equal((coordinator as any).isStale(), true);
+    await coordinator.refresh(true, "test-claude-failure");
+    const receipt = ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
+    assert.equal(receipt?.status, "failed");
+    assert.match(receipt?.detail ?? "", /claude-official/);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid signed catalog evidence stales only catalog-dependent models", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-catalog-scope-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
+    for (const [id, source, metadata] of [["subscription-cli:codex:model:signed", "compatibility_catalog", { signedCatalogVersion: 1 }], ["subscription-cli:codex:model:provider", "provider_catalog", {}]] as const) {
+      ledger.upsertDiscoveredModel({ id, connectionId: "subscription-cli:codex", canonicalName: id, displayName: id, source, lifecycle: "known", visible: true, verified: false, qualified: false, active: false, metadata });
+      ledger.recordModelQualification({ modelId: id, fixtureVersion: "test", role: "worker", passed: true, score: 1, evidence: {} });
+      ledger.setModelPreference(id, { active: true });
+    }
+    ledger.addManualModel({ id: "subscription-cli:codex:model:manual", connectionId: "subscription-cli:codex", canonicalName: "manual", displayName: "Manual", lifecycle: "qualified", visible: true, verified: true, qualified: true, active: true, metadata: {} });
+    ledger.staleCompatibilityQualifications("invalid signature");
+    assert.equal(ledger.getModel("subscription-cli:codex:model:signed")?.active, false);
+    assert.equal(ledger.getModel("subscription-cli:codex:model:provider")?.active, true);
+    assert.equal(ledger.getModel("subscription-cli:codex:model:manual")?.active, true);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("exact unavailable-model failures stay model-scoped and schedule one nonblocking refresh", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-model-unavailable-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const classified = classifyInvocationFailure({ detail: "The requested model was retired and is not found", exitCode: 1, timedOut: false, aborted: false });
+    assert.equal(classified.kind, "model_unavailable");
+    assert.equal(invocationFailureScope(classified.kind, true), "model");
+    ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
+    ledger.addManualModel({ id: "subscription-cli:codex:model:retired", connectionId: "subscription-cli:codex", canonicalName: "retired", displayName: "Retired", lifecycle: "known", visible: true, verified: false, qualified: false, active: false, metadata: {} });
+    let refreshes = 0;
+    const orchestrator = new (Orchestrator as any)(ledger, { onModelUnavailable: () => { refreshes += 1; } });
+    const scope = orchestrator.recordScopedInvocationFailure({ connectionId: "subscription-cli:codex", modelId: "subscription-cli:codex:model:retired", failureKind: classified.kind, detail: "requested model retired", excludedModelIds: new Set<string>(), excludedConnectionIds: new Set<string>() });
+    assert.equal(scope, "model");
+    await orchestrator.shutdown();
+    assert.equal(refreshes, 1);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("compatibility trust persists and stale evidence revokes active qualifications", async () => {
@@ -6427,7 +6533,7 @@ test("compatibility trust persists and stale evidence revokes active qualificati
   const ledger = new Ledger(filename);
   try {
     ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
-    ledger.upsertDiscoveredModel({ id: "subscription-cli:codex:model:trusted", connectionId: "subscription-cli:codex", canonicalName: "trusted", displayName: "Trusted", source: "provider_catalog", lifecycle: "known", visible: true, verified: false, qualified: false, active: false, metadata: {} });
+    ledger.upsertDiscoveredModel({ id: "subscription-cli:codex:model:trusted", connectionId: "subscription-cli:codex", canonicalName: "trusted", displayName: "Trusted", source: "compatibility_catalog", lifecycle: "known", visible: true, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: 3 } });
     ledger.recordModelQualification({ modelId: "subscription-cli:codex:model:trusted", fixtureVersion: "test", role: "worker", passed: true, score: 1, evidence: {} });
     ledger.setModelPreference("subscription-cli:codex:model:trusted", { active: true });
     ledger.recordCompatibilityCatalogTrust({ acceptedVersion: 3, keyId: "root", generatedAt: "2026-07-29T00:00:00.000Z", expiresAt: "2026-08-01T00:00:00.000Z", acceptedAt: "2026-07-29T00:00:00.000Z", trustState: "accepted", failureReason: "accepted" });

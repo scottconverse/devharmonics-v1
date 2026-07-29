@@ -1,14 +1,16 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.40**
+Plan version: **1.41**
 Written: **2026-07-14**
-Revised: **2026-07-26**
+Revised: **2026-07-29**
 Product specification baseline: **DevHarmonics Product Specification v1.17**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
 
-Revision history: **v1.40 (2026-07-26)** — Completed P0-3's exact-commit dependency parser, versioned persistence and planning projection, honest Products evidence surface, safe read-only rescan, and pinned immutable 24-repository CivicSuite corpus gate. Exact-candidate beta reproving remains part of the later joined beta gate; derived package identities do not replace owner-authored repository impact authority.
+Revision history: **v1.41 (2026-07-29)** — Claimed C1 after adding live signed compatibility-catalog delivery against application-shipped Ed25519 roots, truthful stale/failure receipts, scoped qualification invalidation, CLI/dashboard refresh triggers, and unavailable/retired-model failure refresh. Exact-candidate beta reproving remains part of the later joined beta gate.
+
+Prior revision: **v1.40 (2026-07-26)** — Completed P0-3's exact-commit dependency parser, versioned persistence and planning projection, honest Products evidence surface, safe read-only rescan, and pinned immutable 24-repository CivicSuite corpus gate. Exact-candidate beta reproving remains part of the later joined beta gate; derived package identities do not replace owner-authored repository impact authority.
 
 Prior revision: **v1.39 (2026-07-26)** — Bound the Campaign Control Room to C11 implementation and acceptance, completed the Increment 6 trigger exit with local-schedule and monitoring behavior, required the complete ecosystem-package conformance fixture at the Increment 7 exit, aligned detailed C/D trace statuses with the editorial summary, and marked the historical v0.5 publication-gate wording as superseded.
 
@@ -1961,7 +1963,7 @@ The pilot must use local clones and the exact repository governance present at e
 ## 12. Live feature-first engineering sequence
 
 The historical foundation backlog has substantially landed. The live sequence,
-as of 2026-07-26, is:
+as of 2026-07-29, is:
 
 1. **Use completed P0-3 for dependency-aware planning and campaign topology
    while the broader comprehension census continues.** P0-2 is complete in
@@ -1983,8 +1985,8 @@ as of 2026-07-26, is:
    DH-340 recovery with DH-350/DH-360 campaigns, stages, pilots, and promotion;
    DH-370 resource-aware shards and diagnostic partitioning; and DH-470/DH-480
    test integrity, differential validation, and regression accounting.
-5. **Finish the remaining non-runtime adaptive workforce.** Deliver C1-C2,
-   C5-C7, and C9: catalog refresh, auditions, critical-path/quota optimization,
+5. **Finish the remaining non-runtime adaptive workforce.** Deliver C2,
+   C5-C7, and C9: auditions, critical-path/quota optimization,
    controlled upgrades/rollback, dynamic splitting/replanning/handoff, and the
    broader tool/skill registry. Existing C3, C4, and C12 claims still require
    final beta proof.

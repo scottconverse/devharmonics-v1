@@ -126,8 +126,10 @@ export async function startDashboard(options: {
   const ledger = new Ledger(path.join(devHarmonicsDirectory(defaultProject), "devharmonics.db"));
   ledger.reconcileInterruptedRuns();
   await seedShippedWorkflows(ledger);
-  const orchestrator = new Orchestrator(ledger);
   const catalog = new ModelCatalogCoordinator(ledger, defaultProject);
+  const orchestrator = new Orchestrator(ledger, {
+    onModelUnavailable: () => catalog.refresh(true, "model_unavailable").then(() => undefined),
+  });
   const openRouter = new OpenRouterService(ledger);
   const delivery = new DeliveryService(ledger, options.deliveryRunner);
   const reconciliationRunner = options.deliveryRunner;
