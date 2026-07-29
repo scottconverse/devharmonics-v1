@@ -45,10 +45,12 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 
 ### Dependency-ordered beta feature slices
 
-1. Complete P0-3 for dependency-aware planning and campaign consumers; P0-2
-   completed in merged PR #58 (`09209e5`). Continue unrelated eligible C/D work
-   and the full-repository comprehension census in parallel, then close the
-   census after feature implementation but before integrated proof.
+1. Use P0-3's completed parser, persistence/planning contract, Products UI,
+   and pinned 24-repository corpus evidence for dependency-aware planning and
+   campaign consumers; P0-2 completed in merged PR #58 (`09209e5`).
+   Continue unrelated eligible C/D work and the full-repository comprehension
+   census in parallel, then close the census after feature implementation but
+   before integrated proof.
 2. Structurally enforce workflow and campaign-template contracts in parallel
    with P0-3 and other feature lanes they do not block.
 3. Build the restart-safe campaign kernel that owns C13 and co-owns C11 with
@@ -148,7 +150,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-CAP-001 | Register multiple products and local clones. | MUST | `docs/PRODUCT_SPEC.md:291-293` | UNASSESSED | UNASSESSED |
 | PS-CAP-002 | Support one-or-many-repository product workspaces. | MUST | `docs/PRODUCT_SPEC.md:294` | UNASSESSED | UNASSESSED |
 | PS-CAP-003 | Understand typed repository roles. | MUST | `docs/PRODUCT_SPEC.md:295` | UNASSESSED | UNASSESSED |
-| PS-CAP-004 | Record repository dependency and compatibility relationships. | MUST | `docs/PRODUCT_SPEC.md:296` | UNASSESSED | UNASSESSED |
+| PS-CAP-004 | Record repository dependency and compatibility relationships. | MUST | `docs/PRODUCT_SPEC.md:296` | IMPLEMENTED — owner-authored repository relationships remain the required-impact authority; exact manifests add deterministic package-identity resolution without overwriting them | `src/product-intelligence.ts`; `src/orchestrator.ts`; `src/ui/app.js`; `test/product-intelligence.test.ts`; dependency Chromium journey; 24-repository dependency corpus |
 | PS-CAP-005 | Ingest repository instructions, contribution rules, architecture, validators, and ownership boundaries. | MUST | `docs/PRODUCT_SPEC.md:297` | UNASSESSED | UNASSESSED |
 | PS-CAP-006 | Target one repository, explicit sets, or discovered impact sets. | MUST | `docs/PRODUCT_SPEC.md:298` | UNASSESSED | UNASSESSED |
 | PS-CAP-007 | Preserve separate branch/review/merge boundaries for each repository. | MUST | `docs/PRODUCT_SPEC.md:299` | UNASSESSED | UNASSESSED |
@@ -378,16 +380,16 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-SEC-007 | Gate side effects by approval. | NFR | `docs/PRODUCT_SPEC.md:1037` | UNASSESSED | UNASSESSED |
 | PS-SEC-008 | Protect local UI with same-origin and loopback controls. | NFR | `docs/PRODUCT_SPEC.md:1038` | UNASSESSED | UNASSESSED |
 | PS-SEC-009 | Use tamper-evident/integrity-verifiable receipts where practical. | NFR | `docs/PRODUCT_SPEC.md:1039` | UNASSESSED | UNASSESSED |
-| PS-SEC-010 | Preserve dependency/adapter provenance. | NFR | `docs/PRODUCT_SPEC.md:1040` | UNASSESSED | UNASSESSED |
-| PS-SEC-011 | Treat repository/tool content as prompt-injection-capable. | NFR | `docs/PRODUCT_SPEC.md:1041` | UNASSESSED | UNASSESSED |
+| PS-SEC-010 | Preserve dependency/adapter provenance. | NFR | `docs/PRODUCT_SPEC.md:1040` | PARTIAL — dependency manifests, declarations, diagnostics, and identity matches retain validated exact commit/blob/path/cwd/locator provenance; adapter-wide completion remains unassessed | `src/dependency-intelligence.ts`; `src/product-intelligence.ts`; hostile-markup render falsifier; dependency Chromium journey |
+| PS-SEC-011 | Treat repository/tool content as prompt-injection-capable. | NFR | `docs/PRODUCT_SPEC.md:1041` | PARTIAL — dependency evidence is bounded as untrusted planning data and every manifest-controlled Products field is HTML-escaped; broader repository/tool surfaces remain to be assessed | `src/product-intelligence.ts`; `src/prompts.ts`; `src/ui/app.js`; hostile-markup render falsifier |
 | PS-SEC-012 | Provide clear incident diagnostics and revocation paths. | NFR | `docs/PRODUCT_SPEC.md:1042` | UNASSESSED | UNASSESSED |
 | PS-BETA-001 | Beta is the complete specified product, not a narrow subset/preview/later-capability promise; every committed feature/function must exist, integrate through the real product, and have claim-layer evidence. | BETA | `docs/PRODUCT_SPEC.md:1105-1111` | UNASSESSED | UNASSESSED |
 | PS-BETA-002 | Map every FR, Milestone A-D priority, decided capability, and required CivicSuite acceptance level to implementation and exact verification evidence. | BETA | `docs/PRODUCT_SPEC.md:1113-1117` | UNASSESSED | UNASSESSED |
 | PS-BETA-003 | A placeholder, advisory-only contract, hidden developer path, or roadmap claim is not implementation. | BETA | `docs/PRODUCT_SPEC.md:1118-1119` | UNASSESSED | UNASSESSED |
-| PS-BETA-004 | The full configured local repository census passes with at least 95% correct comprehension and zero silent wrong answers for version, validator, dependency, repository-role, topology, and release-truth facts. | BETA | `docs/PRODUCT_SPEC.md:1120-1123` | UNASSESSED | UNASSESSED |
+| PS-BETA-004 | The full configured local repository census passes with at least 95% correct comprehension and zero silent wrong answers for version, validator, dependency, repository-role, topology, and release-truth facts. | BETA | `docs/PRODUCT_SPEC.md:1120-1123` | PARTIAL — the production dependency parser, persistence/UI proof, and pinned 24-repository dependency corpus pass; the complete configured-census threshold across every fact family remains pending | PENDING FULL CONFIGURED CENSUS |
 | PS-BETA-005 | P0-1 authoritative release-version comprehension is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1124` | UNASSESSED | UNASSESSED |
 | PS-BETA-006 | P0-2 nested-manifest and subproject comprehension is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1125` | IMPLEMENTED — merged PR #58 (`09209e5`) | PENDING EXACT-CANDIDATE BETA REPROOF |
-| PS-BETA-007 | P0-3 structured dependency parsing and provenance is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1126` | UNASSESSED | UNASSESSED |
+| PS-BETA-007 | P0-3 structured dependency parsing and provenance is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1126` | IMPLEMENTED — exact-commit parser, versioned persistence, deterministic resolution, bounded planning context, API round-trip, owner authority, Products evidence UI, and pinned immutable 24-repository corpus | PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-BETA-008 | P0-4 real validator discovery without no-op coverage is mandatory. | BETA | `docs/PRODUCT_SPEC.md:1127` | UNASSESSED | UNASSESSED |
 | PS-BETA-009 | Complete the product-manager factory loop from objective/approval through adaptive workforce, steering, campaigns, review/fix/re-review, validation/reconciliation, and evidence delivery without manual agent terminals. | BETA | `docs/PRODUCT_SPEC.md:1128-1133` | UNASSESSED | UNASSESSED |
 | PS-BETA-010 | Implement campaign orchestration, evaluation/improvement, workflows/triggers, analytics, ACP, specified provider/runtime breadth, tools/skills, portable handoffs, and policy-bounded optional integrations; optional means disabled until enabled, not absent. | BETA | `docs/PRODUCT_SPEC.md:1134-1138` | UNASSESSED | UNASSESSED |

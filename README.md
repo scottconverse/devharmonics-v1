@@ -333,7 +333,7 @@ Most real products are several repositories that ship together. DevHarmonics mod
 
 Register a **product**, then attach each local Git checkout with its role, expected branch, owners, dependencies, validator commands, and governance sources. First attachment performs read-only fixed-recipe discovery and snapshots any owner-authored validators already present in that repository's `.devharmonics/config.json`; it never creates a missing config. The Products view enumerates the exact effective allowlist, fixed-recipe detection sources, local-config snapshot, manual overrides, and suppressed entries—the same map execution receives. Discovery diagnostics are persisted and shown separately from a clean zero result, so malformed, oversized, unsafe, or capped evidence never masquerades as “nothing detected.” An owner can remove, restore, or override individual entries. Later repository inspection never refreshes validators: **Preview validator rescan** separately shows discovery and local-config-snapshot added, changed, removed, and unchanged entries, and **Apply validator rescan** atomically replaces those two snapshots only while the reviewed HEAD, repository evidence, preview token, expiry, and persisted allowlist state still match. Manual overrides and suppressions are preserved. There is no background refresh. A legacy registered repository with no persisted snapshot honestly remains at zero until its owner applies a rescan. Inspection is read-only Git: DevHarmonics records the observed branch, HEAD, origin, dirty state, and compatibility issues, and never checks out, fetches, resets, stashes, or modifies a registered checkout.
 
-**Canonical intelligence sources** go a step further. Point DevHarmonics at the governance, architecture, version, status, compatibility, and release files that actually matter in each repository, and a scan produces an immutable snapshot with exact revisions, SHA-256 content hashes, working-tree state, explicit subject-aware claims, unavailable-source findings, and cited contradictions with path and line numbers. Git tags are deliberately not read as product claims. The latest bounded findings are injected into planning.
+**Canonical intelligence sources** go a step further. Point DevHarmonics at the governance, architecture, version, status, compatibility, and release files that actually matter in each repository, and a scan produces an immutable snapshot with exact revisions, SHA-256 content hashes, working-tree state, explicit subject-aware claims, unavailable-source findings, and cited contradictions with path and line numbers. The same read-only scan inventories npm and Python dependency manifests at each exact commit, retaining detected, absent, unsupported, malformed, unavailable, wrong-shape, and dynamic states; structured declarations and diagnostics; deterministic unique, ambiguous, or unresolved package-identity matches; and exact commit/blob/path/cwd/locator provenance. The Products view exposes that evidence and an explicit rescan action. Derived package matches inform planning but never replace the repository dependency relationships chosen by the product owner. Git tags are deliberately not read as product claims. The latest bounded findings are injected into planning.
 
 Execution then creates an **exact integration set**: an independent integration branch and worktree per affected repository, each pinned to a retained base commit. Tasks in different repositories run concurrently; merges into the same repository stay serialized. Blocking review findings must name exactly one repository — an unscoped finding fails closed rather than being guessed at.
 
@@ -415,7 +415,7 @@ This project-status section describes `main`. What the current unreleased `main`
 
 | Signal | Reading |
 |---|---|
-| Automated suite | 511 declared cross-platform test cases across configuration, validator discovery and immutable CivicSuite corpus verification, credential stripping, provider parsing, fail-closed paid OpenRouter admission, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, exact-commit dependency intelligence, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
+| Automated suite | 515 declared cross-platform test cases across configuration, validator discovery and immutable CivicSuite corpus verification, credential stripping, provider parsing, fail-closed paid OpenRouter admission, plan validation, cancellation, SQLite receipts, ledger-backup verification, and executable rollback recovery, exact-commit dependency intelligence, local-model qualification and chunked review, review-lens quorums and the claims/diff divergence gate, workflow parsing/provenance/promotion guards, cockpit delivery gates, workspace-isolation guards, the inbox/program-status projections, delivered-vs-observed reconciliation, the standalone status export, decision records and their retrieval, the CI harness, the dashboard server, and full fake-provider orchestration through real Git worktrees. Each OS run executes the applicable subset (the process-tree cases include mutually exclusive Windows and POSIX declarations), and the runner reports its executable count in that run |
 | Schema handling | Ordered transactional migrations to ledger schema 38, automatic pre-upgrade backups, integrity + foreign-key validation, rollback on failure, and refusal to open a newer schema |
 | Continuous integration | GitHub Actions runs the release-truth check and full suite on Node 24 for Ubuntu and Windows. Separate Ubuntu jobs run every compiled test file once in a logged, seeded shuffled order, mutation-prove that the verification-integrity sentinel goes RED before restoration returns it to GREEN, verify the exact immutable 24-repository discovery corpus, and exercise the validator allowlist owner journey in real Chromium |
 | Distribution | Source checkout only. No installer, no published package |
@@ -443,7 +443,8 @@ Current foundation status:
 - P0-1 release-version comprehension — complete;
 - P0-2 monorepo/subproject comprehension — complete in merged PR #58
   (`09209e5`);
-- P0-3 structured dependency parsing and provenance — next;
+- P0-3 structured dependency parsing, provenance, persistence, planning context,
+  Products evidence UI, and pinned 24-repository dependency corpus — complete;
 - P0-4 real validator discovery — complete;
 - full restart reconstruction and automatic worktree cleanup — pending.
 
@@ -473,11 +474,13 @@ The feature-first delivery order is:
 
 **Available on unreleased `main`** — cockpit-complete delivery, live run
 steering, visible operation feedback, review evidence lenses, per-run cost
-counterfactuals, and reusable workflow foundations — all proven against a real
-multi-repository product (the first cross-repository CivicSuite delivery was
-pushed, PR'd, and merged from the cockpit). The pending foundation and
-remaining-before-beta lists are not shipped claims.
-**Remaining before beta** — P0-3 and the broader comprehension census;
+counterfactuals, reusable workflow foundations, and exact-commit dependency
+intelligence with an honest Products evidence surface — with the broader
+factory foundations already exercised against a real multi-repository product
+(the first cross-repository CivicSuite delivery was pushed, PR'd, and merged
+from the cockpit). The pending foundation and remaining-before-beta lists are
+not shipped claims.
+**Remaining before beta** — the broader comprehension census;
 structurally enforced workflows; restart-safe campaigns; the remaining adaptive
 workforce, analytics, evaluation, learning, and trigger capabilities; Agent
 Client Protocol transport; broader provider/runtime/tool support; portable
