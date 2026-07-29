@@ -4581,9 +4581,9 @@ test("product registry inspects and retains a local repository without changing 
       `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
       "utf8",
     );
-    await writeFile(path.join(otherProject, "backend", "pyproject.toml"), "[tool.ruff]\n", "utf8");
-    await git(otherProject, ["add", "backend/pyproject.toml"]);
-    await git(otherProject, ["commit", "-m", "fixture: change nested validator evidence"]);
+    const alignedHead = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(otherProject, ["fetch", "origin", "main"]);
+    await git(otherProject, ["reset", "--hard", alignedHead]);
     const alignmentLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
     try {
       const sourceState = alignmentLedger.getRepository(registered.repository.id)!;
