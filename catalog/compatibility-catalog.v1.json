@@ -1,17 +1,24 @@
 {
-  "keyId": "dh-root-2026",
+  "keyId": "dh-root-2026-v2",
   "catalog": {
     "schemaVersion": 1,
     "catalogVersion": 1,
     "generatedAt": "2026-07-29T00:00:00.000Z",
     "expiresAt": "2027-07-01T00:00:00.000Z",
     "models": [
-      {
-        "provider": "codex",
-        "canonicalName": "gpt-5.6",
-        "displayName": "GPT-5.6"
-      }
+      { "provider": "codex", "canonicalName": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol", "tier": "premium", "family": "openai-sol", "capabilities": ["text", "analysis", "code", "tools"], "officialSource": "https://openai.com/index/gpt-5-6/" },
+      { "provider": "codex", "canonicalName": "gpt-5.6-terra", "displayName": "GPT-5.6-Terra", "tier": "standard", "family": "openai-terra", "capabilities": ["text", "analysis", "code", "tools"], "officialSource": "https://openai.com/index/gpt-5-6/" },
+      { "provider": "codex", "canonicalName": "gpt-5.6-luna", "displayName": "GPT-5.6-Luna", "tier": "economy", "family": "openai-luna", "capabilities": ["text", "analysis", "code", "tools"], "officialSource": "https://openai.com/index/gpt-5-6/" },
+      { "provider": "claude", "canonicalName": "claude-fable-5", "displayName": "Claude Fable 5", "tier": "premium", "family": "claude-fable", "capabilities": ["text", "analysis", "code", "tools", "vision", "cyber-restricted"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-opus-4-8", "displayName": "Claude Opus 4.8", "tier": "premium", "family": "claude-opus", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-sonnet-5", "displayName": "Claude Sonnet 5", "tier": "standard", "family": "claude-sonnet", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-haiku-4-5-20251001", "displayName": "Claude Haiku 4.5", "tier": "economy", "family": "claude-haiku", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-opus-4-7", "displayName": "Claude Opus 4.7", "tier": "premium", "family": "claude-opus", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-sonnet-4-6", "displayName": "Claude Sonnet 4.6", "tier": "standard", "family": "claude-sonnet", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-opus-4-6", "displayName": "Claude Opus 4.6", "tier": "premium", "family": "claude-opus", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-opus-4-5-20251101", "displayName": "Claude Opus 4.5", "tier": "premium", "family": "claude-opus", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { "provider": "claude", "canonicalName": "claude-sonnet-4-5-20250929", "displayName": "Claude Sonnet 4.5", "tier": "standard", "family": "claude-sonnet", "capabilities": ["text", "analysis", "code", "tools", "vision"], "officialSource": "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" }
     ]
   },
-  "signature": "rkgP9kt6IpgjlXe78W7HO1nzzdREFA0zlvqu+jcpYcGL7dx3wctj0N7Y2rwHCBihPeggvHOe3/idX9jVFoTsCA=="
+  "signature": "+JwGom4zzbPh3AIKP8QJ58PpuZQ7JCce2pIK9jSBMA+HCbs2lRwLOb3NpCTLzH0sxgu53cnGpAo5Rbtz/U19DA=="
 }

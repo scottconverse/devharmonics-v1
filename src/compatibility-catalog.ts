@@ -7,7 +7,15 @@ const catalogSchema = z.object({
   catalogVersion: z.number().int().positive(),
   generatedAt: timestamp,
   expiresAt: timestamp,
-  models: z.array(z.object({ provider: z.string().min(1), canonicalName: z.string().min(1), displayName: z.string().min(1) }).passthrough()),
+  models: z.array(z.object({
+    provider: z.string().min(1),
+    canonicalName: z.string().min(1),
+    displayName: z.string().min(1),
+    tier: z.enum(["economy", "standard", "premium"]).optional(),
+    family: z.string().min(1).optional(),
+    capabilities: z.array(z.string().min(1)).optional(),
+    officialSource: z.string().url().optional(),
+  }).strict()),
 }).strict();
 
 export type CompatibilityCatalog = z.infer<typeof catalogSchema>;
@@ -23,15 +31,34 @@ export interface CatalogAcceptance {
 // This root is shipped with the application. Future keys and revocations must
 // arrive in an app release; catalog delivery never establishes new trust.
 export const COMPATIBILITY_ROOTS: Readonly<Record<string, string>> = {
-  "dh-root-2026": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAv9Z0Xj7HhoxivBqkck49hRSAnhgNuududVnomIs2upM=\n-----END PUBLIC KEY-----\n",
+  "dh-root-2026-v2": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAlXMYhPUhN5E/Pbrgq6rzNq+2omgkzZvzGEcyKxEqIrc=\n-----END PUBLIC KEY-----\n",
 };
-export const REVOKED_COMPATIBILITY_KEYS = new Set<string>();
+export const REVOKED_COMPATIBILITY_KEYS = new Set<string>(["dh-root-2026"]);
 /** Transport endpoint only: roots and revocations remain application-shipped. */
 export const COMPATIBILITY_CATALOG_URL = "https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json";
 export const BUNDLED_COMPATIBILITY_CATALOG: SignedCompatibilityCatalog = {
-  keyId: "dh-root-2026",
-  catalog: { schemaVersion: 1, catalogVersion: 1, generatedAt: "2026-07-29T00:00:00.000Z", expiresAt: "2027-07-01T00:00:00.000Z", models: [{ provider: "codex", canonicalName: "gpt-5.6", displayName: "GPT-5.6" }] },
-  signature: "rkgP9kt6IpgjlXe78W7HO1nzzdREFA0zlvqu+jcpYcGL7dx3wctj0N7Y2rwHCBihPeggvHOe3/idX9jVFoTsCA==",
+  keyId: "dh-root-2026-v2",
+  catalog: {
+    schemaVersion: 1,
+    catalogVersion: 1,
+    generatedAt: "2026-07-29T00:00:00.000Z",
+    expiresAt: "2027-07-01T00:00:00.000Z",
+    models: [
+      { provider: "codex", canonicalName: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", tier: "premium", family: "openai-sol", capabilities: ["text", "analysis", "code", "tools"], officialSource: "https://openai.com/index/gpt-5-6/" },
+      { provider: "codex", canonicalName: "gpt-5.6-terra", displayName: "GPT-5.6-Terra", tier: "standard", family: "openai-terra", capabilities: ["text", "analysis", "code", "tools"], officialSource: "https://openai.com/index/gpt-5-6/" },
+      { provider: "codex", canonicalName: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", tier: "economy", family: "openai-luna", capabilities: ["text", "analysis", "code", "tools"], officialSource: "https://openai.com/index/gpt-5-6/" },
+      { provider: "claude", canonicalName: "claude-fable-5", displayName: "Claude Fable 5", tier: "premium", family: "claude-fable", capabilities: ["text", "analysis", "code", "tools", "vision", "cyber-restricted"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-opus-4-8", displayName: "Claude Opus 4.8", tier: "premium", family: "claude-opus", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: "standard", family: "claude-sonnet", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", tier: "economy", family: "claude-haiku", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: "premium", family: "claude-opus", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: "standard", family: "claude-sonnet", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-opus-4-6", displayName: "Claude Opus 4.6", tier: "premium", family: "claude-opus", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-opus-4-5-20251101", displayName: "Claude Opus 4.5", tier: "premium", family: "claude-opus", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+      { provider: "claude", canonicalName: "claude-sonnet-4-5-20250929", displayName: "Claude Sonnet 4.5", tier: "standard", family: "claude-sonnet", capabilities: ["text", "analysis", "code", "tools", "vision"], officialSource: "https://support.claude.com/en/articles/11940350-claude-code-model-configuration" },
+    ],
+  },
+  signature: "+JwGom4zzbPh3AIKP8QJ58PpuZQ7JCce2pIK9jSBMA+HCbs2lRwLOb3NpCTLzH0sxgu53cnGpAo5Rbtz/U19DA==",
 };
 
 /** Stable JSON for detached signatures: object keys sort recursively, arrays retain order. */

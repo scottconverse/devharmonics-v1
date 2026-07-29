@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, loadConfiguredValidatorSnapshot, resolveProviderCommand } from "../src/config.js";
+import type { ProviderStatus } from "../src/doctor.js";
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
@@ -42,7 +43,7 @@ import { WorkspaceIsolationError, WorktreeManager } from "../src/worktrees.js";
 import { chunkDiffFiles, classifyVerdict, runContextOnlyReview } from "../src/local-review.js";
 import { classifyWorkload, inferModelProfile, profileMetadata, SUBSCRIPTION_COMPATIBILITY_MODELS } from "../src/model-intelligence.js";
 import { ModelCatalogCoordinator, parseCurrentClaudeModels } from "../src/catalog.js";
-import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG, canonicalCatalogJson } from "../src/compatibility-catalog.js";
+import { acceptCompatibilityCatalog, BUNDLED_COMPATIBILITY_CATALOG, canonicalCatalogJson, REVOKED_COMPATIBILITY_KEYS } from "../src/compatibility-catalog.js";
 import { estimateInvocationCost, estimateQualificationCost, isExactOpenRouterModelId, OpenRouterAdapter, OpenRouterService } from "../src/openrouter.js";
 import { architectPrompt, localReviewerContextHeader, priorDecisionsPromptSection, reviewerPrompt, workerPrompt } from "../src/prompts.js";
 import { QUALIFICATION_FINGERPRINT_FIXTURE, ensureReviewerCandidateQualified, hasQualifiableCandidate, ensureSchedulerCandidateQualified, ensureSchedulerProviderCandidateQualified, hasCurrentOperationalQualification, qualifyRuntimeModel, trackedFamilyQualificationRole } from "../src/qualification.js";
@@ -6421,7 +6422,16 @@ test("signed compatibility catalogs reject tampering, replay, expiry, and untrus
   assert.equal(acceptCompatibilityCatalog(envelope, {}, 1, now).status, "invalid");
   assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": root.publicKey.export({ format: "pem", type: "spki" }).toString() }, 1, now, new Set(["test-root"])).status, "invalid");
   assert.equal(acceptCompatibilityCatalog(envelope, { "test-root": "not-a-public-key" }, 1, now).status, "invalid");
+  assert.equal(REVOKED_COMPATIBILITY_KEYS.has("dh-root-2026"), true);
 });
+
+function catalogProviderFixture(): ProviderStatus[] {
+  return [
+    { name: "codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", version: "fixture", authStatus: "authenticated", summary: "fixture", diagnostics: [], loginCommand: "codex login", setupSteps: [], visibleModels: ["gpt-5.6-sol"], subscriptionOnly: true },
+    { name: "claude", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", version: "fixture", authStatus: "authenticated", summary: "fixture", diagnostics: [], loginCommand: "claude auth login", setupSteps: [], visibleModels: [], subscriptionOnly: true },
+    { name: "gemini", enabled: true, installed: false, authenticated: false, visible: false, healthy: false, available: false, entitlement: "unknown", capacity: "unknown", version: "", authStatus: "not installed", summary: "fixture", diagnostics: [], loginCommand: "agy", setupSteps: [], visibleModels: [], subscriptionOnly: true },
+  ];
+}
 
 test("catalog refresh acquires the signed live envelope and keeps a valid bundled envelope when delivery fails", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-live-catalog-"));
@@ -6429,6 +6439,10 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
   const requests: string[] = [];
   try {
     await initializeProject(root);
+    const runtimeModelId = "subscription-cli:codex:model:gpt-5-6-sol";
+    ledger.upsertConnection({ id: "subscription-cli:codex", provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "test", runtimeVersion: "test", metadata: {} });
+    const omittedModelId = "subscription-cli:codex:model:legacy-omitted";
+    ledger.upsertDiscoveredModel({ id: omittedModelId, connectionId: "subscription-cli:codex", canonicalName: "legacy-omitted", displayName: "Legacy omitted", source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: 0 } });
     const publishedEnvelope = JSON.parse(readFileSync(path.join(process.cwd(), "catalog", "compatibility-catalog.v1.json"), "utf8")) as unknown;
     assert.deepEqual(publishedEnvelope, BUNDLED_COMPATIBILITY_CATALOG);
     assert.equal(acceptCompatibilityCatalog(publishedEnvelope).status, "accepted");
@@ -6438,7 +6452,7 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
       if (url.includes("compatibility-catalog")) return Response.json(publishedEnvelope);
       return new Response("claude-fable-1 claude-opus-4 claude-sonnet-4 claude-haiku-4", { status: 200 });
     }) as typeof fetch;
-    const coordinator = new ModelCatalogCoordinator(ledger, root, { fetch: liveFetch });
+    const coordinator = new ModelCatalogCoordinator(ledger, root, { fetch: liveFetch, inspectProviders: async () => catalogProviderFixture() });
     await coordinator.refresh(true, "test-live-delivery");
     assert.ok(requests.includes("https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json"));
     assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility")?.source, "https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json");
@@ -6446,16 +6460,32 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
       { version: ledger.compatibilityCatalogTrust().acceptedVersion, keyId: ledger.compatibilityCatalogTrust().keyId, state: ledger.compatibilityCatalogTrust().trustState },
       { version: BUNDLED_COMPATIBILITY_CATALOG.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, state: "accepted" },
     );
+    assert.equal(ledger.getModel(runtimeModelId)?.source, "runtime_discovery");
+    assert.equal(ledger.getModel(runtimeModelId)?.visible, true);
+    assert.equal(ledger.getModel(runtimeModelId)?.metadata.signedCatalogVersion, undefined);
+    await coordinator.refresh(true, "test-live-delivery-2");
+    await coordinator.refresh(true, "test-live-delivery-3");
+    assert.equal(ledger.getModel(omittedModelId)?.retired, true, "three signed omissions retire an obsolete compatibility-only model");
+
+    const runtimeFingerprint = ledger.getModel(runtimeModelId)?.qualificationFingerprint;
+    assert.ok(runtimeFingerprint);
+    ledger.recordModelQualification({ modelId: runtimeModelId, fixtureVersion: "runtime", role: "worker", passed: true, score: 1, evidence: {}, fingerprint: runtimeFingerprint });
+    ledger.setModelPreference(runtimeModelId, { active: true });
+    const priorAttempt = "2026-07-29T00:00:00.000Z";
+    ledger.recordCompatibilityCatalogTrust({ acceptedVersion: 2, keyId: "future-root", generatedAt: "2026-07-29T00:00:00.000Z", expiresAt: "2027-07-01T00:00:00.000Z", acceptedAt: "2026-07-29T00:00:00.000Z", lastAttemptAt: priorAttempt, trustState: "accepted", failureReason: "future accepted snapshot" });
 
     const offlineCoordinator = new ModelCatalogCoordinator(ledger, root, {
       fetch: (async (input: string | URL | Request) => {
         if (String(input).includes("compatibility-catalog")) throw new Error("offline fixture");
         return new Response("claude-fable-1 claude-opus-4 claude-sonnet-4 claude-haiku-4", { status: 200 });
       }) as typeof fetch,
+      inspectProviders: async () => catalogProviderFixture(),
     });
     await offlineCoordinator.refresh(true, "test-offline-delivery");
     assert.equal(ledger.compatibilityCatalogTrust().trustState, "stale");
     assert.match(ledger.compatibilityCatalogTrust().failureReason, /Live delivery failed: offline fixture/);
+    assert.notEqual(ledger.compatibilityCatalogTrust().lastAttemptAt, priorAttempt);
+    assert.equal(ledger.getModel(runtimeModelId)?.active, true, "catalog delivery failure cannot revoke independent runtime qualification");
     assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility-live")?.status, "failed");
     assert.match(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.detail ?? "", /compatibility-live/);
   } finally {
@@ -6474,6 +6504,7 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
       fetch: (async (input: string | URL | Request) => String(input).includes("compatibility-catalog")
         ? Response.json(BUNDLED_COMPATIBILITY_CATALOG)
         : new Response("unavailable", { status: 503 })) as typeof fetch,
+      inspectProviders: async () => catalogProviderFixture(),
     });
     assert.equal((coordinator as any).isStale(), true);
     await coordinator.refresh(true, "test-claude-failure");

@@ -1,12 +1,14 @@
 # DevHarmonics Detailed Implementation Plan
 
 Document status: **Build-ready execution plan**
-Plan version: **1.41**
+Plan version: **1.42**
 Written: **2026-07-14**
 Revised: **2026-07-29**
 Product specification baseline: **DevHarmonics Product Specification v1.17**
 Latest tagged implementation baseline: **DevHarmonics v0.6.1**
 Google Doc: [DevHarmonics Detailed Implementation Plan](https://docs.google.com/document/d/1cVTT2v6H0z6j5NMSPcdwpoWNuuawxB-FdRUj1SYLwns/edit?usp=drivesdk)
+
+Revision history: **v1.42 (2026-07-29)** — Locked C1 reconciliation semantics: application releases own compatibility trust roots and revocations; signed-catalog omissions retire compatibility-only rows after the normal missing-observation threshold; and independent runtime/provider observations retain their provenance, visibility, and qualification when an identifier collides with signed metadata. Rotated and revoked the unreleased draft root before merge.
 
 Revision history: **v1.41 (2026-07-29)** — Claimed C1 after adding live signed compatibility-catalog delivery against application-shipped Ed25519 roots, truthful stale/failure receipts, scoped qualification invalidation, CLI/dashboard refresh triggers, and unavailable/retired-model failure refresh. Exact-candidate beta reproving remains part of the later joined beta gate.
 
@@ -414,6 +416,8 @@ Deliverables:
 
 - persist provider-neutral model identities and connection-specific availability;
 - reconcile provider catalogs, signed compatibility data, runtime discovery, and empirical observations;
+- ship compatibility-catalog trust roots and revocations with the application;
+- reconcile signed-catalog omissions only against compatibility-sourced rows, while preserving stronger independent runtime/provider provenance on identifier collisions;
 - refresh enumerable catalogs at launch, at least every 24 hours while running,
   when cached metadata becomes stale, and when provider/runtime fingerprints
   change, without activating a newly discovered model;
@@ -427,6 +431,9 @@ Acceptance:
 - a stale, expired, invalidly signed, or fingerprint-mismatched catalog cannot
   preserve qualification or activation, and refresh failure retains the last
   known snapshot as visibly stale rather than silently treating it as current;
+- repeated signed-catalog omission retires a compatibility-only model, but a
+  signed metadata collision cannot replace runtime/provider visibility,
+  provenance, or independently qualified activation;
 - every attempt receipt distinguishes the requested model from runtime-verified actual resolution; an unverified request is never presented as the model that executed.
 
 #### DH-230: Health, quota, and cooldown manager — L

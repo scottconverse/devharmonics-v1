@@ -1,7 +1,7 @@
 # Beta requirements trace
 
 Source specification: candidate `docs/PRODUCT_SPEC.md`, v1.17, SHA-256 `F9B1ED2E721E462F53C999C3682BE37141070647A49BCE811BBA0EFFE020D730`.
-Implementation-plan status baseline: `docs/IMPLEMENTATION_PLAN.md`, v1.41.
+Implementation-plan status baseline: `docs/IMPLEMENTATION_PLAN.md`, v1.42.
 The normative-row inventory is generated mechanically from v1.17. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
 
 ## Machine-checkable totals
@@ -182,7 +182,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-CAP-033 | Ship a disabled-by-default direct OpenAI API adapter for beta; allow additional direct APIs later only for material capability absent from existing transports. | MUST | `docs/PRODUCT_SPEC.md:410` | UNASSESSED | UNASSESSED |
 | PS-CAP-034 | Distinguish Known, Visible, Verified, Qualified, Active, Degraded, and Retired registry states. | MUST | `docs/PRODUCT_SPEC.md:412-424` | UNASSESSED | UNASSESSED |
 | PS-CAP-035 | Retain registry identity, capability, runtime, quota, qualification, performance, lifecycle, preference, and provenance fields. | SHOULD | `docs/PRODUCT_SPEC.md:426-445` | UNASSESSED | UNASSESSED |
-| PS-CAP-036 | Reconcile signed-in/runtime reports, official catalogs, signed compatibility catalog, and local empirical results. | SHOULD | `docs/PRODUCT_SPEC.md:447-454` | PARTIAL — live signed/versioned compatibility metadata, runtime reports, and official catalogs are reconciled; empirical reconciliation remains DH-250 scope | `catalog/compatibility-catalog.v1.json`; `src/compatibility-catalog.ts`; `src/catalog.ts`; catalog-refresh core tests |
+| PS-CAP-036 | Reconcile signed-in/runtime reports, official catalogs, signed compatibility catalog, and local empirical results. | SHOULD | `docs/PRODUCT_SPEC.md:447-454` | PARTIAL — live signed/versioned compatibility metadata, runtime reports, and official catalogs are reconciled; signed omissions retire compatibility-only rows without overwriting stronger runtime/provider provenance; empirical reconciliation remains DH-250 scope | `catalog/compatibility-catalog.v1.json`; `src/compatibility-catalog.ts`; `src/catalog.ts`; catalog-refresh core tests |
 | PS-CAP-037 | Do not schedule from announcements alone; require account visibility or safe probe. | MUST | `docs/PRODUCT_SPEC.md:456` | UNASSESSED | UNASSESSED |
 | PS-CAP-038 | Refresh registry at startup, account/CLI changes, manual request, periodically, and after unknown/retired-model failure. | SHOULD | `docs/PRODUCT_SPEC.md:458-465` | PARTIAL — launch, CLI run, manual, periodic, stale, runtime-fingerprint, and unavailable/retired-model failure paths are present; explicit post-sign-in event coverage remains | `src/server.ts`; `src/cli.ts`; `src/catalog.ts`; unavailable-model refresh core test |
 | PS-CAP-039 | Prefer structured provider mechanisms over scraping interactive UI. | MUST | `docs/PRODUCT_SPEC.md:467` | UNASSESSED | UNASSESSED |

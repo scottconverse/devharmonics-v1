@@ -24,6 +24,8 @@ export interface CatalogRefreshResult {
 export interface ModelCatalogCoordinatorOptions {
   /** Test seam for deterministic catalog delivery failures and envelopes. */
   fetch?: typeof fetch;
+  /** Test seam for deterministic provider/runtime discovery. */
+  inspectProviders?: typeof inspectProviders;
 }
 
 export class ModelCatalogCoordinator {
@@ -46,7 +48,7 @@ export class ModelCatalogCoordinator {
     const maxAgeMs = DEFAULT_REFRESH_HOURS * 60 * 60_000;
     const coordinator = this.ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
     const stale = !coordinator || coordinator.status === "failed" || Date.now() - Date.parse(coordinator.refreshedAt) >= maxAgeMs;
-    const providers = await inspectProviders(config, this.projectPath);
+    const providers = await (this.options.inspectProviders ?? inspectProviders)(config, this.projectPath);
     const knownVersions = new Map(this.ledger.listConnections().map((connection) => [connection.provider, connection.runtimeVersion]));
     const versionChanged = providers.some((provider) => provider.installed && knownVersions.get(provider.name) !== (provider.version || null));
     return stale || versionChanged ? this.refresh(true, stale ? "pre_run_stale" : "pre_run_runtime_changed") : this.snapshot(config, providers);
@@ -76,7 +78,7 @@ export class ModelCatalogCoordinator {
     const resolvedConfig = config ?? await loadConfig(this.projectPath);
     return {
       config: resolvedConfig,
-      providers: providers ?? await inspectProviders(resolvedConfig, this.projectPath),
+      providers: providers ?? await (this.options.inspectProviders ?? inspectProviders)(resolvedConfig, this.projectPath),
       ollama: [],
       refreshedAt: newestRefresh(this.ledger) ?? new Date(0).toISOString(),
       compatibilityTrust: this.ledger.compatibilityCatalogTrust(),
@@ -87,7 +89,7 @@ export class ModelCatalogCoordinator {
     const config = await loadConfig(this.projectPath);
     const openRouter = new OpenRouterService(this.ledger);
     await openRouter.syncConnection(config.openRouter.enabled);
-    const providers = await inspectProviders(config, this.projectPath);
+    const providers = await (this.options.inspectProviders ?? inspectProviders)(config, this.projectPath);
     syncSubscriptionConnections(this.ledger, providers);
     const compatibility = await this.refreshCompatibilityCatalog(providers);
     this.ledger.reconcileLegacyAntigravityQuotaHealth();
@@ -170,11 +172,11 @@ export class ModelCatalogCoordinator {
       this.applyVerifiedCompatibilityCatalog(fallback, providers, "stale", detail);
       this.ledger.staleCompatibilityQualifications(detail);
     } else if (retained) {
-      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "stale", failureReason: `${detail}; retained last valid snapshot` });
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, lastAttemptAt: new Date().toISOString(), trustState: "stale", failureReason: `${detail}; retained last valid snapshot` });
       this.ledger.staleCompatibilityQualifications(detail);
     } else {
       this.ledger.staleCompatibilityQualifications(detail);
-      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, trustState: "invalid", failureReason: detail });
+      this.ledger.recordCompatibilityCatalogTrust({ ...priorTrust, lastAttemptAt: new Date().toISOString(), trustState: "invalid", failureReason: detail });
     }
     this.ledger.recordCatalogRefresh({ provider: "compatibility-live", status: "failed", source: COMPATIBILITY_CATALOG_URL, modelCount: 0, detail });
     this.ledger.recordCatalogRefresh({ provider: "compatibility", status: fallbackIsCurrent || retained ? "success" : "failed", source: "bundled signed DevHarmonics compatibility catalog", modelCount: fallback.catalog?.models.length ?? 0, detail });
@@ -197,11 +199,33 @@ export class ModelCatalogCoordinator {
       trustState,
       failureReason,
     });
+    const signedIdsByProvider = new Map<string, string[]>();
     for (const entry of acceptance.catalog.models) {
       const provider = providers.find((item) => item.name === entry.provider);
       if (!provider) continue;
+      const modelId = `subscription-cli:${entry.provider}:model:${normalizeModelId(entry.canonicalName)}`;
+      const signedIds = signedIdsByProvider.get(entry.provider) ?? [];
+      signedIds.push(modelId);
+      signedIdsByProvider.set(entry.provider, signedIds);
+      const existing = this.ledger.getModel(modelId);
+      if (existing && existing.source !== "compatibility_catalog") {
+        // Runtime/account/provider observations are independent, stronger facts.
+        // The signed catalog must not overwrite their visibility or provenance.
+        continue;
+      }
       const inferred = inferModelProfile({ canonicalName: entry.canonicalName, displayName: entry.displayName, metadata: {} }, { provider: entry.provider, transport: "subscription_cli" });
-      this.ledger.upsertDiscoveredModel({ id: `subscription-cli:${entry.provider}:model:${normalizeModelId(entry.canonicalName)}`, connectionId: `subscription-cli:${entry.provider}`, canonicalName: entry.canonicalName, displayName: entry.displayName, source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: acceptance.catalog.catalogVersion, requiresRuntimeQualification: true, ...profileMetadata({ ...inferred, source: "catalog", confidence: "official" }) } });
+      const signedProfile = entry.tier && entry.family && entry.capabilities
+        ? { tier: entry.tier, family: entry.family, capabilities: entry.capabilities, source: "catalog" as const, reasoningEffort: null, confidence: "official" as const, evidenceUrls: entry.officialSource ? [entry.officialSource] : [] }
+        : { ...inferred, source: "catalog" as const, confidence: "official" as const };
+      this.ledger.upsertDiscoveredModel({ id: modelId, connectionId: `subscription-cli:${entry.provider}`, canonicalName: entry.canonicalName, displayName: entry.displayName, source: "compatibility_catalog", lifecycle: "known", visible: false, verified: false, qualified: false, active: false, metadata: { signedCatalogVersion: acceptance.catalog.catalogVersion, requiresRuntimeQualification: true, ...profileMetadata(signedProfile) } });
+    }
+    for (const provider of providers) {
+      this.ledger.reconcileDiscoveredModels(
+        `subscription-cli:${provider.name}`,
+        "compatibility_catalog",
+        signedIdsByProvider.get(provider.name) ?? [],
+        3,
+      );
     }
   }
 
