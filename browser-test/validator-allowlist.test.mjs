@@ -536,7 +536,13 @@ test("dependency evidence is honest, complete, escaped, and safely rescannable i
   });
 
   await page.goto(dashboard.url, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > 0);
+  const beforeProductsRender = Number(await page.locator("#product-list").getAttribute("data-render-version") || 0);
   await page.getByRole("button", { name: "Products", exact: true }).click();
+  await page.waitForFunction(
+    (before) => Number(document.querySelector("#product-list")?.dataset.renderVersion || 0) > before,
+    beforeProductsRender,
+  );
   const stateCard = page.locator("article.product-card").filter({ hasText: "Dependency State Fixture" });
   const intelligence = stateCard.locator("details.product-intelligence");
   await intelligence.evaluate((details) => { details.open = true; });
