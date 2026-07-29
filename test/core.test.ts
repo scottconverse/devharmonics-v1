@@ -6537,6 +6537,24 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     assert.ok((recovered as any).nextPeriodicDelayMs() <= 1_000, "periodic refresh is scheduled no later than signed expiry");
     ledger.recordCompatibilityCatalogTrust({ ...trust, expiresAt: "2026-07-29T00:00:00.000Z", trustState: "accepted" });
     assert.equal((recovered as any).isStale(), true, "signed expiry makes a fresh coordinator receipt stale");
+
+    config.connections.claude.enabled = false;
+    await writeFile(path.join(devHarmonicsDirectory(root), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    let claudeOfficialRequested = false;
+    const disabledClaudeProviders = disabledUnhealthy.map((provider) => provider.name === "claude"
+      ? { ...provider, enabled: false, healthy: false, available: false }
+      : provider);
+    const withoutClaude = new ModelCatalogCoordinator(ledger, root, {
+      fetch: (async (input: string | URL | Request) => {
+        if (String(input).includes("compatibility-catalog")) return Response.json(BUNDLED_COMPATIBILITY_CATALOG);
+        claudeOfficialRequested = true;
+        return new Response("unavailable", { status: 503 });
+      }) as typeof fetch,
+      inspectProviders: async () => disabledClaudeProviders,
+    });
+    await withoutClaude.refresh(true, "test-disabled-claude");
+    assert.equal(claudeOfficialRequested, false);
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "success");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });

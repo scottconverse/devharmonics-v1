@@ -130,7 +130,7 @@ export class ModelCatalogCoordinator {
       });
     }
 
-    const claudeOfficialSucceeded = await this.refreshClaudeOfficialCatalog();
+    const claudeOfficialSucceeded = !config.connections.claude.enabled || await this.refreshClaudeOfficialCatalog();
     let openRouterFailed = false;
     try {
       await openRouter.syncCatalog();
