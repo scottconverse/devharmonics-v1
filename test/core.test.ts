@@ -6599,6 +6599,12 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     assert.equal(exceptionalReceipt?.source, "model_unavailable");
     assert.match(exceptionalReceipt?.detail ?? "", /periodic inspection failed/);
     assert.ok((exceptional as any).nextPeriodicDelayMs() <= 5 * 60_000, "exceptional failures persist before scheduling the bounded retry");
+
+    const periodicExceptional = new ModelCatalogCoordinator(ledger, root, { inspectProviders: async () => { throw new Error("periodic inspection failed"); } });
+    await assert.rejects(periodicExceptional.refresh(true, "periodic"), /periodic inspection failed/);
+    const periodicReceipt = ledger.listCatalogRefreshes().filter((item) => item.provider === "coordinator").at(-1);
+    assert.equal(periodicReceipt?.status, "failed");
+    assert.equal(periodicReceipt?.source, "periodic");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });
