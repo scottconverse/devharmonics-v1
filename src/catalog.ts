@@ -41,9 +41,7 @@ export class ModelCatalogCoordinator {
     if (!force && !this.isStale()) return this.snapshot();
     this.refreshInFlight = this.performRefresh(source)
       .catch((error) => {
-        if (source === "periodic") {
-          this.ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source, modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
-        }
+        this.ledger.recordCatalogRefresh({ provider: "coordinator", status: "failed", source, modelCount: 0, detail: error instanceof Error ? error.message : String(error) });
         throw error;
       })
       .finally(() => {
@@ -223,13 +221,20 @@ export class ModelCatalogCoordinator {
     failureReason: string,
   ): void {
     if (!acceptance.catalog || !acceptance.keyId) return;
+    const priorTrust = this.ledger.compatibilityCatalogTrust();
+    const catalogDigest = acceptance.digest ?? null;
+    const acceptedAt = priorTrust.acceptedVersion === acceptance.catalog.catalogVersion
+      && priorTrust.catalogDigest === catalogDigest
+      && priorTrust.acceptedAt
+      ? priorTrust.acceptedAt
+      : new Date().toISOString();
     this.ledger.recordCompatibilityCatalogTrust({
       acceptedVersion: acceptance.catalog.catalogVersion,
-      catalogDigest: acceptance.digest ?? null,
+      catalogDigest,
       keyId: acceptance.keyId,
       generatedAt: acceptance.catalog.generatedAt,
       expiresAt: acceptance.catalog.expiresAt,
-      acceptedAt: new Date().toISOString(),
+      acceptedAt,
       trustState,
       failureReason,
     });

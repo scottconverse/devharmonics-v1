@@ -6499,7 +6499,12 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
     assert.equal(ledger.getModel(runtimeModelId)?.source, "runtime_discovery");
     assert.equal(ledger.getModel(runtimeModelId)?.visible, true);
     assert.equal(ledger.getModel(runtimeModelId)?.metadata.signedCatalogVersion, undefined);
+    const firstAcceptedAt = ledger.compatibilityCatalogTrust().acceptedAt;
+    assert.ok(firstAcceptedAt);
+    const acceptanceSentinel = "2026-07-29T00:00:00.000Z";
+    ledger.recordCompatibilityCatalogTrust({ ...ledger.compatibilityCatalogTrust(), acceptedAt: acceptanceSentinel });
     await coordinator.refresh(true, "test-live-delivery-2");
+    assert.equal(ledger.compatibilityCatalogTrust().acceptedAt, acceptanceSentinel, "replaying the same signed catalog preserves its original acceptance time");
     await coordinator.refresh(true, "test-live-delivery-3");
     assert.equal(ledger.getModel(omittedModelId)?.retired, true, "three signed omissions retire an obsolete compatibility-only model");
 
@@ -6588,9 +6593,12 @@ test("a failed coordinator attempt is stale and an official Claude failure fails
     assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "success");
 
     const exceptional = new ModelCatalogCoordinator(ledger, root, { inspectProviders: async () => { throw new Error("periodic inspection failed"); } });
-    await assert.rejects(exceptional.refresh(true, "periodic"), /periodic inspection failed/);
-    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator")?.status, "failed");
-    assert.ok((exceptional as any).nextPeriodicDelayMs() <= 5 * 60_000, "periodic exceptions persist before scheduling the bounded retry");
+    await assert.rejects(exceptional.refresh(true, "model_unavailable"), /periodic inspection failed/);
+    const exceptionalReceipt = ledger.listCatalogRefreshes().find((item) => item.provider === "coordinator");
+    assert.equal(exceptionalReceipt?.status, "failed");
+    assert.equal(exceptionalReceipt?.source, "model_unavailable");
+    assert.match(exceptionalReceipt?.detail ?? "", /periodic inspection failed/);
+    assert.ok((exceptional as any).nextPeriodicDelayMs() <= 5 * 60_000, "exceptional failures persist before scheduling the bounded retry");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });
@@ -6631,8 +6639,12 @@ test("exact unavailable-model failures stay model-scoped and schedule one nonblo
     const orchestrator = new (Orchestrator as any)(ledger, { onModelUnavailable: () => { refreshes += 1; } });
     const scope = orchestrator.recordScopedInvocationFailure({ connectionId: "subscription-cli:codex", modelId: "subscription-cli:codex:model:retired", failureKind: classified.kind, detail: "requested model retired", excludedModelIds: new Set<string>(), excludedConnectionIds: new Set<string>() });
     assert.equal(scope, "model");
+    const defaultExcludedConnections = new Set<string>();
+    const defaultScope = orchestrator.recordScopedInvocationFailure({ connectionId: "subscription-cli:codex", modelId: null, failureKind: classified.kind, detail: "provider default model retired", excludedModelIds: new Set<string>(), excludedConnectionIds: defaultExcludedConnections });
+    assert.equal(defaultScope, "connection");
+    assert.equal(defaultExcludedConnections.has("subscription-cli:codex"), true);
     await orchestrator.shutdown();
-    assert.equal(refreshes, 1);
+    assert.equal(refreshes, 2);
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true });

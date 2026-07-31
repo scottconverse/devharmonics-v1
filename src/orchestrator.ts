@@ -2937,18 +2937,18 @@ export class Orchestrator {
     if (scope === "model" && input.modelId) {
       input.excludedModelIds.add(input.modelId);
       this.recordModelOutcome(input.modelId, { success: false, failureKind: input.failureKind, detail: input.detail });
-      if (input.failureKind === "model_unavailable") {
-        // Refresh is advisory for the next routing decision. The failed invocation
-        // must continue its ordinary fallback path without waiting or retry loops.
-        const refresh = Promise.resolve()
-          .then(() => this.options.onModelUnavailable?.())
-          .then(() => undefined, () => undefined);
-        this.backgroundMaintenance.add(refresh);
-        void refresh.then(() => this.backgroundMaintenance.delete(refresh));
-      }
     } else if (scope === "connection" || scope === "quota_group") {
       input.excludedConnectionIds.add(input.connectionId);
       this.recordConnectionOutcome(input.connectionId, { success: false, failureKind: input.failureKind, detail: input.detail });
+    }
+    if (input.failureKind === "model_unavailable") {
+      // Refresh is advisory for the next routing decision. The failed invocation
+      // must continue its ordinary fallback path without waiting or retry loops.
+      const refresh = Promise.resolve()
+        .then(() => this.options.onModelUnavailable?.())
+        .then(() => undefined, () => undefined);
+      this.backgroundMaintenance.add(refresh);
+      void refresh.then(() => this.backgroundMaintenance.delete(refresh));
     }
     return scope;
   }
