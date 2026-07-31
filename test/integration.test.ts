@@ -16,6 +16,7 @@ import { syncOllamaRuntimes } from "../src/ollama.js";
 import { runProcess } from "../src/process.js";
 import { startDashboard } from "../src/server.js";
 import { ModelCatalogCoordinator } from "../src/catalog.js";
+import { BUNDLED_COMPATIBILITY_CATALOG } from "../src/compatibility-catalog.js";
 import { validatorStateFingerprint } from "../src/validator-discovery.js";
 
 async function git(cwd: string, args: string[]) {
@@ -50,6 +51,16 @@ async function loadPlanningFixtureConfig(project: string) {
     timeoutMs: 30_000,
   };
   return config;
+}
+
+async function refreshPlanningFixtureCatalog(ledger: Ledger, project: string): Promise<void> {
+  const catalog = new ModelCatalogCoordinator(ledger, project, {
+    fetch: (async (input: string | URL | Request) => String(input).includes("compatibility-catalog")
+      ? Response.json(BUNDLED_COMPATIBILITY_CATALOG)
+      : new Response("claude-fable-5 claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001")) as typeof fetch,
+  });
+  await catalog.refresh(true, "integration_fixture_startup");
+  catalog.stop();
 }
 
 async function createFakeCli(root: string, authenticated = true): Promise<string> {
@@ -495,6 +506,7 @@ test("orchestrator completes a verified run through fake subscription CLIs", asy
   const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
   let runId = "";
   try {
+    await refreshPlanningFixtureCatalog(ledger, project);
     const orchestrator = new Orchestrator(ledger);
     runId = await orchestrator.run({ goal: "Create the fixture result", projectPath: project, agents: 37 });
     const run = ledger.getRun(runId);
@@ -694,6 +706,7 @@ test("review fixer changes evidence, invalidates the rejected receipt, and requi
   await writeFile(path.join(devHarmonicsDirectory(project), "config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   const ledger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
   try {
+    await refreshPlanningFixtureCatalog(ledger, project);
     const runId = await new Orchestrator(ledger).run({ goal: "Fixer fixture", projectPath: project, agents: 1 });
     const run = ledger.getRun(runId);
     assert.equal(run?.status, "ready", run?.finalReview ?? "missing final review");
@@ -4581,9 +4594,9 @@ test("product registry inspects and retains a local repository without changing 
       `${JSON.stringify(changedLocalConfig, null, 2)}\n`,
       "utf8",
     );
-    await writeFile(path.join(otherProject, "backend", "pyproject.toml"), "[tool.ruff]\n", "utf8");
-    await git(otherProject, ["add", "backend/pyproject.toml"]);
-    await git(otherProject, ["commit", "-m", "fixture: change nested validator evidence"]);
+    const alignedHead = (await git(project, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(otherProject, ["fetch", "origin", "main"]);
+    await git(otherProject, ["reset", "--hard", alignedHead]);
     const alignmentLedger = new Ledger(path.join(devHarmonicsDirectory(project), "devharmonics.db"));
     try {
       const sourceState = alignmentLedger.getRepository(registered.repository.id)!;

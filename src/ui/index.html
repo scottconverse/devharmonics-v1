@@ -445,8 +445,9 @@
         </section>
 
         <section id="models-view" class="workspace-view hidden" aria-labelledby="models-title">
-          <div class="view-heading"><div><p class="eyebrow">AI MODELS</p><h2 id="models-title">Known models</h2><p class="field-help">Nothing here spends money or changes code by itself.</p></div><button id="refresh-models" class="secondary" type="button" title="Asks each connected provider what models it currently offers, and updates this list. Existing qualifications are not affected.">Check for new models</button></div>
+          <div class="view-heading"><div><p class="eyebrow">AI MODELS</p><h2 id="models-title">Known models</h2><p class="field-help">Nothing here spends money or changes code by itself.</p></div><button id="refresh-models" class="secondary" type="button" title="Checks provider and signed compatibility metadata. A changed runtime or invalid catalog makes affected qualifications stale until rechecked.">Check for new models</button></div>
           <div id="model-summary" class="metrics"></div>
+          <p id="catalog-trust" class="field-help"></p>
           <p class="field-help">Known models: every model DevHarmonics has seen from a connected provider or you added manually (excludes retired models). Passed a role check: has passed at least one check proving it can do a specific job (planning, working, or reviewing). Ready to be used: turned on, currently qualified, and eligible to be picked for a run right now. Estimated local capacity: a rough guess at how many local-model tasks can run at once on this machine — an estimate DevHarmonics uses for planning, not something it enforces.</p>
           <div id="runtime-list" class="connection-grid"></div>
           <div id="model-filter-bar" class="panel joined"><input id="model-filter" class="input" placeholder="Filter known models"><select id="model-status-filter" class="input"><option value="all">All current models</option><option value="active">Ready to be used</option><option value="qualified">Passed a role check</option><option value="stale">Needs re-checking</option><option value="unqualified">Not yet checked</option></select></div>

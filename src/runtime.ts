@@ -112,6 +112,7 @@ export type InvocationFailureKind =
   | "quota_exhausted"
   | "quota_group_exhausted"
   | "model_quota_exhausted"
+  | "model_unavailable"
   | "rate_limited"
   | "context_overflow"
   | "resource_exhausted"
@@ -178,6 +179,9 @@ export function classifyInvocationFailure(input: {
   if (/rate.?limit|too many requests|throttl/.test(detail)) {
     return { kind: "rate_limited", retryable: true };
   }
+  if (/(?:requested |selected |exact )?model.*(?:not found|does not exist|unavailable|retired|deprecated)|(?:not found|retired|deprecated).*model/.test(detail)) {
+    return { kind: "model_unavailable", retryable: false };
+  }
   if (/unknown (?:option|argument)|unsupported|incompatible|version mismatch/.test(detail)) {
     return { kind: "incompatible", retryable: false };
   }
@@ -193,7 +197,7 @@ export type InvocationFailureScope = "model" | "quota_group" | "connection" | "t
 export function invocationFailureScope(kind: InvocationFailureKind, hasExactModel: boolean): InvocationFailureScope {
   if (kind === "cancelled") return "task";
   if (kind === "quota_group_exhausted") return "quota_group";
-  if (hasExactModel && ["model_quota_exhausted", "context_overflow", "resource_exhausted", "incompatible", "timeout"].includes(kind)) {
+  if (hasExactModel && ["model_quota_exhausted", "model_unavailable", "context_overflow", "resource_exhausted", "incompatible", "timeout"].includes(kind)) {
     return "model";
   }
   return "connection";

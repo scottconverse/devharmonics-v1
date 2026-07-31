@@ -126,8 +126,10 @@ export async function startDashboard(options: {
   const ledger = new Ledger(path.join(devHarmonicsDirectory(defaultProject), "devharmonics.db"));
   ledger.reconcileInterruptedRuns();
   await seedShippedWorkflows(ledger);
-  const orchestrator = new Orchestrator(ledger);
   const catalog = new ModelCatalogCoordinator(ledger, defaultProject);
+  const orchestrator = new Orchestrator(ledger, {
+    onModelUnavailable: () => catalog.refresh(true, "model_unavailable").then(() => undefined),
+  });
   const openRouter = new OpenRouterService(ledger);
   const delivery = new DeliveryService(ledger, options.deliveryRunner);
   const reconciliationRunner = options.deliveryRunner;
@@ -198,14 +200,14 @@ async function route(
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-    const { config, providers, ollama, refreshedAt } = await context.catalog.refresh(false);
+    const { config, providers, ollama, refreshedAt, compatibilityTrust } = await context.catalog.refresh(false);
     sendJson(response, 200, {
       product: { name: PRODUCT_NAME, version: VERSION },
       defaultProject: context.defaultProject,
       config,
       providers,
       ollama,
-      catalog: { refreshedAt, refreshes: context.ledger.listCatalogRefreshes() },
+      catalog: { refreshedAt, refreshes: context.ledger.listCatalogRefreshes(), compatibilityTrust },
       // The browser must not keep its own copy of these rules: a duplicated
       // steerable-status list is what let the paused-run defect drift between
       // layers. The ledger owns them and serves them.

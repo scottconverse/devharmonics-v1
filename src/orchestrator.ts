@@ -102,10 +102,11 @@ const DECISION_CONTEXT_CAP = 8;
 
 export class Orchestrator {
   private readonly backgroundRuns = new Map<string, Promise<void>>();
+  private readonly backgroundMaintenance = new Set<Promise<void>>();
   private readonly cancellations = new Map<string, AbortController>();
   private readonly approvalResolvers = new Map<string, () => void>();
 
-  constructor(private readonly ledger: Ledger) {}
+  constructor(private readonly ledger: Ledger, private readonly options: { onModelUnavailable?: () => void | Promise<void> } = {}) {}
 
   begin(request: RunRequest, resumedFrom: string | null = null, beforeLaunch?: (runId: string) => void): string {
     // DH810-AUD-001: an unknown workflow pin must refuse BEFORE any run
@@ -617,6 +618,7 @@ export class Orchestrator {
     const activeRuns = [...this.backgroundRuns.entries()];
     for (const [runId] of activeRuns) this.pause(runId);
     await Promise.allSettled(activeRuns.map(([, execution]) => execution));
+    await Promise.allSettled([...this.backgroundMaintenance]);
   }
 
   private async execute(runId: string, request: RunRequest, signal: AbortSignal): Promise<void> {
@@ -2938,6 +2940,15 @@ export class Orchestrator {
     } else if (scope === "connection" || scope === "quota_group") {
       input.excludedConnectionIds.add(input.connectionId);
       this.recordConnectionOutcome(input.connectionId, { success: false, failureKind: input.failureKind, detail: input.detail });
+    }
+    if (input.failureKind === "model_unavailable") {
+      // Refresh is advisory for the next routing decision. The failed invocation
+      // must continue its ordinary fallback path without waiting or retry loops.
+      const refresh = Promise.resolve()
+        .then(() => this.options.onModelUnavailable?.())
+        .then(() => undefined, () => undefined);
+      this.backgroundMaintenance.add(refresh);
+      void refresh.then(() => this.backgroundMaintenance.delete(refresh));
     }
     return scope;
   }

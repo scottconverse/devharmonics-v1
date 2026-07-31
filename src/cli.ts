@@ -2,6 +2,7 @@
 import path from "node:path";
 import { initializeProject, loadConfig, devHarmonicsDirectory } from "./config.js";
 import { inspectProviders } from "./doctor.js";
+import { ModelCatalogCoordinator } from "./catalog.js";
 import { Ledger } from "./ledger.js";
 import { Orchestrator } from "./orchestrator.js";
 import { PRODUCT_NAME, PRODUCT_SLUG, VERSION } from "./product.js";
@@ -46,7 +47,10 @@ async function main(): Promise<void> {
     await initializeProject(projectPath);
     const config = await loadConfig(projectPath);
     const ledger = new Ledger(path.join(devHarmonicsDirectory(projectPath), "devharmonics.db"));
-    const orchestrator = new Orchestrator(ledger);
+    const catalog = new ModelCatalogCoordinator(ledger, projectPath);
+    const orchestrator = new Orchestrator(ledger, {
+      onModelUnavailable: () => catalog.refresh(true, "model_unavailable").then(() => undefined),
+    });
     const agents = options.agents === "auto" || !options.agents ? "auto" : Number(options.agents);
     const providers = options.providers?.split(",").map((value) => value.trim()) as
       | ProviderName[]
@@ -62,11 +66,17 @@ async function main(): Promise<void> {
       agents: agents === "auto" || Number.isInteger(agents) && agents > 0 ? agents : "auto",
       ...(providers ? { enabledProviders: providers } : {}),
     } as const;
-    const runId = await orchestrator.run(request);
-    const run = ledger.getRun(runId);
-    console.log(JSON.stringify(run, null, 2));
-    ledger.close();
-    process.exitCode = run?.status === "ready" ? 0 : 1;
+    try {
+      await catalog.ensureFresh();
+      const runId = await orchestrator.run(request);
+      const run = ledger.getRun(runId);
+      console.log(JSON.stringify(run, null, 2));
+      process.exitCode = run?.status === "ready" ? 0 : 1;
+    } finally {
+      await orchestrator.shutdown();
+      catalog.stop();
+      ledger.close();
+    }
     return;
   }
 

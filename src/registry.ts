@@ -2,7 +2,7 @@ import { projectLegacyProvider } from "./compatibility.js";
 import type { ProviderStatus } from "./doctor.js";
 import { VERSION } from "./product.js";
 import type { AuthenticationMode, RuntimeTransport } from "./runtime.js";
-import { inferModelProfile, profileMetadata, SUBSCRIPTION_COMPATIBILITY_MODELS } from "./model-intelligence.js";
+import { inferModelProfile, profileMetadata } from "./model-intelligence.js";
 import { antigravityModelIdentity } from "./antigravity.js";
 
 export const MODEL_LIFECYCLES = [
@@ -160,43 +160,6 @@ export function syncSubscriptionConnections(
       });
     }
     writer.reconcileDiscoveredModels?.(projection.connectionId, "runtime_discovery", runtimeModelIds, 3);
-  }
-  for (const catalogModel of SUBSCRIPTION_COMPATIBILITY_MODELS) {
-    const status = statuses.find((item) => item.name === catalogModel.provider);
-    if (!status) continue;
-    if (status.visibleModels.some((name) => normalizeModelId(name) === normalizeModelId(catalogModel.canonicalName))) continue;
-    writer.upsertDiscoveredModel?.({
-      id: `subscription-cli:${catalogModel.provider}:model:${normalizeModelId(catalogModel.canonicalName)}`,
-      connectionId: projectLegacyProvider(catalogModel.provider).connectionId,
-      canonicalName: catalogModel.canonicalName,
-      displayName: catalogModel.displayName,
-      source: "compatibility_catalog",
-      lifecycle: "known",
-      visible: false,
-      verified: false,
-      qualified: false,
-      active: false,
-      metadata: {
-        catalogAlias: true,
-        requiresRuntimeQualification: true,
-        ...profileMetadata({
-          tier: catalogModel.tier,
-          family: catalogModel.family,
-          capabilities: catalogModel.capabilities,
-          source: "catalog",
-          reasoningEffort: null,
-          confidence: "official",
-          evidenceUrls: [catalogModel.officialSource],
-        }),
-      },
-    });
-  }
-  for (const provider of ["codex", "claude"] as const) {
-    const connectionId = projectLegacyProvider(provider).connectionId;
-    const currentModelIds = SUBSCRIPTION_COMPATIBILITY_MODELS
-      .filter((model) => model.provider === provider)
-      .map((model) => `subscription-cli:${provider}:model:${normalizeModelId(model.canonicalName)}`);
-    writer.reconcileDiscoveredModels?.(connectionId, "compatibility_catalog", currentModelIds, 3);
   }
 }
 

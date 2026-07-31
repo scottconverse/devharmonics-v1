@@ -1,7 +1,7 @@
 # Beta requirements trace
 
 Source specification: candidate `docs/PRODUCT_SPEC.md`, v1.17, SHA-256 `F9B1ED2E721E462F53C999C3682BE37141070647A49BCE811BBA0EFFE020D730`.
-Implementation-plan status baseline: `docs/IMPLEMENTATION_PLAN.md`, v1.39.
+Implementation-plan status baseline: `docs/IMPLEMENTATION_PLAN.md`, v1.42.
 The normative-row inventory is generated mechanically from v1.17. Implementation assessment and evidence dispositions are editorial and are never inferred by the inventory generator.
 
 ## Machine-checkable totals
@@ -37,8 +37,8 @@ The four rows account for all **67** functional requirements exactly once.
 
 | Status | Priorities | Count | Principal remaining work |
 |---|---|---:|---|
-| CLAIMED | A2–A8, A10–A12, A14; B1–B6, B8, B10–B11; C3–C4, C12 | 23 | Exact-candidate beta proof remains |
-| PARTIAL | A1, A9, A13; B7, B9; C1–C2, C5–C7, C9, C13; D1–D2, D7 | 15 | Recovery, installer, GitHub breadth, workflow enforcement, catalog/audition/optimization/upgrades/replanning, tool packaging, diagnostics, analytics/evaluation, complete API budget policy |
+| CLAIMED | A2–A8, A10–A12, A14; B1–B6, B8, B10–B11; C1, C3–C4, C12 | 24 | Exact-candidate beta proof remains |
+| PARTIAL | A1, A9, A13; B7, B9; C2, C5–C7, C9, C13; D1–D2, D7 | 14 | Recovery, installer, GitHub breadth, workflow enforcement, auditions/optimization/upgrades/replanning, tool packaging, diagnostics, analytics/evaluation, complete API budget policy |
 | MISSING | C8, C10–C11; D3–D6 | 7 | ACP, learning policy, campaigns, Open Interpreter/direct OpenAI API, ecosystem packaging, triggers, portable handoffs |
 
 The three rows account for all **45** Milestone A–D priorities exactly once.
@@ -58,8 +58,8 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
    campaign stages, representative pilots, promotion gates, resource-aware
    shards, diagnostic partitioning, test-integrity controls, differential
    evidence, regression accounting, restart reconciliation, and safe cleanup.
-4. Complete the remaining non-runtime adaptive-workforce priorities C1–C2,
-   C5–C7, and C9: catalog refresh, auditions, optimization, controlled
+4. Complete the remaining non-runtime adaptive-workforce priorities C2,
+   C5–C7, and C9: auditions, optimization, controlled
    upgrades, dynamic replanning/handoff, and the broader tool/skill registry.
 5. Deliver the product-manager analytics, evaluation, governed learning, and
    policy-bounded trigger controls that own C10, D5, and D7.
@@ -182,9 +182,9 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-CAP-033 | Ship a disabled-by-default direct OpenAI API adapter for beta; allow additional direct APIs later only for material capability absent from existing transports. | MUST | `docs/PRODUCT_SPEC.md:410` | UNASSESSED | UNASSESSED |
 | PS-CAP-034 | Distinguish Known, Visible, Verified, Qualified, Active, Degraded, and Retired registry states. | MUST | `docs/PRODUCT_SPEC.md:412-424` | UNASSESSED | UNASSESSED |
 | PS-CAP-035 | Retain registry identity, capability, runtime, quota, qualification, performance, lifecycle, preference, and provenance fields. | SHOULD | `docs/PRODUCT_SPEC.md:426-445` | UNASSESSED | UNASSESSED |
-| PS-CAP-036 | Reconcile signed-in/runtime reports, official catalogs, signed compatibility catalog, and local empirical results. | SHOULD | `docs/PRODUCT_SPEC.md:447-454` | UNASSESSED | UNASSESSED |
+| PS-CAP-036 | Reconcile signed-in/runtime reports, official catalogs, signed compatibility catalog, and local empirical results. | SHOULD | `docs/PRODUCT_SPEC.md:447-454` | PARTIAL — live signed/versioned compatibility metadata, runtime reports, and official catalogs are reconciled; accepted versions are payload-digest-bound; signed omissions retire compatibility-only rows without overwriting stronger runtime/provider provenance; empirical reconciliation remains DH-250 scope | `catalog/compatibility-catalog.v1.json`; `src/compatibility-catalog.ts`; `src/catalog.ts`; catalog-refresh core tests |
 | PS-CAP-037 | Do not schedule from announcements alone; require account visibility or safe probe. | MUST | `docs/PRODUCT_SPEC.md:456` | UNASSESSED | UNASSESSED |
-| PS-CAP-038 | Refresh registry at startup, account/CLI changes, manual request, periodically, and after unknown/retired-model failure. | SHOULD | `docs/PRODUCT_SPEC.md:458-465` | UNASSESSED | UNASSESSED |
+| PS-CAP-038 | Refresh registry at startup, account/CLI changes, manual request, periodically, and after unknown/retired-model failure. | SHOULD | `docs/PRODUCT_SPEC.md:458-465` | PARTIAL — launch, CLI run, manual, periodic, stale, runtime-fingerprint, and unavailable/retired-model failure paths are present; explicit post-sign-in event coverage remains | `src/server.ts`; `src/cli.ts`; `src/catalog.ts`; unavailable-model refresh core test |
 | PS-CAP-039 | Prefer structured provider mechanisms over scraping interactive UI. | MUST | `docs/PRODUCT_SPEC.md:467` | UNASSESSED | UNASSESSED |
 | PS-CAP-040 | Maintain prioritized, concurrency-controlled cached health queue with retries, observations, failure classification, cooldowns, and explicit readiness states. | SHOULD | `docs/PRODUCT_SPEC.md:469-471` | UNASSESSED | UNASSESSED |
 | PS-CAP-041 | Permit substantive Ollama checks; keep subscription checks inexpensive and evidence-based. | SHOULD | `docs/PRODUCT_SPEC.md:473` | UNASSESSED | UNASSESSED |
@@ -464,7 +464,7 @@ The three rows account for all **45** Milestone A–D priorities exactly once.
 | PS-MS-B09 | CivicSuite release-truth audit workflow. | MILESTONE | `docs/PRODUCT_SPEC.md:1306` | UNASSESSED | UNASSESSED |
 | PS-MS-B10 | Repository Workbench/objective refinement. | MILESTONE | `docs/PRODUCT_SPEC.md:1307` | UNASSESSED | UNASSESSED |
 | PS-MS-B11 | Successful bounded cross-repository CivicSuite objective. | MILESTONE | `docs/PRODUCT_SPEC.md:1308` | UNASSESSED | UNASSESSED |
-| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | PARTIAL — DH-220 accountable; refresh and fingerprint foundations exist, signed compatibility and complete stale-data enforcement remain | PENDING IMPLEMENTATION |
+| PS-MS-C01 | Automated catalog refresh/signed compatibility metadata. | MILESTONE | `docs/PRODUCT_SPEC.md:1316` | CLAIMED — live Ed25519 metadata is acquired against application-shipped roots; launch/CLI/manual/24-hour/signed-expiry/stale/fingerprint/unavailable-model triggers are wired; failed refresh is visible and cannot preserve catalog-dependent activation | repository envelope; catalog-refresh/trust/fingerprint/unavailable-model core tests; TypeScript build; PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-MS-C02 | Role-specific auditions/historical fixtures. | MILESTONE | `docs/PRODUCT_SPEC.md:1317` | PARTIAL — DH-240 accountable; qualification fixtures exist, complete historical audition and governed upgrade coverage remain | PENDING IMPLEMENTATION |
 | PS-MS-C03 | Empirical performance profiles. | MILESTONE | `docs/PRODUCT_SPEC.md:1318` | CLAIMED — DH-250 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
 | PS-MS-C04 | Capacity-aware subscription/local scheduling. | MILESTONE | `docs/PRODUCT_SPEC.md:1319` | CLAIMED — DH-310 accountable | PENDING EXACT-CANDIDATE BETA REPROOF |
