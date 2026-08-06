@@ -123,6 +123,9 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      // Set only for the cmd.exe wrapper form, where resolveCommand has
+      // already built a correctly quoted command line.
+      windowsVerbatimArguments: resolved.verbatim === true,
     });
 
     const killGraceMs = request.killGraceMs ?? 5_000;
@@ -501,7 +504,18 @@ function utf8Tail(value: string, maxBytes: number): string {
   return value.slice(start);
 }
 
-function resolveCommand(command: string, args: string[]): { command: string; args: string[] } {
+interface ResolvedCommand {
+  command: string;
+  args: string[];
+  /**
+   * True when `args` is already a fully-quoted command line that Node must
+   * pass through untouched. Node's own per-argument quoting is wrong for the
+   * `cmd.exe /s /c` form — see windowsCommand below.
+   */
+  verbatim?: boolean;
+}
+
+function resolveCommand(command: string, args: string[]): ResolvedCommand {
   if (process.platform !== "win32") return { command, args };
 
   const explicit = path.isAbsolute(command) || command.includes("\\") || command.includes("/");
@@ -517,7 +531,17 @@ function resolveCommand(command: string, args: string[]): { command: string; arg
   return { command, args };
 }
 
-function windowsCommand(command: string, args: string[]): { command: string; args: string[] } {
+/**
+ * Quote one token for cmd.exe. Empty strings still need quotes or they vanish
+ * from the command line entirely.
+ */
+function quoteForCmd(value: string): string {
+  if (value === "") return '""';
+  if (!/[\s"&|<>^()%!]/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function windowsCommand(command: string, args: string[]): ResolvedCommand {
   const extension = path.extname(command).toLowerCase();
   if (extension === ".ps1") {
     return {
@@ -535,9 +559,23 @@ function windowsCommand(command: string, args: string[]): { command: string; arg
     };
   }
   if (extension === ".cmd" || extension === ".bat") {
+    // `/s` strips the FIRST and LAST quote character of everything after `/c`
+    // and leaves the middle untouched. Passing the script path and its
+    // arguments as separate spawn arguments therefore breaks the moment the
+    // path contains a space: Node quotes the path on its own, `/s` strips that
+    // very pair, and cmd sees `C:\Program Files\...` as the command
+    // `C:\Program`. The default Windows Node install lives in
+    // `C:\Program Files\nodejs`, so `npm.cmd` — every npm-based validator —
+    // failed with "'C:\Program' is not recognized".
+    //
+    // The correct form is one already-quoted command line wrapped in an outer
+    // pair of quotes for `/s` to strip, passed through verbatim so Node does
+    // not re-quote it.
+    const line = [command, ...args].map(quoteForCmd).join(" ");
     return {
       command: process.env.ComSpec ?? "cmd.exe",
-      args: ["/d", "/s", "/c", command, ...args],
+      args: ["/d", "/s", "/c", `"${line}"`],
+      verbatim: true,
     };
   }
   return { command, args };

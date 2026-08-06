@@ -492,6 +492,46 @@ test(
 );
 
 test(
+  "Windows cmd wrappers run from a directory whose path contains a space",
+  { skip: process.platform !== "win32" },
+  async () => {
+    // Regression: the default Windows Node install is C:\Program Files\nodejs,
+    // so npm.cmd — and therefore every npm-based validator — sits behind a
+    // space. `cmd /s /c` strips the first and last quote after /c, which ate
+    // the quoting Node applied to the script path and left cmd trying to run
+    // `C:\Program`. Every build and test check failed on a stock Windows box.
+    const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics probe-"));
+    assert.ok(root.includes(" "), "fixture directory must contain a space");
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(path.join(root, "devharmonics-spaced-probe.cmd"), "@echo ran %*\r\n");
+      process.env.PATH = `${root}${path.delimiter}${previousPath ?? ""}`;
+
+      const resolved = await runProcess({
+        command: "devharmonics-spaced-probe",
+        args: ["alpha", "two words"],
+        cwd: root,
+        timeoutMs: 10_000,
+      });
+      assert.equal(resolved.exitCode, 0, resolved.stderr);
+      assert.match(resolved.stdout, /ran alpha "two words"/);
+
+      const explicit = await runProcess({
+        command: path.join(root, "devharmonics-spaced-probe.cmd"),
+        args: ["beta"],
+        cwd: root,
+        timeoutMs: 10_000,
+      });
+      assert.equal(explicit.exitCode, 0, explicit.stderr);
+      assert.match(explicit.stdout, /ran beta/);
+    } finally {
+      process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Windows Antigravity discovery finds the standard installer location",
   { skip: process.platform !== "win32" },
   async () => {
