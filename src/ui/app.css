@@ -85,6 +85,7 @@ button { cursor: pointer; }
 .uncertainty.insufficient { color: var(--amber); }
 .uncertainty.established { color: var(--lime); }
 .model-actions { grid-column: 1 / -1; display: flex; gap: 7px; flex-wrap: wrap; }
+.model-actions button { white-space: normal; min-width: 0; max-width: 100%; }
 .secondary.small { padding: 6px 9px; font-size: 11px; }
 .model-card code { color: var(--muted); overflow-wrap: anywhere; }
 .lifecycle { align-self: start; border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
