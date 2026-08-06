@@ -37,7 +37,7 @@ export const COMPATIBILITY_ROOTS: Readonly<Record<string, string>> = {
 };
 export const REVOKED_COMPATIBILITY_KEYS = new Set<string>(["dh-root-2026"]);
 /** Transport endpoint only: roots and revocations remain application-shipped. */
-export const COMPATIBILITY_CATALOG_URL = "https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json";
+export const COMPATIBILITY_CATALOG_URL = "https://raw.githubusercontent.com/scottconverse/devharmonics-v1/main/catalog/compatibility-catalog.v1.json";
 export const BUNDLED_COMPATIBILITY_CATALOG: SignedCompatibilityCatalog = {
   keyId: "dh-root-2026-v2",
   catalog: {

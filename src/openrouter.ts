@@ -256,7 +256,7 @@ export class OpenRouterAdapter implements RuntimeAdapter {
     options.onEvent?.({ type: "started", connectionId: this.connection.id, at: new Date().toISOString() });
     const response = await fetch(`${OPENROUTER_API}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", "HTTP-Referer": "https://github.com/scottconverse/DevHarmonics", "X-Title": "DevHarmonics" },
+      headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", "HTTP-Referer": "https://github.com/scottconverse/devharmonics-v1", "X-Title": "DevHarmonics" },
       body: JSON.stringify({ model: request.model.alias, messages: [{ role: "user", content: request.prompt }], max_completion_tokens: request.maxOutputTokens, provider: { allow_fallbacks: false, require_parameters: true } }),
       signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(request.timeoutMs ?? 120_000)]) : AbortSignal.timeout(request.timeoutMs ?? 120_000),
     });

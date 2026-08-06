@@ -25,7 +25,7 @@ DevHarmonics does not accept API keys or provider passwords. If a prompt asks yo
 For the exact latest tagged release:
 
 ```powershell
-git clone https://github.com/scottconverse/DevHarmonics.git
+git clone https://github.com/scottconverse/devharmonics-v1.git
 Set-Location DevHarmonics
 git checkout v0.6.1
 ```
@@ -33,7 +33,7 @@ git checkout v0.6.1
 To use the unreleased development line instead:
 
 ```powershell
-git clone https://github.com/scottconverse/DevHarmonics.git
+git clone https://github.com/scottconverse/devharmonics-v1.git
 Set-Location DevHarmonics
 ```
 
@@ -545,7 +545,7 @@ relying on it for an incident.
 - Redaction is defense in depth, not a reason to place credentials in goals, prompts, repository files, or validator output. Treat the runtime directory as potentially sensitive.
 - When DevHarmonics upgrades an existing ledger schema, it creates a pre-migration `.sqlite` backup beside `devharmonics.db`. Keep that backup until the upgraded application and run history have been verified. Because it preserves data exactly as it existed before migration, it can contain values stored by an older version before ledger-boundary redaction was available.
 
-Report security issues using the private process in [SECURITY.md](https://github.com/scottconverse/DevHarmonics/blob/main/SECURITY.md), not a public issue or Discussion.
+Report security issues using the private process in [SECURITY.md](https://github.com/scottconverse/devharmonics-v1/blob/main/SECURITY.md), not a public issue or Discussion.
 
 ## 16. Uninstall
 
