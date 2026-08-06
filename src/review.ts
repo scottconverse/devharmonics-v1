@@ -88,8 +88,23 @@ export function applicableReviewLenses(requirement: Pick<ReviewRequirement, "req
 }
 
 function firstVerdict(text: string): "READY" | "NOT_READY" {
-  const firstLine = text.trimStart().split(/\r?\n/, 1)[0]?.trim().toUpperCase();
-  return firstLine === "READY" ? "READY" : "NOT_READY";
+  // Reviewers routinely emphasise the verdict line — "**READY**", "## READY",
+  // "READY:" — because they are writing Markdown. Comparing the raw line meant
+  // a reviewer that APPROVED the work was recorded as rejecting it, the run
+  // went NOT READY, and the fixer stage then failed for want of an independent
+  // implementor. A whole correct run dead-ended on a pair of asterisks.
+  //
+  // Only decoration is stripped: emphasis characters, heading marks, and a
+  // trailing separator. Nothing here can turn a hedge ("READY?", "READY, but
+  // ...") into an approval — anything that is not exactly the word READY after
+  // decoration is removed still fails closed.
+  const firstLine = text.trimStart().split(/\r?\n/, 1)[0] ?? "";
+  const normalized = firstLine
+    .replace(/[*_`#]/g, "")
+    .replace(/[\s:.]+$/u, "")
+    .trim()
+    .toUpperCase();
+  return normalized === "READY" ? "READY" : "NOT_READY";
 }
 
 function parseReviewJson(text: string): { findings: unknown[]; claimedChanges: unknown[] | null } {
