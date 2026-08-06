@@ -442,7 +442,8 @@ button:focus-visible, summary:focus-visible { outline: 3px solid var(--lime); ou
 .verdict { white-space: pre-wrap; font-size: 12px; line-height: 1.6; color: #c7cbd1; }
 .verdict.ready { border-left: 3px solid var(--lime); padding-left: 13px; }
 .verdict.not-ready { border-left: 3px solid var(--red); padding-left: 13px; }
-.empty-state { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.empty-state { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.panel.empty-state { padding: 22px; }
 
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 9; }
 .task-drawer { position: fixed; top: 0; right: 0; height: 100vh; width: min(530px, 93vw); z-index: 10; padding: 28px; overflow-y: auto; background: #111419; border-left: 1px solid var(--border); transform: translateX(105%); transition: transform .2s ease; box-shadow: -30px 0 100px rgba(0,0,0,.35); }
