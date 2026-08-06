@@ -6,11 +6,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/scottconverse/DevHarmonics.git"
+    "url": "git+https://github.com/scottconverse/devharmonics-v1.git"
   },
-  "homepage": "https://scottconverse.github.io/DevHarmonics/",
+  "homepage": "https://scottconverse.github.io/devharmonics-v1/",
   "bugs": {
-    "url": "https://github.com/scottconverse/DevHarmonics/issues"
+    "url": "https://github.com/scottconverse/devharmonics-v1/issues"
   },
   "type": "module",
   "bin": {

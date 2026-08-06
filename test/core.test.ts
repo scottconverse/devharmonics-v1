@@ -6489,8 +6489,8 @@ test("catalog refresh acquires the signed live envelope and keeps a valid bundle
     }) as typeof fetch;
     const coordinator = new ModelCatalogCoordinator(ledger, root, { fetch: liveFetch, inspectProviders: async () => catalogProviderFixture() });
     await coordinator.refresh(true, "test-live-delivery");
-    assert.ok(requests.includes("https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json"));
-    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility")?.source, "https://raw.githubusercontent.com/scottconverse/DevHarmonics/main/catalog/compatibility-catalog.v1.json");
+    assert.ok(requests.includes("https://raw.githubusercontent.com/scottconverse/devharmonics-v1/main/catalog/compatibility-catalog.v1.json"));
+    assert.equal(ledger.listCatalogRefreshes().find((item) => item.provider === "compatibility")?.source, "https://raw.githubusercontent.com/scottconverse/devharmonics-v1/main/catalog/compatibility-catalog.v1.json");
     assert.deepEqual(
       { version: ledger.compatibilityCatalogTrust().acceptedVersion, keyId: ledger.compatibilityCatalogTrust().keyId, state: ledger.compatibilityCatalogTrust().trustState },
       { version: BUNDLED_COMPATIBILITY_CATALOG.catalog.catalogVersion, keyId: BUNDLED_COMPATIBILITY_CATALOG.keyId, state: "accepted" },

@@ -24,7 +24,7 @@ const expectations = [
   ["docs/index.html", `data-product-version="${version}"`],
   ["docs/index.html", `href="USER_MANUAL.html">Manual`],
   ["docs/index.html", `href="USER_MANUAL.html">Read the user manual`],
-  ["docs/USER_MANUAL.md", `](https://github.com/scottconverse/DevHarmonics/blob/main/SECURITY.md)`],
+  ["docs/USER_MANUAL.md", `](https://github.com/scottconverse/devharmonics-v1/blob/main/SECURITY.md)`],
   ["src/ui/index.html", `v${version}`],
   ["src/ui/index.html", `/app.css?v=${version}`],
   ["src/ui/index.html", `/app.js?v=${version}`],
@@ -89,7 +89,7 @@ if (!specificationVersion) {
 }
 checks += 1;
 
-if (!changelog.includes(`[${version}]: https://github.com/scottconverse/DevHarmonics/releases/tag/v${version}`)) {
+if (!changelog.includes(`[${version}]: https://github.com/scottconverse/devharmonics-v1/releases/tag/v${version}`)) {
   failures.push(`CHANGELOG.md: missing release link for v${version}`);
 }
 const unreleasedIndex = changelog.indexOf("## [Unreleased]");
@@ -99,13 +99,13 @@ if (unreleasedIndex < 0 || releaseIndex < 0 || unreleasedIndex > releaseIndex) {
 }
 checks += 1;
 
-const expectedRepository = "git+https://github.com/scottconverse/DevHarmonics.git";
+const expectedRepository = "git+https://github.com/scottconverse/devharmonics-v1.git";
 if (
   packageJson.private !== true ||
   packageJson.license !== "Apache-2.0" ||
   packageJson.repository?.url !== expectedRepository ||
-  packageJson.homepage !== "https://scottconverse.github.io/DevHarmonics/" ||
-  packageJson.bugs?.url !== "https://github.com/scottconverse/DevHarmonics/issues"
+  packageJson.homepage !== "https://scottconverse.github.io/devharmonics-v1/" ||
+  packageJson.bugs?.url !== "https://github.com/scottconverse/devharmonics-v1/issues"
 ) {
   failures.push("package.json: public repository coordinates or Apache-2.0 licensing metadata are inconsistent");
 }

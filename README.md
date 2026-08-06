@@ -8,11 +8,11 @@
 
 DevHarmonics never merges anything without you. It hands you a reviewed branch and the receipts — and when you say so, it pushes, opens the pull request, merges, and tags, each step on its own explicit approval, all from the dashboard.
 
-[Quick start](#quick-start) · [How a run works](#how-a-run-works) · [User manual](docs/USER_MANUAL.md) · [Rollback and ledger recovery](docs/ROLLBACK.md) · [Architecture](docs/ARCHITECTURE.md) · [Product spec](docs/PRODUCT_SPEC.md) · [Landing page](https://scottconverse.github.io/DevHarmonics/)
+[Quick start](#quick-start) · [How a run works](#how-a-run-works) · [User manual](docs/USER_MANUAL.md) · [Rollback and ledger recovery](docs/ROLLBACK.md) · [Architecture](docs/ARCHITECTURE.md) · [Product spec](docs/PRODUCT_SPEC.md) · [Landing page](https://scottconverse.github.io/devharmonics-v1/)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Latest release](https://img.shields.io/badge/release-v0.6.1-informational)](https://github.com/scottconverse/DevHarmonics/releases/tag/v0.6.1)
-[![CI](https://github.com/scottconverse/DevHarmonics/actions/workflows/ci.yml/badge.svg)](https://github.com/scottconverse/DevHarmonics/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/badge/release-v0.6.1-informational)](https://github.com/scottconverse/devharmonics-v1/releases/tag/v0.6.1)
+[![CI](https://github.com/scottconverse/devharmonics-v1/actions/workflows/ci.yml/badge.svg)](https://github.com/scottconverse/devharmonics-v1/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A524-green)](package.json)
 [![CI platforms](https://img.shields.io/badge/CI%20verified-Windows%20%7C%20Ubuntu-lightgrey)](#requirements)
 [![Status](https://img.shields.io/badge/status-early%20public%20preview-orange)](#project-status)
@@ -205,7 +205,7 @@ Common model API-key and cloud-credential environment variables are stripped fro
 The latest tagged release is **v0.6.1**. For that exact release:
 
 ```powershell
-git clone https://github.com/scottconverse/DevHarmonics.git
+git clone https://github.com/scottconverse/devharmonics-v1.git
 Set-Location DevHarmonics
 git checkout v0.6.1
 ```
@@ -213,7 +213,7 @@ git checkout v0.6.1
 To try the unreleased development line instead:
 
 ```powershell
-git clone https://github.com/scottconverse/DevHarmonics.git
+git clone https://github.com/scottconverse/devharmonics-v1.git
 Set-Location DevHarmonics
 ```
 

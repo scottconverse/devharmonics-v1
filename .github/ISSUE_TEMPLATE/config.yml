@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions and ideas
-    url: https://github.com/scottconverse/DevHarmonics/discussions
+    url: https://github.com/scottconverse/devharmonics-v1/discussions
     about: Use Discussions for questions, design ideas, and roadmap proposals.
   - name: Security report
-    url: https://github.com/scottconverse/DevHarmonics/security/advisories/new
+    url: https://github.com/scottconverse/devharmonics-v1/security/advisories/new
     about: Report suspected vulnerabilities privately.
