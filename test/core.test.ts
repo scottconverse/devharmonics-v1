@@ -1645,6 +1645,31 @@ test("context-only review retains repository-prefixed findings for the automatic
   assert.deepEqual(assignment.unassigned, []);
 });
 
+test("a Markdown-emphasised verdict line is read as the verdict, and hedges still fail closed", () => {
+  // Regression: reviewers write Markdown, so an approving reviewer opening with
+  // "**READY**" was recorded as NOT_READY. The run then went NOT READY and the
+  // fixer stage failed for want of an independent implementor — a correct run
+  // dead-ended on a pair of asterisks.
+  const origin = { provider: "ollama", modelId: "ollama:test", connectionId: "local:ollama" } as const;
+  const verdictOf = (text: string) => parseReviewerResponse(text, origin).verdict;
+
+  for (const approving of ["**READY**", "READY", "## READY", "READY:", "`READY`", "__READY__", "  **READY**  "]) {
+    assert.equal(verdictOf(`${approving}\nNo material findings.`), "READY", `expected READY for ${JSON.stringify(approving)}`);
+  }
+
+  for (const rejecting of [
+    "**NOT READY**",
+    "NOT READY",
+    "## NOT READY",
+    "READY?",
+    "READY, with reservations",
+    "Mostly READY",
+    "Evidence without a verdict.",
+  ]) {
+    assert.equal(verdictOf(`${rejecting}\nSomething to look at.`), "NOT_READY", `expected NOT_READY for ${JSON.stringify(rejecting)}`);
+  }
+});
+
 test("context-only prose-only rejection remains visibly unassigned and fails closed", async () => {
   const adapter = {
     connection: { id: domainId("ProviderConnection", "local:ollama"), provider: "ollama", displayName: "Ollama", transport: "local" as const, authentication: "local_none" as const, capabilities: { structuredOutput: true, streaming: false, providerManagedTools: false, modelSelection: true, modelSettings: [], permissions: ["read_only" as const] } },
