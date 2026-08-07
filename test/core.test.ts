@@ -13,7 +13,7 @@ import { parseAntigravityModelList, type ProviderStatus } from "../src/doctor.js
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
-import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
+import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, applyFanoutCeiling, fanoutCeilingReached, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
 import { extractCitations, verifyReportCitations } from "../src/citations.js";
 import { boundedThinkingSettings, discoverOllama, minimalThinking, OllamaAdapter, qualifyOllamaModel, syncOllamaRegistry, syncOllamaRuntimes } from "../src/ollama.js";
 import {
@@ -2655,6 +2655,84 @@ test("review lens coverage is a quorum dimension and receipts record the lens", 
     ledger.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("application.fanout defaults when missing from existing configs", () => {
+  // A realistic pre-existing v2 config that predates the fanout block.
+  const legacyV2Config = {
+    version: 2,
+    application: {
+      concurrency: {
+        mode: "auto",
+        agents: 8,
+        ceiling: null,
+      },
+      retry: {
+        maxAttempts: 3,
+        backoffMs: 1_500,
+      },
+      // fanout is absent
+    },
+    connections: {
+      codex: { enabled: true, command: "codex", timeoutMs: 1_800_000 },
+      claude: { enabled: true, command: "claude", timeoutMs: 1_800_000 },
+      gemini: { enabled: true, command: "agy", timeoutMs: 1_800_000 },
+    },
+    localRuntimes: {
+      ollama: [{ id: "system", displayName: "System Ollama", baseUrl: "http://127.0.0.1:11434", enabled: true }],
+    },
+    openRouter: {
+      enabled: false,
+      allowPaidFallback: false,
+      perRunLimitUsd: 0,
+      monthlyLimitUsd: 0,
+    },
+    product: {
+      architect: "claude",
+      reviewer: "codex",
+      workers: ["codex", "claude", "gemini"],
+    },
+    repository: {
+      validators: {},
+      generatedValidators: {},
+    },
+    runPolicy: {
+      autonomy: "supervised",
+      requirePlanApproval: false,
+      allowPaidApi: false,
+      allowExternalWrites: false,
+    },
+    reviewPolicy: {
+      reviewerCountByRisk: { low: 1, medium: 1, high: 2 },
+      minimumDistinctProvidersByRisk: { low: 1, medium: 1, high: 2 },
+      requireImplementorIndependenceByRisk: { low: false, medium: true, high: true },
+      requiredLensesByRisk: { low: ["artifact"], medium: ["artifact"], high: ["artifact", "claims"] },
+      attestNoManagedClaudePolicy: false,
+      maxFixRounds: 2,
+    },
+    routing: {
+      mode: "adaptive",
+      architect: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      worker: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      reviewer: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      allowFallback: true,
+    },
+  };
+
+  const parsed = devHarmonicsConfigSchema.parse(legacyV2Config);
+  assert.deepEqual(parsed.application.fanout, { maxWorkers: 200, windowHours: 1 }, "a config written before fanout existed still parses with fanout defaults");
+
+  // Partial fanout should fill missing fields with defaults.
+  const partialFanoutConfig = {
+    ...legacyV2Config,
+    application: {
+      ...legacyV2Config.application,
+      fanout: { maxWorkers: 5 }, // windowHours is missing
+    },
+  };
+
+  const partialParsed = devHarmonicsConfigSchema.parse(partialFanoutConfig);
+  assert.deepEqual(partialParsed.application.fanout, { maxWorkers: 5, windowHours: 1 }, "partial fanout fills windowHours with default");
 });
 
 test("review lens bundles decorrelate what each reviewer is shown", async () => {
@@ -10671,6 +10749,227 @@ test("physical schema 37 to current migration preserves owner validators and its
       backup.close();
     }
   } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("countAttemptsStartedForProject scopes to project_path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectA = "/path/to/projectA";
+    const projectB = "/path/to/projectB";
+    const runA = ledger.createRun("Goal A", projectA);
+    const runB = ledger.createRun("Goal B", projectB);
+
+    ledger.savePlan(runA, {
+      summary: "Task A",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-a", title: "Task A", description: "Work A", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+    ledger.savePlan(runB, {
+      summary: "Task B",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-b", title: "Task B", description: "Work B", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    ledger.startAttempt(runA, "task-a", "codex", "prompt A");
+    ledger.startAttempt(runB, "task-b", "codex", "prompt B");
+
+    const countA = ledger.countAttemptsStartedForProject(projectA, 60 * 60 * 1000);
+    const countB = ledger.countAttemptsStartedForProject(projectB, 60 * 60 * 1000);
+
+    assert.equal(countA, 1, "Project A should only count its own attempt");
+    assert.equal(countB, 1, "Project B should only count its own attempt");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("countAttemptsStartedForProject includes running attempts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const runId = ledger.createRun("Goal", projectPath);
+
+    ledger.savePlan(runId, {
+      summary: "Task",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-1", title: "Task", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    const attemptId = ledger.startAttempt(runId, "task-1", "codex", "prompt");
+
+    const countBeforeFinish = ledger.countAttemptsStartedForProject(projectPath, 60 * 60 * 1000);
+    assert.equal(countBeforeFinish, 1, "Running attempt should be counted");
+
+    ledger.finishAttempt(attemptId, "completed", "done", "", { resultEnvelope: normalizeAgentResult("worker", "done") });
+
+    const countAfterFinish = ledger.countAttemptsStartedForProject(projectPath, 60 * 60 * 1000);
+    assert.equal(countAfterFinish, 1, "Finished attempt should still be counted");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("countAttemptsStartedForProject respects rolling window", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const runId = ledger.createRun("Goal", projectPath);
+
+    ledger.savePlan(runId, {
+      summary: "Task",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-1", title: "Task", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    const attemptId = ledger.startAttempt(runId, "task-1", "codex", "prompt");
+
+    const now = new Date();
+    const oneHourMs = 60 * 60 * 1000;
+
+    const countWithinWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, now);
+    assert.equal(countWithinWindow, 1, "Attempt within window should be counted");
+
+    const twoHoursLater = new Date(now.getTime() + 2 * oneHourMs);
+    const countOutsideWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, twoHoursLater);
+    assert.equal(countOutsideWindow, 0, "Attempt outside window should not be counted");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("fanoutCeilingReached boundary test: admission allowed up to ceiling, held at ceiling, allowed after window passes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-boundary-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const maxWorkers = 2;
+    const oneHourMs = 60 * 60 * 1000;
+
+    const runId = ledger.createRun("Goal", projectPath);
+    const plan: RunPlan = {
+      summary: "Fanout test",
+      recommendedConcurrency: 4,
+      revision: 1,
+      tasks: [
+        { id: "t1", title: "T1", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t2", title: "T2", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t3", title: "T3", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+      ],
+    };
+    ledger.savePlan(runId, plan);
+
+    assert.equal(fanoutCeilingReached(0, maxWorkers), false, "0 attempts < ceiling 2: allowed");
+    assert.equal(fanoutCeilingReached(1, maxWorkers), false, "1 attempt < ceiling 2: allowed");
+    assert.equal(fanoutCeilingReached(2, maxWorkers), true, "2 attempts == ceiling 2: held");
+    assert.equal(fanoutCeilingReached(3, maxWorkers), true, "3 attempts > ceiling 2: held");
+
+    ledger.startAttempt(runId, "t1", "codex", "prompt 1");
+    const count1 = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
+    assert.equal(count1, 1, "First attempt counted");
+    assert.equal(fanoutCeilingReached(count1, maxWorkers), false, "At 1, ceiling not reached");
+
+    ledger.startAttempt(runId, "t2", "codex", "prompt 2");
+    const count2 = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
+    assert.equal(count2, 2, "Second attempt counted");
+    assert.equal(fanoutCeilingReached(count2, maxWorkers), true, "At 2, ceiling reached");
+
+    const ready = plan.tasks.map((t) => ({ ...t, permission: "workspace_write", risk: "medium", kind: "implementation", repositoryIds: [], repositoryScope: ["."], acceptanceCriteria: [], expectedArtifacts: [], capabilityNeeds: [] })) as unknown as PlannedTask[];
+    let admissionHeld = false;
+    if (fanoutCeilingReached(count2, maxWorkers)) {
+      ledger.recordSteeringDirective({ runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
+      admissionHeld = true;
+    }
+    const steered = planSteeredAdmission({ pending: ledger.pendingSteeringDirectives(runId), ready, admissionHeld, allowedProviders: ["codex"] });
+    assert.equal(steered.admissionHeld, true, "planSteeredAdmission respects the hold");
+    assert.deepEqual(steered.ordered, [], "No tasks admitted when held");
+
+    const twoHoursLater = new Date(Date.now() + 2 * oneHourMs);
+    const countAfterWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, twoHoursLater);
+    assert.equal(countAfterWindow, 0, "Attempts outside window not counted");
+    assert.equal(fanoutCeilingReached(countAfterWindow, maxWorkers), false, "After window passes, ceiling no longer reached");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("the fan-out gate itself records the hold, the event, and its own message", async () => {
+  // The gate's own code must be exercised. An earlier version of this test
+  // called recordSteeringDirective and addEvent itself with a hand-copied
+  // message, which proved only that the ledger can store rows -- deleting the
+  // entire gate would have left it passing. applyFanoutCeiling is the real
+  // implementation both scheduler loops call.
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-gate-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const fanout = { maxWorkers: 2, windowHours: 1 };
+    const runId = ledger.createRun("Goal", projectPath);
+    ledger.savePlan(runId, {
+      summary: "Fanout gate test",
+      recommendedConcurrency: 4,
+      revision: 1,
+      tasks: [
+        { id: "t1", title: "T1", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t2", title: "T2", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+      ],
+    } as RunPlan);
+
+    // Below the ceiling the gate must not fire, and must leave no trace.
+    const attemptId1 = ledger.startAttempt(runId, "t1", "codex", "prompt 1");
+    assert.equal(applyFanoutCeiling({ ledger, runId, fanout }), false, "one attempt is below a ceiling of two");
+    assert.equal(ledger.listSteeringDirectives(runId).length, 0, "no directive is recorded below the ceiling");
+    assert.equal(ledger.getRun(runId)?.events.filter((e) => e.kind === "scheduler.fanout_held").length, 0);
+
+    // At the ceiling it must hold, and the message must come from the gate.
+    const attemptId2 = ledger.startAttempt(runId, "t2", "codex", "prompt 2");
+    assert.equal(applyFanoutCeiling({ ledger, runId, fanout }), true, "two attempts meets a ceiling of two");
+
+    const hold = ledger.listSteeringDirectives(runId).find((d) => d.kind === "hold_admission" && d.actor === "fanout-ceiling");
+    assert.ok(hold, "the gate records a hold_admission directive attributed to itself");
+    assert.equal(hold.disposition, "pending", "the hold is pending until the owner resumes");
+
+    const event = ledger.getRun(runId)?.events.find((e) => e.kind === "scheduler.fanout_held");
+    assert.ok(event, "the gate records a scheduler.fanout_held event");
+    // Written by the implementation, not restated by this test.
+    assert.match(event.message, /Fan-out ceiling reached: 2 attempts started in the last 1 hour\(s\)/);
+    assert.match(event.message, /ceiling of 2 \(application\.fanout\.maxWorkers\)/);
+    assert.match(event.message, /Attempts already running will finish and their work is kept/);
+    assert.match(event.message, /Resume admission from the run's Steering controls/);
+
+    // The hold stops admission through the same path the scheduler uses.
+    const steered = planSteeredAdmission({
+      pending: ledger.pendingSteeringDirectives(runId),
+      ready: ledger.getRun(runId)!.plan!.tasks,
+      admissionHeld: false,
+      allowedProviders: ["codex"],
+    });
+    assert.equal(steered.admissionHeld, true, "the recorded hold stops admission");
+    assert.deepEqual(steered.ordered, [], "no task is admitted while held");
+
+    // In-flight work is untouched.
+    const database = new DatabaseSync(path.join(root, "devharmonics.db"));
+    try {
+      for (const id of [attemptId1, attemptId2]) {
+        const row = database.prepare("SELECT status FROM attempts WHERE id = ?").get(id) as { status: string };
+        assert.equal(row.status, "running", "an in-flight attempt keeps running through a hold");
+      }
+    } finally {
+      database.close();
+    }
+
+    // A run the ledger cannot describe fails OPEN rather than wedging.
+    assert.equal(applyFanoutCeiling({ ledger, runId: "no-such-run", fanout }), false, "an unknown run does not hold admission");
+  } finally {
+    ledger.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

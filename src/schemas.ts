@@ -400,6 +400,11 @@ const retrySchema = z.object({
   backoffMs: z.number().int().nonnegative(),
 });
 
+const fanoutSchema = z.object({
+  maxWorkers: z.number().int().positive().default(200),
+  windowHours: z.number().positive().default(1),
+}).default({ maxWorkers: 200, windowHours: 1 });
+
 const validatorsSchema = z.record(
   z.string(),
   z.object({
@@ -430,6 +435,7 @@ export const devHarmonicsConfigSchema = z.object({
   application: z.object({
     concurrency: concurrencySchema,
     retry: retrySchema,
+    fanout: fanoutSchema,
   }),
   connections: z.object({
     codex: providerConfigSchema,

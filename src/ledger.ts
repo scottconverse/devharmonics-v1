@@ -3957,6 +3957,17 @@ export class Ledger {
     return Number(row.total);
   }
 
+  countAttemptsStartedForProject(projectPath: string, windowMs: number, at = new Date()): number {
+    const since = new Date(at.getTime() - windowMs).toISOString();
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM attempts a
+      JOIN runs r ON r.id = a.run_id
+      WHERE r.project_path = ? AND a.started_at >= ?
+    `).get(projectPath, since) as { count: number };
+    return Number(row.count);
+  }
+
   reservePaidSpend(input: PaidSpendReservationInput): string {
     if (!input.scopeId.trim()) throw new Error("Paid-spend reservations require a scope identifier");
     if (!Number.isFinite(input.estimatedCostUsd) || input.estimatedCostUsd < 0) throw new Error("Paid-spend estimates must be finite and non-negative");

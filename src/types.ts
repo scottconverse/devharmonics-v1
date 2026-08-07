@@ -48,6 +48,10 @@ export interface DevHarmonicsConfig {
       maxAttempts: number;
       backoffMs: number;
     };
+    fanout: {
+      maxWorkers: number;
+      windowHours: number;
+    };
   };
   connections: Record<ProviderName, ProviderConfig>;
   localRuntimes: {
