@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { defaultConfig, devHarmonicsDirectory, initializeProject, loadConfig, loadConfiguredValidatorSnapshot, resolveProviderCommand } from "../src/config.js";
-import type { ProviderStatus } from "../src/doctor.js";
+import { parseAntigravityModelList, type ProviderStatus } from "../src/doctor.js";
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
@@ -1643,6 +1643,37 @@ test("context-only review retains repository-prefixed findings for the automatic
   const assignment = assignReviewFindings(review.findings, ["repo:core"]);
   assert.deepEqual(assignment.byRepository.get("repo:core")?.map((finding) => finding.id), ["core-defect"]);
   assert.deepEqual(assignment.unassigned, []);
+});
+
+test("Antigravity model lines are split on the tab, not welded into the identifier", () => {
+  // Regression: `agy models` prints `id<TAB>Display Name`. Taking the whole
+  // line made every Antigravity model register under an id the CLI does not
+  // recognise, so every one failed qualification and the provider was unusable
+  // — while the doctor still reported it READY.
+  const stdout = [
+    "Fetching available models...",
+    "gemini-3.1-pro-high\tGemini 3.1 Pro (High)",
+    "gemini-3.6-flash-low\tGemini 3.6 Flash (Low)",
+    "claude-sonnet-4-6\tClaude Sonnet 4.6",
+    "",
+    "  gemini-3.5-flash-medium\tGemini 3.5 Flash (Medium)  ",
+  ].join("\r\n");
+
+  assert.deepEqual(parseAntigravityModelList(stdout), [
+    "gemini-3.1-pro-high",
+    "gemini-3.6-flash-low",
+    "claude-sonnet-4-6",
+    "gemini-3.5-flash-medium",
+  ]);
+
+  // An older single-column output still works.
+  assert.deepEqual(parseAntigravityModelList("gemini-3.1-pro-high\ngemini-3.6-flash-low"), [
+    "gemini-3.1-pro-high",
+    "gemini-3.6-flash-low",
+  ]);
+
+  // Prose never becomes a phantom model.
+  assert.deepEqual(parseAntigravityModelList("Fetching available models...\nNo models found."), []);
 });
 
 test("a Markdown-emphasised verdict line is read as the verdict, and hedges still fail closed", () => {
