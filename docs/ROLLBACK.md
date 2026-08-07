@@ -127,6 +127,13 @@ ordered migrations:
 4. **Ledger schema 37 → 38** adds per-repository validator-discovery snapshots
    plus distinct local-config validator snapshots and suppression tombstones.
    Existing `validators_json` rows remain unchanged owner overrides.
+5. **Ledger schema 38 → 39** adds the `compatibility_catalog_trust` table, which
+   records the signed model-catalog version this ledger has accepted. A
+   downgrade loses only that acceptance record; the next build re-verifies the
+   signed catalog from scratch, so nothing needs restoring.
+6. **Ledger schema 39 → 40** adds `catalog_digest` to that table and resets any
+   acceptance recorded without one back to `invalid`, forcing a fresh signed
+   revalidation. A downgrade again loses only the acceptance record.
 
 Backups describe the schema the database actually started at and the maximum
 schema supported by the build that opened it. Opening a schema-34 v0.6.1
