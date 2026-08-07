@@ -391,6 +391,20 @@ Use the Models view to qualify a discovered Ollama model before activating or pi
 
 Mellum2 appears automatically when its exact tag is installed in an enabled Ollama runtime; DevHarmonics does not download it. Mellum2 Instruct and Thinking are separate model and upgrade tracks. Use **Run accuracy test** to run the additional strict-JSON, contradiction-detection, and requirement-count fixture. Mellum2 is not schedulable until that benchmark and the role-appropriate analysis or bounded-tool qualification are both current. Instruct begins in the economy lane for narrow, low-risk work; Thinking is evaluated separately for standard reasoning work. Neither becomes the coordinator, final reviewer, or universal default from its name or published benchmarks alone.
 
+### Qualifying and activating models
+
+DevHarmonics discovers many models on a fresh install, but it schedules only models that are both qualified and activated, with no stale or excluded state. A model is qualified when it passes a current role-compatibility check; it is activated when you explicitly enable it for scheduling.
+
+To make a model usable, open the Models page and locate its card. Run its qualification by choosing **Requalify** or running the role check. Then activate the model. Activating an unqualified or stale subscription or local model automatically runs the required first-use qualification. The status filter's **active** view and the "Ready to be used" count show which models the scheduler can actually use.
+
+Every model is classified premium, standard, or economy by capability. Premium models are the strongest and most expensive; standard models are everyday mid-range; economy models are small and cheap. Different roles require different tiers:
+
+- The architect and the reviewer always require a premium model.
+- A worker requires premium for high-risk, release, security, or architecture work; standard for routine implementation; and economy only for simple read-only or diagnostic work.
+- A higher tier always satisfies a lower requirement—premium can do standard or economy work, and standard can do economy work.
+
+When a plan or run refuses with "No eligible model or provider default is available for \<role\> (\<tier\> tier required)", qualify and activate a model of that tier or higher, re-run the qualification check on a model whose status has gone stale, or confirm the provider connection is signed in and available.
+
 ### Refreshing and qualifying the fleet
 
 The application performs a complete catalog check at launch and repeats it every 24 hours. **Check for new models** forces a complete rediscovery. Starting a run also refreshes when the last catalog check is stale or a Codex, Claude, or Antigravity CLI version changed.
