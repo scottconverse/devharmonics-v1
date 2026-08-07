@@ -10674,3 +10674,95 @@ test("physical schema 37 to current migration preserves owner validators and its
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test("countAttemptsStartedForProject scopes to project_path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectA = "/path/to/projectA";
+    const projectB = "/path/to/projectB";
+    const runA = ledger.createRun("Goal A", projectA);
+    const runB = ledger.createRun("Goal B", projectB);
+
+    ledger.savePlan(runA, {
+      summary: "Task A",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-a", title: "Task A", description: "Work A", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+    ledger.savePlan(runB, {
+      summary: "Task B",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-b", title: "Task B", description: "Work B", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    ledger.startAttempt(runA, "task-a", "codex", "prompt A");
+    ledger.startAttempt(runB, "task-b", "codex", "prompt B");
+
+    const countA = ledger.countAttemptsStartedForProject(projectA, 60 * 60 * 1000);
+    const countB = ledger.countAttemptsStartedForProject(projectB, 60 * 60 * 1000);
+
+    assert.equal(countA, 1, "Project A should only count its own attempt");
+    assert.equal(countB, 1, "Project B should only count its own attempt");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("countAttemptsStartedForProject includes running attempts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const runId = ledger.createRun("Goal", projectPath);
+
+    ledger.savePlan(runId, {
+      summary: "Task",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-1", title: "Task", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    const attemptId = ledger.startAttempt(runId, "task-1", "codex", "prompt");
+
+    const countBeforeFinish = ledger.countAttemptsStartedForProject(projectPath, 60 * 60 * 1000);
+    assert.equal(countBeforeFinish, 1, "Running attempt should be counted");
+
+    ledger.finishAttempt(attemptId, "completed", "done", "", { resultEnvelope: normalizeAgentResult("worker", "done") });
+
+    const countAfterFinish = ledger.countAttemptsStartedForProject(projectPath, 60 * 60 * 1000);
+    assert.equal(countAfterFinish, 1, "Finished attempt should still be counted");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("countAttemptsStartedForProject respects rolling window", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-ledger-count-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const runId = ledger.createRun("Goal", projectPath);
+
+    ledger.savePlan(runId, {
+      summary: "Task",
+      recommendedConcurrency: 1,
+      tasks: [{ id: "task-1", title: "Task", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] }],
+    });
+
+    const attemptId = ledger.startAttempt(runId, "task-1", "codex", "prompt");
+
+    const now = new Date();
+    const oneHourMs = 60 * 60 * 1000;
+
+    const countWithinWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, now);
+    assert.equal(countWithinWindow, 1, "Attempt within window should be counted");
+
+    const twoHoursLater = new Date(now.getTime() + 2 * oneHourMs);
+    const countOutsideWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, twoHoursLater);
+    assert.equal(countOutsideWindow, 0, "Attempt outside window should not be counted");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
