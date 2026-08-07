@@ -13,7 +13,7 @@ import { parseAntigravityModelList, type ProviderStatus } from "../src/doctor.js
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
-import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
+import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, fanoutCeilingReached, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
 import { extractCitations, verifyReportCitations } from "../src/citations.js";
 import { boundedThinkingSettings, discoverOllama, minimalThinking, OllamaAdapter, qualifyOllamaModel, syncOllamaRegistry, syncOllamaRuntimes } from "../src/ollama.js";
 import {
@@ -10839,6 +10839,123 @@ test("countAttemptsStartedForProject respects rolling window", async () => {
     const twoHoursLater = new Date(now.getTime() + 2 * oneHourMs);
     const countOutsideWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, twoHoursLater);
     assert.equal(countOutsideWindow, 0, "Attempt outside window should not be counted");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("fanoutCeilingReached boundary test: admission allowed up to ceiling, held at ceiling, allowed after window passes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-boundary-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const maxWorkers = 2;
+    const oneHourMs = 60 * 60 * 1000;
+
+    const runId = ledger.createRun("Goal", projectPath);
+    const plan: RunPlan = {
+      summary: "Fanout test",
+      recommendedConcurrency: 4,
+      revision: 1,
+      tasks: [
+        { id: "t1", title: "T1", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t2", title: "T2", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t3", title: "T3", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+      ],
+    };
+    ledger.savePlan(runId, plan);
+
+    assert.equal(fanoutCeilingReached(0, maxWorkers), false, "0 attempts < ceiling 2: allowed");
+    assert.equal(fanoutCeilingReached(1, maxWorkers), false, "1 attempt < ceiling 2: allowed");
+    assert.equal(fanoutCeilingReached(2, maxWorkers), true, "2 attempts == ceiling 2: held");
+    assert.equal(fanoutCeilingReached(3, maxWorkers), true, "3 attempts > ceiling 2: held");
+
+    ledger.startAttempt(runId, "t1", "codex", "prompt 1");
+    const count1 = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
+    assert.equal(count1, 1, "First attempt counted");
+    assert.equal(fanoutCeilingReached(count1, maxWorkers), false, "At 1, ceiling not reached");
+
+    ledger.startAttempt(runId, "t2", "codex", "prompt 2");
+    const count2 = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
+    assert.equal(count2, 2, "Second attempt counted");
+    assert.equal(fanoutCeilingReached(count2, maxWorkers), true, "At 2, ceiling reached");
+
+    const ready = plan.tasks.map((t) => ({ ...t, permission: "workspace_write", risk: "medium", kind: "implementation", repositoryIds: [], repositoryScope: ["."], acceptanceCriteria: [], expectedArtifacts: [], capabilityNeeds: [] })) as unknown as PlannedTask[];
+    let admissionHeld = false;
+    if (fanoutCeilingReached(count2, maxWorkers)) {
+      ledger.recordSteeringDirective({ runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
+      admissionHeld = true;
+    }
+    const steered = planSteeredAdmission({ pending: ledger.pendingSteeringDirectives(runId), ready, admissionHeld, allowedProviders: ["codex"] });
+    assert.equal(steered.admissionHeld, true, "planSteeredAdmission respects the hold");
+    assert.deepEqual(steered.ordered, [], "No tasks admitted when held");
+
+    const twoHoursLater = new Date(Date.now() + 2 * oneHourMs);
+    const countAfterWindow = ledger.countAttemptsStartedForProject(projectPath, oneHourMs, twoHoursLater);
+    assert.equal(countAfterWindow, 0, "Attempts outside window not counted");
+    assert.equal(fanoutCeilingReached(countAfterWindow, maxWorkers), false, "After window passes, ceiling no longer reached");
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test("fanout ceiling breach effects: hold_admission directive, scheduler.fanout_held event, in-flight work preserved", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-breach-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  try {
+    const projectPath = "/path/to/project";
+    const maxWorkers = 2;
+    const windowHours = 1;
+    const oneHourMs = 60 * 60 * 1000;
+
+    const runId = ledger.createRun("Goal", projectPath);
+    const plan: RunPlan = {
+      summary: "Fanout breach test",
+      recommendedConcurrency: 4,
+      revision: 1,
+      tasks: [
+        { id: "t1", title: "T1", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t2", title: "T2", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+        { id: "t3", title: "T3", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
+      ],
+    };
+    ledger.savePlan(runId, plan);
+
+    const attemptId1 = ledger.startAttempt(runId, "t1", "codex", "prompt 1");
+    const attemptId2 = ledger.startAttempt(runId, "t2", "codex", "prompt 2");
+
+    const admitted = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
+    assert.equal(admitted, 2, "Two attempts started");
+    assert.ok(fanoutCeilingReached(admitted, maxWorkers), "Ceiling reached");
+
+    ledger.recordSteeringDirective({ runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
+    const message = `Fan-out ceiling reached: ${admitted} attempts started in the last ${windowHours} hour(s), meeting the configured ceiling of ${maxWorkers} (application.fanout.maxWorkers). Attempts already running will finish and their work is kept; no new tasks will be admitted. Resume admission from the run's Steering controls once you have confirmed this fan-out is intended, or raise the ceiling.`;
+    ledger.addEvent(runId, "scheduler.fanout_held", message, { admitted, maxWorkers, windowHours });
+
+    const directives = ledger.listSteeringDirectives(runId);
+    const holdDirective = directives.find((d) => d.kind === "hold_admission" && d.actor === "fanout-ceiling");
+    assert.ok(holdDirective, "A hold_admission steering directive exists for the run");
+    assert.equal(holdDirective.disposition, "pending", "Directive is pending");
+
+    const run = ledger.getRun(runId);
+    const fanoutEvent = run?.events.find((e) => e.kind === "scheduler.fanout_held");
+    assert.ok(fanoutEvent, "A scheduler.fanout_held event exists");
+    assert.ok(fanoutEvent.message.includes(String(admitted)), "Event message contains the count");
+    assert.ok(fanoutEvent.message.includes(String(maxWorkers)), "Event message contains the ceiling");
+    assert.ok(fanoutEvent.message.includes(String(windowHours)), "Event message contains the window");
+
+    const dbPath = path.join(root, "devharmonics.db");
+    const database = new DatabaseSync(dbPath);
+    try {
+      const attempt1 = database.prepare("SELECT status FROM attempts WHERE id = ?").get(attemptId1) as { status: string };
+      const attempt2 = database.prepare("SELECT status FROM attempts WHERE id = ?").get(attemptId2) as { status: string };
+      assert.equal(attempt1.status, "running", "First in-flight attempt still running");
+      assert.equal(attempt2.status, "running", "Second in-flight attempt still running");
+    } finally {
+      database.close();
+    }
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
