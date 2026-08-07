@@ -2657,6 +2657,84 @@ test("review lens coverage is a quorum dimension and receipts record the lens", 
   }
 });
 
+test("application.fanout defaults when missing from existing configs", () => {
+  // A realistic pre-existing v2 config that predates the fanout block.
+  const legacyV2Config = {
+    version: 2,
+    application: {
+      concurrency: {
+        mode: "auto",
+        agents: 8,
+        ceiling: null,
+      },
+      retry: {
+        maxAttempts: 3,
+        backoffMs: 1_500,
+      },
+      // fanout is absent
+    },
+    connections: {
+      codex: { enabled: true, command: "codex", timeoutMs: 1_800_000 },
+      claude: { enabled: true, command: "claude", timeoutMs: 1_800_000 },
+      gemini: { enabled: true, command: "agy", timeoutMs: 1_800_000 },
+    },
+    localRuntimes: {
+      ollama: [{ id: "system", displayName: "System Ollama", baseUrl: "http://127.0.0.1:11434", enabled: true }],
+    },
+    openRouter: {
+      enabled: false,
+      allowPaidFallback: false,
+      perRunLimitUsd: 0,
+      monthlyLimitUsd: 0,
+    },
+    product: {
+      architect: "claude",
+      reviewer: "codex",
+      workers: ["codex", "claude", "gemini"],
+    },
+    repository: {
+      validators: {},
+      generatedValidators: {},
+    },
+    runPolicy: {
+      autonomy: "supervised",
+      requirePlanApproval: false,
+      allowPaidApi: false,
+      allowExternalWrites: false,
+    },
+    reviewPolicy: {
+      reviewerCountByRisk: { low: 1, medium: 1, high: 2 },
+      minimumDistinctProvidersByRisk: { low: 1, medium: 1, high: 2 },
+      requireImplementorIndependenceByRisk: { low: false, medium: true, high: true },
+      requiredLensesByRisk: { low: ["artifact"], medium: ["artifact"], high: ["artifact", "claims"] },
+      attestNoManagedClaudePolicy: false,
+      maxFixRounds: 2,
+    },
+    routing: {
+      mode: "adaptive",
+      architect: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      worker: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      reviewer: { modelId: null, effort: "high", preferredTier: "auto", upgradePolicy: "pinned" },
+      allowFallback: true,
+    },
+  };
+
+  const parsed = devHarmonicsConfigSchema.parse(legacyV2Config);
+  assert.deepEqual(parsed.application.fanout, { maxWorkers: 200, windowHours: 1 }, "a config written before fanout existed still parses with fanout defaults");
+
+  // Partial fanout should fill missing fields with defaults.
+  const partialFanoutConfig = {
+    ...legacyV2Config,
+    application: {
+      ...legacyV2Config.application,
+      fanout: { maxWorkers: 5 }, // windowHours is missing
+    },
+  };
+
+  const partialParsed = devHarmonicsConfigSchema.parse(partialFanoutConfig);
+  assert.deepEqual(partialParsed.application.fanout, { maxWorkers: 5, windowHours: 1 }, "partial fanout fills windowHours with default");
+});
+
 test("review lens bundles decorrelate what each reviewer is shown", async () => {
   const promptsModule = await import("../src/prompts.js") as Record<string, any>;
   const reviewModule = await import("../src/review.js") as Record<string, any>;

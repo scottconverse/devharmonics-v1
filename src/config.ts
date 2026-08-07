@@ -18,6 +18,10 @@ export const defaultConfig: DevHarmonicsConfig = {
       maxAttempts: 3,
       backoffMs: 1_500,
     },
+    fanout: {
+      maxWorkers: 200,
+      windowHours: 1,
+    },
   },
   connections: {
     codex: { enabled: true, command: "codex", timeoutMs: 30 * 60_000 },
@@ -134,7 +138,7 @@ export async function loadConfig(projectPath: string): Promise<DevHarmonicsConfi
     const legacy = parseConfig(legacyDevHarmonicsConfigSchema, raw, destination);
     const migrated: DevHarmonicsConfig = {
       version: 2,
-      application: { concurrency: legacy.concurrency, retry: legacy.retry },
+      application: { concurrency: legacy.concurrency, retry: legacy.retry, fanout: { maxWorkers: 200, windowHours: 1 } },
       connections: legacy.providers,
       localRuntimes: structuredClone(defaultConfig.localRuntimes),
       openRouter: structuredClone(defaultConfig.openRouter),
