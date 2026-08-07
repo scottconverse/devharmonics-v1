@@ -102,7 +102,7 @@ export async function inspectProviders(
           });
           authenticated = auth.exitCode === 0;
           if (authenticated && name === "gemini") {
-            visibleModels = auth.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+            visibleModels = parseAntigravityModelList(auth.stdout);
           } else if (authenticated && name === "codex" && /^codex(?:\.cmd|\.exe)?$/i.test(path.basename(command))) {
             visibleModels = await discoverCodexModels();
           }
@@ -236,4 +236,26 @@ function providerStatus(input: {
 
 function firstLine(value: string): string {
   return value.trim().split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
+}
+
+/**
+ * `agy models` prints one model per line as `id<TAB>Display Name`, preceded by
+ * a human progress line. Taking the whole line as the model name welded the
+ * display name onto the identifier — `gemini-3.1-pro-high` became
+ * `gemini-3.1-pro-high\tGemini 3.1 Pro (High)`, which normalises to the id
+ * `gemini-3-1-pro-high-gemini-3-1-pro-high`. Every Antigravity model was
+ * registered under an identifier the CLI does not recognise, so every one of
+ * them failed qualification and the provider could not be used at all — while
+ * the doctor still reported it READY.
+ *
+ * Only the field before the first tab is the identifier. Lines without a tab
+ * are kept as-is so an older single-column output still works, but anything
+ * containing whitespace is not a model id (it is progress or prose) and is
+ * dropped rather than registered as a phantom model.
+ */
+export function parseAntigravityModelList(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.split("\t")[0]?.trim() ?? "")
+    .filter((id) => id.length > 0 && !/\s/.test(id));
 }
