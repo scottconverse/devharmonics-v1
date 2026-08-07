@@ -856,7 +856,7 @@ function providerDisplayName(provider) {
 // sentence, rendered from this single source instead of a page-title ternary
 // that used to carry different, inconsistent copy per branch.
 const VIEW_DESCRIPTIONS = {
-  inbox: { title: "", purpose: "Every decision waiting on you, across every run." },
+  inbox: { title: "Inbox", purpose: "Every decision waiting on you, across every run." },
   runs: { title: "Runs", purpose: "Define an objective, approve the team's plan, and watch the work happen." },
   workbench: { title: "Workbench", purpose: "Ask one or more models questions about a project — read-only, nothing runs, nothing changes. Turn a good discussion into an objective when you're ready." },
   products: { title: "Products", purpose: "Register the real products and repositories the team works on, and see what DevHarmonics has verified about them." },
