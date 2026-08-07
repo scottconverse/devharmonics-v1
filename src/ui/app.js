@@ -856,7 +856,7 @@ function providerDisplayName(provider) {
 // sentence, rendered from this single source instead of a page-title ternary
 // that used to carry different, inconsistent copy per branch.
 const VIEW_DESCRIPTIONS = {
-  inbox: { title: "Inbox", purpose: "Every decision waiting on you, across every run." },
+  inbox: { title: "", purpose: "Every decision waiting on you, across every run." },
   runs: { title: "Runs", purpose: "Define an objective, approve the team's plan, and watch the work happen." },
   workbench: { title: "Workbench", purpose: "Ask one or more models questions about a project — read-only, nothing runs, nothing changes. Turn a good discussion into an objective when you're ready." },
   products: { title: "Products", purpose: "Register the real products and repositories the team works on, and see what DevHarmonics has verified about them." },
@@ -1464,12 +1464,13 @@ async function refreshWorkbench(preferredSessionId = state.workbenchSession?.id)
 function renderWorkbench() {
   $("#workbench-count").textContent = `${state.workbenchSessions.length} saved discussions`;
   $("#workbench-session-list").innerHTML = state.workbenchSessions.length
-    ? state.workbenchSessions.map((session) => `<button class="workbench-session ${session.id === state.workbenchSession?.id ? "active" : ""}" type="button" data-workbench-session="${escapeHtml(session.id)}"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.projectPath)}</span></button>`).join("")
+    ? state.workbenchSessions.map((session) => `<button class="workbench-session ${session.id === state.workbenchSession?.id ? "active" : ""}" type="button" data-workbench-session="${escapeHtml(session.id)}" title="${escapeHtml(session.title)}"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.projectPath)}</span></button>`).join("")
     : '<div class="empty-state">No discussions yet.</div>';
   $("#workbench-empty").classList.toggle("hidden", Boolean(state.workbenchSession));
   $("#workbench-active").classList.toggle("hidden", !state.workbenchSession);
   if (!state.workbenchSession) return;
   $("#workbench-active-title").textContent = state.workbenchSession.title;
+  $("#workbench-active-title").title = state.workbenchSession.title;
   $("#workbench-active-project").textContent = state.workbenchSession.projectPath;
   $("#workbench-messages").innerHTML = state.workbenchMessages.length
     ? state.workbenchMessages.map((message) => {
