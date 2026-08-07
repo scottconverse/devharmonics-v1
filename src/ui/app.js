@@ -47,6 +47,10 @@ const state = {
   // demand ("View history") rather than eagerly for every listed record.
   decisions: [],
   decisionChains: {},
+  // Page-session flag: has the user manually changed the Models status filter?
+  // When false, opening the Models view auto-sets the filter to 'active' if any
+  // model is schedulable. Not persisted; page reload starts fresh.
+  modelStatusFilterTouched: false,
 };
 
 function reconciliationKey(runId, repositoryId) {
@@ -946,6 +950,13 @@ async function refreshFleet() {
   state.performanceProfiles = performance.profiles;
   state.performancePolicies = performance.policies;
   state.openRouter = openRouter;
+  // Auto-filter: when opening the Models view for the first time (user hasn't
+  // touched the filter yet), default to showing only schedulable models if any
+  // exist, otherwise show all. Other views (runs, setup) leave the filter alone.
+  if (state.view === "models" && !state.modelStatusFilterTouched) {
+    const anySchedulable = state.models.some((model) => !model.retired && isModelSchedulable(model));
+    $("#model-status-filter").value = anySchedulable ? "active" : "all";
+  }
   renderConnections();
   renderModels();
   renderOpenRouterStatus();
@@ -3114,7 +3125,10 @@ $("#openrouter-disconnect").addEventListener("click", async () => {
 
 $("#openrouter-search").addEventListener("click", searchOpenRouterCatalog);
 $("#model-filter").addEventListener("input", renderModels);
-$("#model-status-filter").addEventListener("change", renderModels);
+$("#model-status-filter").addEventListener("change", () => {
+  state.modelStatusFilterTouched = true;
+  renderModels();
+});
 $("#openrouter-model-query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void searchOpenRouterCatalog(); } });
 async function searchOpenRouterCatalog() {
   const query = $("#openrouter-model-query").value.trim();
