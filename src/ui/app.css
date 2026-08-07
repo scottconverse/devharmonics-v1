@@ -230,9 +230,12 @@ button { cursor: pointer; }
 .workbench-session { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #0d1014; color: var(--text); text-align: left; }
 .workbench-session.active { border-color: #59663e; background: var(--lime-dark); }
 .workbench-session strong, .workbench-session span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.workbench-session strong { white-space: nowrap; }
 .workbench-session span { color: var(--muted); font-size: 10px; margin-top: 5px; white-space: nowrap; }
 .workbench-heading { align-items: flex-start; }
-.workbench-heading h2 { font-size: 22px; }
+.workbench-heading > div { min-width: 0; }
+.workbench-heading > div > div { min-width: 0; }
+.workbench-heading h2 { font-size: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workbench-heading p { margin: 5px 0 0; overflow-wrap: anywhere; }
 .workbench-messages { display: grid; gap: 12px; margin: 20px 0; }
 .workbench-message { padding: 15px; border: 1px solid var(--border); border-radius: 11px; background: #0d1014; }
