@@ -87,24 +87,58 @@ export function applicableReviewLenses(requirement: Pick<ReviewRequirement, "req
   return [...requirement.requiredLenses];
 }
 
-function firstVerdict(text: string): "READY" | "NOT_READY" {
-  // Reviewers routinely emphasise the verdict line — "**READY**", "## READY",
-  // "READY:" — because they are writing Markdown. Comparing the raw line meant
-  // a reviewer that APPROVED the work was recorded as rejecting it, the run
-  // went NOT READY, and the fixer stage then failed for want of an independent
-  // implementor. A whole correct run dead-ended on a pair of asterisks.
-  //
-  // Only decoration is stripped: emphasis characters, heading marks, and a
-  // trailing separator. Nothing here can turn a hedge ("READY?", "READY, but
-  // ...") into an approval — anything that is not exactly the word READY after
-  // decoration is removed still fails closed.
-  const firstLine = text.trimStart().split(/\r?\n/, 1)[0] ?? "";
-  const normalized = firstLine
+/** Strip Markdown decoration and a trailing separator, leaving the bare words. */
+function undecorate(line: string): string {
+  return line
     .replace(/[*_`#]/g, "")
     .replace(/[\s:.]+$/u, "")
     .trim()
     .toUpperCase();
-  return normalized === "READY" ? "READY" : "NOT_READY";
+}
+
+/** Index of the line carrying the verdict, or -1 when no line states one. */
+export function verdictLineIndex(text: string): number {
+  const lines = text.trimStart().split(/\r?\n/);
+  for (let index = 0; index < Math.min(lines.length, VERDICT_SCAN_LINES); index += 1) {
+    const line = undecorate(lines[index] ?? "");
+    if (line === "READY" || line === "NOT READY" || line === "NOT_READY") return index;
+  }
+  return -1;
+}
+
+/**
+ * How many leading lines may precede the verdict. Reviewers open with a
+ * sentence of preamble often enough that demanding line 1 is not tenable, but
+ * the window stays small so a verdict word buried deep in prose is never read
+ * as the verdict.
+ */
+const VERDICT_SCAN_LINES = 8;
+
+function firstVerdict(text: string): "READY" | "NOT_READY" {
+  // This gate has produced false NEGATIVES twice in production, both times
+  // blocking correct work and reporting a finding that did not exist:
+  //
+  //   "**READY**"                          — Markdown emphasis, because
+  //                                          reviewers write Markdown.
+  //   "Based on my review ... \n\nREADY"   — one sentence of preamble before
+  //                                          the verdict.
+  //
+  // So: strip decoration, and scan a bounded window of leading lines for a
+  // line that is EXACTLY a verdict. Requiring an exact match is what keeps
+  // this safe — prose can never match, so a hedge cannot become an approval.
+  //
+  // It stays fail-closed in every direction. "READY?", "READY, with
+  // reservations", "Mostly READY" and a response with no verdict at all are
+  // all NOT_READY, and a NOT READY anywhere in the window wins over an earlier
+  // READY.
+  const lines = text.trimStart().split(/\r?\n/);
+  let sawReady = false;
+  for (let index = 0; index < Math.min(lines.length, VERDICT_SCAN_LINES); index += 1) {
+    const line = undecorate(lines[index] ?? "");
+    if (line === "NOT READY" || line === "NOT_READY") return "NOT_READY";
+    if (line === "READY") sawReady = true;
+  }
+  return sawReady ? "READY" : "NOT_READY";
 }
 
 function parseReviewJson(text: string): { findings: unknown[]; claimedChanges: unknown[] | null } {
@@ -180,7 +214,12 @@ export function parseReviewerResponse(
   const claimedChanges = normalizedChanges === null || normalizedChanges.some((change) => change === null)
     ? null
     : normalizedChanges as ClaimedChange[];
-  const body = text.trim().split(/\r?\n/).slice(1).join("\n").replace(/```json[\s\S]*?```/gi, "").trim();
+  // Drop everything up to and including the verdict line, so a preamble and
+  // the verdict word itself do not leak into the rendered summary. Falls back
+  // to dropping only the first line when no verdict line was found.
+  const verdictIndex = verdictLineIndex(text);
+  const body = text.trim().split(/\r?\n/).slice(verdictIndex >= 0 ? verdictIndex + 1 : 1)
+    .join("\n").replace(/```json[\s\S]*?```/gi, "").trim();
   const findings = verdict === "NOT_READY" && normalized.length === 0
     ? [{
         id: "finding-1",

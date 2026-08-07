@@ -1676,6 +1676,43 @@ test("Antigravity model lines are split on the tab, not welded into the identifi
   assert.deepEqual(parseAntigravityModelList("Fetching available models...\nNo models found."), []);
 });
 
+test("a verdict stated after a sentence of preamble is read as the verdict", () => {
+  // Regression, observed in production: a reviewer opened with one sentence
+  // before stating READY, the gate read only line 1, and a correct run was
+  // recorded NOT READY with one open finding that did not exist. This is the
+  // exact text that was misread.
+  const origin = { provider: "claude", modelId: "claude:test", connectionId: "subscription-cli:claude" } as const;
+  const production = [
+    "Based on my thorough review of the combined diff and repository state, I can now provide my verdict.",
+    "",
+    "READY",
+    "",
+    "**Evidence Summary:**",
+    "",
+    "1. **File changes are correctly scoped:** Only `src/ui/app.js` was modified.",
+  ].join("\n");
+
+  const review = parseReviewerResponse(production, origin);
+  assert.equal(review.verdict, "READY");
+  // The preamble and the verdict word must not leak into the rendered summary.
+  assert.ok(!review.summary.startsWith("READY"), "summary must not begin with the verdict word");
+  assert.ok(!review.summary.includes("I can now provide my verdict"), "summary must not carry the preamble");
+  assert.match(review.summary, /Evidence Summary/);
+
+  // A preamble before a REJECTION is still a rejection.
+  assert.equal(parseReviewerResponse("Here is my assessment.\n\nNOT READY\n\nA defect remains.", origin).verdict, "NOT_READY");
+
+  // A rejection anywhere in the window beats an earlier approval.
+  assert.equal(parseReviewerResponse("READY\n\nActually, on reflection:\n\nNOT READY\n\nBlocking issue.", origin).verdict, "NOT_READY");
+
+  // A verdict word buried far below the scan window is not a verdict.
+  const buried = ["preamble", "", "", "", "", "", "", "", "", "READY"].join("\n");
+  assert.equal(parseReviewerResponse(buried, origin).verdict, "NOT_READY");
+
+  // Prose that merely contains the word is never a verdict.
+  assert.equal(parseReviewerResponse("The branch looks ready to me.\n\nEvidence follows.", origin).verdict, "NOT_READY");
+});
+
 test("a Markdown-emphasised verdict line is read as the verdict, and hedges still fail closed", () => {
   // Regression: reviewers write Markdown, so an approving reviewer opening with
   // "**READY**" was recorded as NOT_READY. The run then went NOT READY and the
