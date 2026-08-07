@@ -872,20 +872,12 @@ export class Orchestrator {
       for (const item of steered.rejected) this.ledger.resolveSteeringDirective(item.id, { disposition: "rejected", reason: item.reason });
       const ready = steered.ordered;
 
-      // Fan-out ceiling: a backstop against misconfigured concurrency. Enforced at
-      // admission time, so up to concurrency-many attempts already in flight may
-      // still complete beyond this ceiling — it is a bound, not an exact cap.
-      if (!admissionHeld && ready.length) {
-        const fanout = config.application.fanout;
-        const projectPath = this.ledger.getRun(runId)!.projectPath;
-        const admitted = this.ledger.countAttemptsStartedForProject(projectPath, fanout.windowHours * 3_600_000);
-        if (fanoutCeilingReached(admitted, fanout.maxWorkers)) {
-          this.ledger.recordSteeringDirective({ runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
-          const message = `Fan-out ceiling reached: ${admitted} attempts started in the last ${fanout.windowHours} hour(s), meeting the configured ceiling of ${fanout.maxWorkers} (application.fanout.maxWorkers). Attempts already running will finish and their work is kept; no new tasks will be admitted. Resume admission from the run's Steering controls once you have confirmed this fan-out is intended, or raise the ceiling.`;
-          this.ledger.addEvent(runId, "scheduler.fanout_held", message, { admitted, maxWorkers: fanout.maxWorkers, windowHours: fanout.windowHours });
-          admissionHeld = true;
-          ready.length = 0;
-        }
+      // Fan-out ceiling: a backstop against a misconfigured concurrency. See
+      // applyFanoutCeiling for the guarantee it actually provides.
+      if (!admissionHeld && ready.length
+        && applyFanoutCeiling({ ledger: this.ledger, runId, fanout: config.application.fanout })) {
+        admissionHeld = true;
+        ready.length = 0;
       }
 
       while (active.size < concurrency && ready.length) {
@@ -1430,20 +1422,12 @@ export class Orchestrator {
         for (const item of steered.rejected) this.ledger.resolveSteeringDirective(item.id, { disposition: "rejected", reason: item.reason });
         const ready = steered.ordered;
 
-        // Fan-out ceiling: a backstop against misconfigured concurrency. Enforced at
-        // admission time, so up to concurrency-many attempts already in flight may
-        // still complete beyond this ceiling — it is a bound, not an exact cap.
-        if (!admissionHeld && ready.length) {
-          const fanout = input.config.application.fanout;
-          const projectPath = this.ledger.getRun(input.runId)!.projectPath;
-          const admitted = this.ledger.countAttemptsStartedForProject(projectPath, fanout.windowHours * 3_600_000);
-          if (fanoutCeilingReached(admitted, fanout.maxWorkers)) {
-            this.ledger.recordSteeringDirective({ runId: input.runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
-            const message = `Fan-out ceiling reached: ${admitted} attempts started in the last ${fanout.windowHours} hour(s), meeting the configured ceiling of ${fanout.maxWorkers} (application.fanout.maxWorkers). Attempts already running will finish and their work is kept; no new tasks will be admitted. Resume admission from the run's Steering controls once you have confirmed this fan-out is intended, or raise the ceiling.`;
-            this.ledger.addEvent(input.runId, "scheduler.fanout_held", message, { admitted, maxWorkers: fanout.maxWorkers, windowHours: fanout.windowHours });
-            admissionHeld = true;
-            ready.length = 0;
-          }
+        // Fan-out ceiling: a backstop against a misconfigured concurrency. See
+        // applyFanoutCeiling for the guarantee it actually provides.
+        if (!admissionHeld && ready.length
+          && applyFanoutCeiling({ ledger: this.ledger, runId: input.runId, fanout: input.config.application.fanout })) {
+          admissionHeld = true;
+          ready.length = 0;
         }
 
         while (active.size < concurrency && ready.length) {
@@ -3253,6 +3237,52 @@ export function planSteeredAdmission(input: {
  */
 export function fanoutCeilingReached(attemptsStartedInWindow: number, maxWorkers: number): boolean {
   return attemptsStartedInWindow >= maxWorkers;
+}
+
+/**
+ * The fan-out ceiling gate itself, in one place so both scheduler loops share
+ * exactly one implementation and a test can drive the real thing.
+ *
+ * A backstop against a misconfigured concurrency, not an exact cap: it is
+ * evaluated at admission time, so up to concurrency-many attempts already in
+ * flight may still complete beyond the ceiling. That bound is the honest
+ * guarantee — anything stronger would need the count and the attempt insert to
+ * be one transaction.
+ *
+ * Returns true when admission must be held. The caller stops admitting.
+ */
+export function applyFanoutCeiling(input: {
+  ledger: Ledger;
+  runId: string;
+  fanout: { maxWorkers: number; windowHours: number };
+}): boolean {
+  const run = input.ledger.getRun(input.runId);
+  // No run row means nothing to scope the count to. Fail OPEN rather than
+  // wedging a run that the ledger cannot describe — the ceiling is a backstop,
+  // and refusing all work because of a lookup miss would be worse than the
+  // fan-out it guards against.
+  if (!run) return false;
+  const windowMs = input.fanout.windowHours * 3_600_000;
+  const admitted = input.ledger.countAttemptsStartedForProject(run.projectPath, windowMs);
+  if (!fanoutCeilingReached(admitted, input.fanout.maxWorkers)) return false;
+  input.ledger.recordSteeringDirective({
+    runId: input.runId,
+    kind: "hold_admission",
+    targetTaskId: null,
+    actor: "fanout-ceiling",
+    payload: {},
+  });
+  input.ledger.addEvent(
+    input.runId,
+    "scheduler.fanout_held",
+    `Fan-out ceiling reached: ${admitted} attempts started in the last ${input.fanout.windowHours} hour(s), `
+    + `meeting the configured ceiling of ${input.fanout.maxWorkers} (application.fanout.maxWorkers). `
+    + "Attempts already running will finish and their work is kept; no new tasks will be admitted. "
+    + "Resume admission from the run's Steering controls once you have confirmed this fan-out is intended, "
+    + "or raise the ceiling.",
+    { admitted, maxWorkers: input.fanout.maxWorkers, windowHours: input.fanout.windowHours },
+  );
+  return true;
 }
 
 export function assignReviewFindings(

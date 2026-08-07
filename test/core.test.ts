@@ -13,7 +13,7 @@ import { parseAntigravityModelList, type ProviderStatus } from "../src/doctor.js
 import { projectLegacyProvider } from "../src/compatibility.js";
 import { assertRunTransition, assertTaskTransition, domainId, type RunEvent } from "../src/domain.js";
 import { LEDGER_SCHEMA_VERSION, Ledger } from "../src/ledger.js";
-import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, fanoutCeilingReached, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
+import { architectValidatorNames, assignReviewFindings, describeReviewerUnavailability, buildRepositoryContext, canRoute, createReviewEvidenceBinding, applyFanoutCeiling, fanoutCeilingReached, Orchestrator, workerClassProbe, parseFirstJsonObject, planSteeredAdmission, repositoryTaskIds, reviewEvidenceBindingSha256, settleActiveAttemptsIfAborted, taskAttemptTimeoutMs } from "../src/orchestrator.js";
 import { extractCitations, verifyReportCitations } from "../src/citations.js";
 import { boundedThinkingSettings, discoverOllama, minimalThinking, OllamaAdapter, qualifyOllamaModel, syncOllamaRegistry, syncOllamaRuntimes } from "../src/ollama.js";
 import {
@@ -10901,61 +10901,73 @@ test("fanoutCeilingReached boundary test: admission allowed up to ceiling, held 
   }
 });
 
-test("fanout ceiling breach effects: hold_admission directive, scheduler.fanout_held event, in-flight work preserved", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-breach-"));
+test("the fan-out gate itself records the hold, the event, and its own message", async () => {
+  // The gate's own code must be exercised. An earlier version of this test
+  // called recordSteeringDirective and addEvent itself with a hand-copied
+  // message, which proved only that the ledger can store rows -- deleting the
+  // entire gate would have left it passing. applyFanoutCeiling is the real
+  // implementation both scheduler loops call.
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-fanout-gate-"));
   const ledger = new Ledger(path.join(root, "devharmonics.db"));
   try {
     const projectPath = "/path/to/project";
-    const maxWorkers = 2;
-    const windowHours = 1;
-    const oneHourMs = 60 * 60 * 1000;
-
+    const fanout = { maxWorkers: 2, windowHours: 1 };
     const runId = ledger.createRun("Goal", projectPath);
-    const plan: RunPlan = {
-      summary: "Fanout breach test",
+    ledger.savePlan(runId, {
+      summary: "Fanout gate test",
       recommendedConcurrency: 4,
       revision: 1,
       tasks: [
         { id: "t1", title: "T1", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
         { id: "t2", title: "T2", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
-        { id: "t3", title: "T3", description: "Work", dependencies: [], preferredProvider: "codex", checks: [] },
       ],
-    };
-    ledger.savePlan(runId, plan);
+    } as RunPlan);
 
+    // Below the ceiling the gate must not fire, and must leave no trace.
     const attemptId1 = ledger.startAttempt(runId, "t1", "codex", "prompt 1");
+    assert.equal(applyFanoutCeiling({ ledger, runId, fanout }), false, "one attempt is below a ceiling of two");
+    assert.equal(ledger.listSteeringDirectives(runId).length, 0, "no directive is recorded below the ceiling");
+    assert.equal(ledger.getRun(runId)?.events.filter((e) => e.kind === "scheduler.fanout_held").length, 0);
+
+    // At the ceiling it must hold, and the message must come from the gate.
     const attemptId2 = ledger.startAttempt(runId, "t2", "codex", "prompt 2");
+    assert.equal(applyFanoutCeiling({ ledger, runId, fanout }), true, "two attempts meets a ceiling of two");
 
-    const admitted = ledger.countAttemptsStartedForProject(projectPath, oneHourMs);
-    assert.equal(admitted, 2, "Two attempts started");
-    assert.ok(fanoutCeilingReached(admitted, maxWorkers), "Ceiling reached");
+    const hold = ledger.listSteeringDirectives(runId).find((d) => d.kind === "hold_admission" && d.actor === "fanout-ceiling");
+    assert.ok(hold, "the gate records a hold_admission directive attributed to itself");
+    assert.equal(hold.disposition, "pending", "the hold is pending until the owner resumes");
 
-    ledger.recordSteeringDirective({ runId, kind: "hold_admission", targetTaskId: null, actor: "fanout-ceiling", payload: {} });
-    const message = `Fan-out ceiling reached: ${admitted} attempts started in the last ${windowHours} hour(s), meeting the configured ceiling of ${maxWorkers} (application.fanout.maxWorkers). Attempts already running will finish and their work is kept; no new tasks will be admitted. Resume admission from the run's Steering controls once you have confirmed this fan-out is intended, or raise the ceiling.`;
-    ledger.addEvent(runId, "scheduler.fanout_held", message, { admitted, maxWorkers, windowHours });
+    const event = ledger.getRun(runId)?.events.find((e) => e.kind === "scheduler.fanout_held");
+    assert.ok(event, "the gate records a scheduler.fanout_held event");
+    // Written by the implementation, not restated by this test.
+    assert.match(event.message, /Fan-out ceiling reached: 2 attempts started in the last 1 hour\(s\)/);
+    assert.match(event.message, /ceiling of 2 \(application\.fanout\.maxWorkers\)/);
+    assert.match(event.message, /Attempts already running will finish and their work is kept/);
+    assert.match(event.message, /Resume admission from the run's Steering controls/);
 
-    const directives = ledger.listSteeringDirectives(runId);
-    const holdDirective = directives.find((d) => d.kind === "hold_admission" && d.actor === "fanout-ceiling");
-    assert.ok(holdDirective, "A hold_admission steering directive exists for the run");
-    assert.equal(holdDirective.disposition, "pending", "Directive is pending");
+    // The hold stops admission through the same path the scheduler uses.
+    const steered = planSteeredAdmission({
+      pending: ledger.pendingSteeringDirectives(runId),
+      ready: ledger.getRun(runId)!.plan!.tasks,
+      admissionHeld: false,
+      allowedProviders: ["codex"],
+    });
+    assert.equal(steered.admissionHeld, true, "the recorded hold stops admission");
+    assert.deepEqual(steered.ordered, [], "no task is admitted while held");
 
-    const run = ledger.getRun(runId);
-    const fanoutEvent = run?.events.find((e) => e.kind === "scheduler.fanout_held");
-    assert.ok(fanoutEvent, "A scheduler.fanout_held event exists");
-    assert.ok(fanoutEvent.message.includes(String(admitted)), "Event message contains the count");
-    assert.ok(fanoutEvent.message.includes(String(maxWorkers)), "Event message contains the ceiling");
-    assert.ok(fanoutEvent.message.includes(String(windowHours)), "Event message contains the window");
-
-    const dbPath = path.join(root, "devharmonics.db");
-    const database = new DatabaseSync(dbPath);
+    // In-flight work is untouched.
+    const database = new DatabaseSync(path.join(root, "devharmonics.db"));
     try {
-      const attempt1 = database.prepare("SELECT status FROM attempts WHERE id = ?").get(attemptId1) as { status: string };
-      const attempt2 = database.prepare("SELECT status FROM attempts WHERE id = ?").get(attemptId2) as { status: string };
-      assert.equal(attempt1.status, "running", "First in-flight attempt still running");
-      assert.equal(attempt2.status, "running", "Second in-flight attempt still running");
+      for (const id of [attemptId1, attemptId2]) {
+        const row = database.prepare("SELECT status FROM attempts WHERE id = ?").get(id) as { status: string };
+        assert.equal(row.status, "running", "an in-flight attempt keeps running through a hold");
+      }
     } finally {
       database.close();
     }
+
+    // A run the ledger cannot describe fails OPEN rather than wedging.
+    assert.equal(applyFanoutCeiling({ ledger, runId: "no-such-run", fanout }), false, "an unknown run does not hold admission");
   } finally {
     ledger.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
