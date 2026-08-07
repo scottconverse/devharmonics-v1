@@ -59,8 +59,40 @@ const expectations = [
   ["docs/ROLLBACK.md", `backup-v34-to-v38`],
 ];
 
+/**
+ * The list above is a fixed history: each entry was added by hand at the
+ * release that introduced it. That is why it silently stopped enforcing
+ * anything — it reached "37 → 38" while LEDGER_SCHEMA_VERSION moved on to 40,
+ * so migrations 39 and 40 shipped with no rollback instructions and this gate
+ * still passed. A guard that looks like an invariant but is really a frozen
+ * list is worse than no guard.
+ *
+ * This derives the requirement from the live constant instead: whatever the
+ * current schema version is, ROLLBACK.md must document the step that arrives
+ * at it. Bump the schema without documenting the step and the gate fails, this
+ * release and every future one.
+ */
+async function requireCurrentSchemaDocumented(readSource) {
+  const ledger = await readSource("src/ledger.ts");
+  const declared = ledger.match(/export const LEDGER_SCHEMA_VERSION = (\d+);/);
+  if (!declared) return ["src/ledger.ts: LEDGER_SCHEMA_VERSION could not be read, so rollback truth cannot be checked"];
+  const current = Number(declared[1]);
+  const rollback = await readSource("docs/ROLLBACK.md");
+  // Accept either arrow form so the doc's existing style is not forced to change.
+  const documented = new RegExp(`Ledger schema \\d+ (?:→|->) ${current}\\b`).test(rollback);
+  return documented
+    ? []
+    : [`docs/ROLLBACK.md: no rollback step documented for ledger schema ${current}. `
+      + `Add a "Ledger schema ${current - 1} → ${current}" entry describing what that migration changes `
+      + `and what a downgrade loses.`];
+}
+
 const failures = [];
 let checks = 1;
+
+failures.push(...await requireCurrentSchemaDocumented((file) => readFile(path.join(root, file), "utf8")));
+checks += 1;
+
 for (const [file, marker] of expectations) {
   const contents = await readFile(path.join(root, file), "utf8");
   if (!contents.includes(marker)) failures.push(`${file}: missing ${JSON.stringify(marker)}`);
