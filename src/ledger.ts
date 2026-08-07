@@ -3790,6 +3790,20 @@ export class Ledger {
     return this.listModels(input.connectionId).find((model) => model.id === input.id)!;
   }
 
+  /**
+   * Record a model the provider just reported.
+   *
+   * On rediscovery this clears the exclusion that AUTO-RETIREMENT imposed.
+   * reconcileDiscoveredModels sets retired and excluded together when a model
+   * goes missing; clearing only retired left the model permanently
+   * unschedulable while the dashboard told the owner "you turned this model off
+   * on purpose" — which they never did. Observed live: all eleven Antigravity
+   * models returned from an absence still excluded, so no run could route to
+   * that provider at all.
+   *
+   * A model the owner excluded deliberately was never retired, so that choice
+   * survives untouched.
+   */
   upsertDiscoveredModel(input: ModelDiscoveryInput): void {
     const now = new Date().toISOString();
     this.database.prepare(
@@ -3807,6 +3821,7 @@ export class Ledger {
          metadata_json = excluded.metadata_json,
          last_seen_at = excluded.last_seen_at,
          missing_observations = 0,
+         excluded = CASE WHEN models.retired = 1 THEN 0 ELSE models.excluded END,
          retired = 0`,
     ).run(
       input.id, input.connectionId, redactText(input.canonicalName), redactText(input.displayName),

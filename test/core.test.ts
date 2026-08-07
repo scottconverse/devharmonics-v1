@@ -6651,6 +6651,50 @@ test("catalog fingerprints stale qualifications and model retirement requires th
   }
 });
 
+test("a rediscovered model loses the exclusion retirement set, but keeps one the owner chose", async () => {
+  // Observed live: every Antigravity model came back from an absence still
+  // excluded, so no run could route to that provider at all -- while the
+  // dashboard said "you turned this model off on purpose". The owner never did.
+  // reconcileDiscoveredModels sets retired=1 AND excluded=1 together; the
+  // rediscovery upsert cleared only `retired`.
+  const root = await mkdtemp(path.join(os.tmpdir(), "devharmonics-rediscovery-"));
+  const ledger = new Ledger(path.join(root, "devharmonics.db"));
+  const connectionId = "subscription-cli:codex";
+  const discover = (id: string) => ledger.upsertDiscoveredModel({
+    id, connectionId, canonicalName: id.split(":").pop()!, displayName: id.split(":").pop()!,
+    source: "runtime_discovery", lifecycle: "visible", visible: true, verified: false,
+    qualified: false, active: false, metadata: {},
+  });
+  try {
+    ledger.upsertConnection({ id: connectionId, provider: "codex", transport: "subscription_cli", authentication: "subscription", displayName: "Codex", enabled: true, installed: true, authenticated: true, visible: true, healthy: true, available: true, entitlement: "unknown", capacity: "unknown", adapterVersion: "a", runtimeVersion: "r", metadata: {} });
+    const vanished = `${connectionId}:model:vanishes`;
+    const chosen = `${connectionId}:model:owner-excluded`;
+    discover(vanished);
+    discover(chosen);
+
+    // The owner deliberately excludes one model. It is never retired.
+    ledger.setModelPreference(chosen, { excluded: true });
+
+    // The other disappears from discovery until it retires.
+    for (let i = 0; i < 3; i += 1) ledger.reconcileDiscoveredModels(connectionId, "runtime_discovery", [chosen], 3);
+    assert.equal(ledger.getModel(vanished)?.retired, true, "three misses retire it");
+    assert.equal(ledger.getModel(vanished)?.excluded, true, "retirement also excludes it");
+
+    // It comes back.
+    discover(vanished);
+    assert.equal(ledger.getModel(vanished)?.retired, false, "rediscovery un-retires it");
+    assert.equal(ledger.getModel(vanished)?.excluded, false, "and clears the exclusion retirement imposed");
+
+    // The owner's own choice is untouched by rediscovery.
+    discover(chosen);
+    assert.equal(ledger.getModel(chosen)?.excluded, true, "a deliberate exclusion survives rediscovery");
+    assert.equal(ledger.getModel(chosen)?.retired, false);
+  } finally {
+    ledger.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("signed compatibility catalogs reject tampering, replay, expiry, and untrusted keys", () => {
   const root = generateKeyPairSync("ed25519");
   const now = new Date("2026-07-29T12:00:00.000Z");
