@@ -52,6 +52,15 @@ abstract class CliProvider implements ProviderAdapter {
 
   protected abstract argumentsFor(request: ProviderRequest): string[];
   protected abstract extractText(stdout: string): string;
+
+  /**
+   * Token and cost usage the CLI reported for this invocation, when it reports
+   * any. Defaults to unknown so a provider that says nothing stays honestly
+   * null rather than silently counting as zero.
+   */
+  protected extractUsage(_stdout: string): { inputTokens: number | null; outputTokens: number | null; costUsd: number | null } {
+    return { inputTokens: null, outputTokens: null, costUsd: null };
+  }
   protected stdinFor(request: ProviderRequest): string {
     return request.prompt;
   }
@@ -233,7 +242,7 @@ abstract class CliProvider implements ProviderAdapter {
       stderr: result.stderr,
       exitCode: result.exitCode,
       durationMs: result.durationMs,
-      usage: { inputTokens: null, outputTokens: null, costUsd: null },
+      usage: this.extractUsage(result.stdout),
       toolRequests: [],
     };
   }
@@ -432,6 +441,10 @@ export class ClaudeProvider extends CliProvider {
   protected extractText(stdout: string): string {
     return extractClaudeText(stdout);
   }
+
+  protected override extractUsage(stdout: string): { inputTokens: number | null; outputTokens: number | null; costUsd: number | null } {
+    return extractClaudeUsage(stdout);
+  }
 }
 
 export class GeminiProvider extends CliProvider {
@@ -495,6 +508,50 @@ export function extractClaudeText(stdout: string): string {
     if (typeof result === "string") return result;
   }
   throw new Error("Claude completed without a JSON result field");
+}
+
+/**
+ * Pull usage out of Claude Code's `--output-format json` envelope.
+ *
+ * The envelope already carries `usage` and `total_cost_usd`; extractClaudeText
+ * parsed the same JSON and kept only `result`, so every subscription
+ * invocation recorded null tokens and null cost. That made the ledger's usage
+ * columns permanently empty for the primary provider, left the run cost
+ * comparison with nothing to compare, and made a token ceiling impossible to
+ * build honestly.
+ *
+ * Input side sums the plain, cache-creation and cache-read counts: all three
+ * are tokens the model actually processed, which is what a ceiling cares
+ * about. Cost comes from the CLI's own figure rather than a price table, so it
+ * cannot go stale.
+ *
+ * Anything missing or malformed stays null. Null means "not reported" and must
+ * never be coerced to zero — a zero would read as "this call was free".
+ */
+export function extractClaudeUsage(stdout: string): { inputTokens: number | null; outputTokens: number | null; costUsd: number | null } {
+  const unknown = { inputTokens: null, outputTokens: null, costUsd: null };
+  let value: unknown;
+  try {
+    value = parseSingleJson(stdout);
+  } catch {
+    return unknown;
+  }
+  if (typeof value !== "object" || value === null) return unknown;
+  const envelope = value as { usage?: unknown; total_cost_usd?: unknown };
+  const count = (input: unknown): number | null =>
+    typeof input === "number" && Number.isFinite(input) && input >= 0 ? input : null;
+
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+  if (typeof envelope.usage === "object" && envelope.usage !== null) {
+    const usage = envelope.usage as Record<string, unknown>;
+    const parts = [count(usage.input_tokens), count(usage.cache_creation_input_tokens), count(usage.cache_read_input_tokens)];
+    if (parts.some((part) => part !== null)) {
+      inputTokens = parts.reduce((total: number, part) => total + (part ?? 0), 0);
+    }
+    outputTokens = count(usage.output_tokens);
+  }
+  return { inputTokens, outputTokens, costUsd: count(envelope.total_cost_usd) };
 }
 
 export function extractGeminiText(stdout: string): string {

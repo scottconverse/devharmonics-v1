@@ -19,6 +19,7 @@ import { boundedThinkingSettings, discoverOllama, minimalThinking, OllamaAdapter
 import {
   createProvider,
   extractClaudeText,
+  extractClaudeUsage,
   extractCodexText,
   extractGeminiText,
 } from "../src/providers.js";
@@ -66,6 +67,63 @@ test("provider output parsers extract each CLI's final response", () => {
   assert.equal(extractCodexText(codex), "final");
   assert.equal(extractClaudeText(JSON.stringify({ result: "claude result" })), "claude result");
   assert.equal(extractGeminiText("gemini result\n"), "gemini result");
+});
+
+test("Claude Code usage and cost are read from the envelope instead of discarded", () => {
+  // Regression: extractClaudeText parsed this exact envelope and kept only
+  // `result`, so every subscription invocation recorded null tokens and null
+  // cost. The ledger's usage columns were permanently empty for the primary
+  // provider. This fixture is a real `claude -p --output-format json` envelope,
+  // trimmed, not an invented shape.
+  const envelope = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "OK",
+    total_cost_usd: 0.03269,
+    usage: {
+      input_tokens: 2,
+      cache_creation_input_tokens: 3258,
+      cache_read_input_tokens: 0,
+      output_tokens: 4,
+      service_tier: "standard",
+    },
+  });
+
+  // Input side sums plain + cache-creation + cache-read: all tokens the model
+  // actually processed, which is what a ceiling must count.
+  assert.deepEqual(extractClaudeUsage(envelope), { inputTokens: 3260, outputTokens: 4, costUsd: 0.03269 });
+
+  // The text parser still works on the same envelope.
+  assert.equal(extractClaudeText(envelope), "OK");
+
+  // Unknown must stay null, never zero -- a zero reads as "this call was free".
+  assert.deepEqual(extractClaudeUsage("not json at all"), { inputTokens: null, outputTokens: null, costUsd: null });
+  assert.deepEqual(extractClaudeUsage(JSON.stringify({ result: "OK" })), { inputTokens: null, outputTokens: null, costUsd: null });
+  assert.deepEqual(
+    extractClaudeUsage(JSON.stringify({ result: "OK", usage: { output_tokens: 7 }, total_cost_usd: "free" })),
+    { inputTokens: null, outputTokens: 7, costUsd: null },
+    "a missing input count and a non-numeric cost stay null while a real output count is kept",
+  );
+  assert.deepEqual(
+    extractClaudeUsage(JSON.stringify({ result: "OK", usage: { input_tokens: -5, output_tokens: 3 } })),
+    { inputTokens: null, outputTokens: 3, costUsd: null },
+    "an impossible negative count is rejected rather than trusted",
+  );
+
+  // The parser being right is not enough -- the Claude adapter must actually
+  // call it. Testing only the parser would leave the wiring uncovered, which is
+  // exactly how a correct function ends up never being reached.
+  const claude = createProvider("claude", { enabled: true, command: "claude", timeoutMs: 1_000 });
+  const readUsage = (claude as unknown as { extractUsage(stdout: string): unknown }).extractUsage.bind(claude);
+  assert.deepEqual(readUsage(envelope), { inputTokens: 3260, outputTokens: 4, costUsd: 0.03269 },
+    "the Claude adapter reads usage from the envelope");
+
+  // A provider that reports nothing stays honestly unknown.
+  const gemini = createProvider("gemini", { enabled: true, command: "agy", timeoutMs: 1_000 });
+  const geminiUsage = (gemini as unknown as { extractUsage(stdout: string): unknown }).extractUsage.bind(gemini);
+  assert.deepEqual(geminiUsage("some text"), { inputTokens: null, outputTokens: null, costUsd: null },
+    "a provider with no usage reporting stays null rather than zero");
 });
 
 test("architect JSON parser ignores fences and trailing prose", () => {
