@@ -175,6 +175,7 @@ export const RUN_EVENT_KINDS = [
   "steering.rejected",
   "steering.superseded",
   "steering.interrupted",
+  "scheduler.fanout_held",
   "run.failed",
 ] as const;
 export type RunEventKind = (typeof RUN_EVENT_KINDS)[number];
